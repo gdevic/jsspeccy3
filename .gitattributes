@@ -1,0 +1,15 @@
+# Auto-detect text files and normalize their line endings to LF in the
+# repository. Git converts to the platform's native line ending on checkout
+# (CRLF on Windows) according to core.autocrlf.
+* text=auto
+
+# Explicitly mark known binary assets so they are never subject to line
+# ending conversion, regardless of git's content-based heuristics.
+*.ico binary
+*.rom binary
+*.szx binary
+*.wasm binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
