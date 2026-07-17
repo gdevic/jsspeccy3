@@ -2,6 +2,7 @@ Unreleased
 ----------
 
 
+* Add a Pokes (game cheats) browser (File → Pokes…) over the complete Tipshop poke database: fuzzy-matches the loaded game's title, applies/undoes trainers with checkboxes, supports user-supplied values and 128K bank-specific pokes (.POK semantics)
 * Add support for a local (PC) joystick / gamepad via the browser Gamepad API, with Kempston, Cursor and Sinclair mappings selectable via the `joystickType` option, the Joystick menu, or the `setJoystickType` API endpoint
 * Add `joystickEnabled` configuration option
 * Add controller selection when more than one gamepad is connected, via the Controller menu, the `joystickDevice` option, or the `setJoystickDevice` API endpoint

@@ -9,6 +9,7 @@ import { TAPFile, TZXFile } from './tape.js';
 import { StandardKeyboardHandler, RecreatedZXSpectrumHandler } from './keyboard.js';
 import { JoystickHandler } from './joystick.js';
 import { AudioHandler } from './audio.js';
+import { openPokesDialog } from './pokes.js';
 
 import openIcon from './icons/open.svg';
 import resetIcon from './icons/reset.svg';
@@ -65,6 +66,14 @@ class Emulator extends EventEmitter {
         this.nextFileOpenID = 0;
         this.fileOpenPromiseResolutions = {};
 
+        /* Pokes (cheats) support: name of the most recently loaded game (used
+         * to look up its pokes), and the currently applied trainers, keyed by
+         * trainer id -> {pokes, originals} so they can be undone. */
+        this.loadedGameName = null;
+        this.activePokes = new Map();
+        this.nextPokesID = 0;
+        this.pokesPromiseResolutions = {};
+
         this.onReadyHandlers = [];
 
         this.worker.onmessage = (e) => {
@@ -117,7 +126,7 @@ class Emulator extends EventEmitter {
                             '128': {'default': 'tapeloaders/tape_128.szx', 'usr0': 'tapeloaders/tape_128_usr0.szx'},
                             '5': {'default': 'tapeloaders/tape_pentagon.szx', 'usr0': 'tapeloaders/tape_pentagon_usr0.szx'},
                         };
-                        this.openUrl(new URL(TAPE_LOADERS_BY_MACHINE[this.machineType][this.tapeAutoLoadMode], scriptUrl));
+                        this.openUrl(new URL(TAPE_LOADERS_BY_MACHINE[this.machineType][this.tapeAutoLoadMode], scriptUrl), {trackName: false});
                         if (!this.tapeTrapsEnabled) {
                             this.playTape();
                         }
@@ -128,6 +137,10 @@ class Emulator extends EventEmitter {
                     if (e.data.mediaType == 'tape') {
                         this.emit('openedTapeFile');
                     }
+                    break;
+                case 'pokesApplied':
+                    this.pokesPromiseResolutions[e.data.id](e.data.originals);
+                    delete this.pokesPromiseResolutions[e.data.id];
                     break;
                 case 'playingTape':
                     this.tapeIsPlaying = true;
@@ -399,22 +412,57 @@ class Emulator extends EventEmitter {
         }
     }
 
+    /* Remember which game is loaded (for the Pokes dialog); a new game
+     * invalidates any pokes applied to the previous one. */
+    setLoadedGame(name) {
+        this.loadedGameName = name || null;
+        this.activePokes.clear();
+        this.emit('setLoadedGame', this.loadedGameName);
+    }
+
+    /* Apply an array of {bank, address, value} pokes in the worker; resolves
+     * with the array of overwritten byte values (for undo). */
+    applyPokes(pokes) {
+        const id = this.nextPokesID++;
+        this.worker.postMessage({
+            message: 'applyPokes',
+            id,
+            pokes,
+        });
+        return new Promise((resolve) => {
+            this.pokesPromiseResolutions[id] = resolve;
+        });
+    }
+
     async openFile(file) {
         const opener = this.getFileOpener(file.name);
         if (opener) {
             const buf = await file.arrayBuffer();
-            return opener(buf).catch(err => {alert(err);});
+            return opener(buf).then((res) => {
+                this.setLoadedGame(file.name);
+                return res;
+            }).catch(err => {alert(err);});
         } else {
             throw 'Unrecognised file type: ' + file.name;
         }
     }
 
-    async openUrl(url) {
+    async openUrl(url, opts) {
+        opts = opts || {};
         const opener = this.getFileOpener(url.toString());
         if (opener) {
             const response = await fetch(url);
             const buf = await response.arrayBuffer();
-            return opener(buf);
+            return opener(buf).then((res) => {
+                // Internal loads (e.g. tape-loader snapshots) must not
+                // masquerade as the loaded game.
+                if (opts.trackName !== false) {
+                    const basename = decodeURIComponent(
+                        url.toString().split('/').pop().split('?')[0]);
+                    this.setLoadedGame(basename);
+                }
+                return res;
+            });
         } else {
             throw 'Unrecognised file type: ' + url.split('/').pop();
         }
@@ -523,6 +571,7 @@ window.JSSpeccy = (container, opts) => {
             fileMenu.addItem('Find games...', () => {
                 openGameBrowser();
             });
+            fileMenu.addItem('Pokes…', () => openPokesDialog(ui, emu));
             const autoLoadTapesMenuItem = fileMenu.addItem('Auto-load tapes', () => {
                 emu.setAutoLoadTapes(!emu.autoLoadTapes);
                 emu.focus();

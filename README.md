@@ -18,6 +18,10 @@ A ZX Spectrum emulator for the browser
 
 JSSpeccy 3 is a complete rewrite of JSSpeccy to make full use of the web technologies and APIs available as of 2021 for high-performance web apps. The emulation runs in a Web Worker, freeing up the UI thread to handle screen and audio updates, with the emulator core (consisting of the Z80 processor emulation and any auxiliary processes that are likely to interrupt its execution multiple times per frame, such as constructing the video output, reading the keyboard and generating audio) running in WebAssembly, compiled from AssemblyScript (with a custom preprocessor).
 
+## Pokes (game cheats)
+
+The **File → Pokes…** menu item opens a cheat browser over a committed catalog of the complete Tipshop poke database (`static/pokes/pokes.json`: ~3,700 games, ~23,000 cheats, ~72,000 pokes, sourced from [The Tipshop](https://www.the-tipshop.co.uk/) via the [all-tipshop-pokes](https://github.com/ladyeklipse/all-tipshop-pokes) collection). The search box is pre-filled with the name of the loaded game (from an opened file or a URL) and matches titles fuzzily, so "007 - The Spy Who Loved Me" finds "Spy Who Loved Me, The". Ticking a cheat pokes it into emulated memory Multiface-style (honouring the `.POK` format's 128K bank field); unticking restores the bytes that were overwritten. Cheats whose value is user-selectable (e.g. "number of lives") get a small input field. The catalog is lazy-loaded on first use and can be regenerated with `node tools/gen-pokes-catalog.js <all-tipshop-pokes checkout>`.
+
 ## Contributions
 
 These days, releasing open source code tends to come with an unspoken social contract, so I'd like to set some expectations...

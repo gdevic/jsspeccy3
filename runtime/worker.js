@@ -242,6 +242,31 @@ onmessage = (e) => {
         case 'loadMemory':
             loadMemoryPage(e.data.page, e.data.data);
             break;
+        case 'applyPokes': {
+            /* Apply a list of {bank, address, value} pokes (.POK semantics:
+             * bank bit 3 set = poke through the current paging, like a
+             * Multiface would; bank 0-7 = that 128K RAM page directly).
+             * Replies with the bytes that were overwritten so the UI can
+             * undo the pokes later. */
+            const originals = [];
+            for (const p of e.data.pokes) {
+                if (p.bank & 0x08) {
+                    originals.push(core.peek(p.address));
+                    core.poke(p.address, p.value);
+                } else {
+                    const offset = core.MACHINE_MEMORY
+                        + ((p.bank & 0x07) * 0x4000) + (p.address & 0x3fff);
+                    originals.push(memoryData[offset]);
+                    memoryData[offset] = p.value;
+                }
+            }
+            postMessage({
+                message: 'pokesApplied',
+                id: e.data.id,
+                originals,
+            });
+            break;
+        }
         case 'loadSnapshot':
             loadSnapshot(e.data.snapshot);
             postMessage({
