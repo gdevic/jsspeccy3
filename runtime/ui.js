@@ -156,6 +156,29 @@ export class Toolbar {
         this.elem.appendChild(button.elem);
         return button;
     }
+    addTextButton(text, opts, onClick) {
+        /* A toolbar button that shows text (used for the cassette counter) rather
+         * than an SVG icon. Returns a handle with setText/setLabel/enable/disable. */
+        opts = opts || {};
+        const button = document.createElement('button');
+        button.style.margin = '2px';
+        button.style.fontFamily = 'monospace';
+        button.style.fontSize = '12px';
+        button.style.height = '26px';
+        button.style.verticalAlign = 'middle';
+        button.innerText = text;
+        if (opts.label) button.title = opts.label;
+        if (opts.align == 'right') button.style.float = 'right';
+        if (onClick) button.addEventListener('click', onClick);
+        this.elem.appendChild(button);
+        return {
+            elem: button,
+            setText: (t) => { button.innerText = t; },
+            setLabel: (l) => { button.title = l; },
+            disable: () => { button.disabled = true; button.style.opacity = '0.5'; },
+            enable: () => { button.disabled = false; button.style.opacity = '1'; },
+        };
+    }
     enterFullscreen() {
         this.elem.style.position = 'absolute';
     }
@@ -450,6 +473,87 @@ export class UIController extends EventEmitter {
     hideDialog() {
         this.dialog.style.display = 'none';
         this.dialogBody.innerHTML = '';
+    }
+    /* Small popup listbox anchored above the toolbar, used by the cassette
+     * counter to list a tape's segments. `items` is an array of {label, current}
+     * and onSelect(index) fires when a row is clicked. Closes on select, Escape,
+     * or an outside click. */
+    showTapePopup(title, items, onSelect) {
+        this.hideTapePopup();
+        const popup = document.createElement('div');
+        this._tapePopup = popup;
+        popup.style.position = 'absolute';
+        popup.style.left = '4px';
+        popup.style.right = '4px';
+        // Anchor just above the toolbar so the popup never covers the on-screen
+        // keyboard, which sits below the toolbar when shown.
+        const aboveToolbar = (this.toolbar && this.toolbar.elem)
+            ? (this.appContainer.clientHeight - this.toolbar.elem.offsetTop)
+            : 34;
+        popup.style.bottom = aboveToolbar + 'px';
+        popup.style.maxHeight = '50%';
+        popup.style.overflowY = 'auto';
+        popup.style.backgroundColor = '#f4f4f4';
+        popup.style.border = '1px solid #888';
+        popup.style.zIndex = '150';
+        popup.style.fontFamily = 'Arial, Helvetica, sans-serif';
+        popup.style.fontSize = '12px';
+
+        const heading = document.createElement('div');
+        heading.innerText = title;
+        heading.style.fontWeight = 'bold';
+        heading.style.padding = '4px 8px';
+        heading.style.borderBottom = '1px solid #ccc';
+        heading.style.backgroundColor = '#e4e4e4';
+        popup.appendChild(heading);
+
+        items.forEach((item, index) => {
+            const row = document.createElement('button');
+            row.innerText = (item.current ? '▸ ' : '   ') + item.label;
+            row.style.display = 'block';
+            row.style.width = '100%';
+            row.style.textAlign = 'left';
+            row.style.border = 'none';
+            row.style.borderBottom = '1px solid #e0e0e0';
+            row.style.padding = '5px 8px';
+            row.style.fontFamily = 'monospace';
+            row.style.fontSize = '12px';
+            row.style.backgroundColor = item.current ? '#d8e8ff' : 'transparent';
+            row.style.cursor = 'pointer';
+            row.addEventListener('mouseenter', () => { row.style.backgroundColor = '#cce0ff'; });
+            row.addEventListener('mouseleave', () => { row.style.backgroundColor = item.current ? '#d8e8ff' : 'transparent'; });
+            row.addEventListener('click', () => {
+                this.hideTapePopup();
+                onSelect(index);
+            });
+            popup.appendChild(row);
+        });
+
+        this.appContainer.appendChild(popup);
+
+        /* dismiss on Escape or an outside click (deferred so this click doesn't
+         * immediately close it) */
+        this._tapePopupKeyHandler = (e) => { if (e.key === 'Escape') this.hideTapePopup(); };
+        this._tapePopupClickHandler = (e) => { if (!popup.contains(e.target)) this.hideTapePopup(); };
+        document.addEventListener('keydown', this._tapePopupKeyHandler);
+        setTimeout(() => document.addEventListener('click', this._tapePopupClickHandler), 0);
+    }
+    hideTapePopup() {
+        if (this._tapePopup) {
+            this._tapePopup.remove();
+            this._tapePopup = null;
+        }
+        if (this._tapePopupKeyHandler) {
+            document.removeEventListener('keydown', this._tapePopupKeyHandler);
+            this._tapePopupKeyHandler = null;
+        }
+        if (this._tapePopupClickHandler) {
+            document.removeEventListener('click', this._tapePopupClickHandler);
+            this._tapePopupClickHandler = null;
+        }
+    }
+    isTapePopupOpen() {
+        return !!this._tapePopup;
     }
     unload() {
         if (this.uiEnabled) {

@@ -12,7 +12,7 @@ const inputFilename = argv[2];
 const outputFilename = argv[3];
 
 const loadOpcodeTable = (filename, table, altTable) => {
-    for (let line of fs.readFileSync(filename).toString().split("\n")) {
+    for (let line of fs.readFileSync(filename).toString().split(/\r?\n/)) {
         let match = line.match(/^(\w+)\s+(.*)$/);
         if (match) {
             const code = parseInt(match[1], 16);

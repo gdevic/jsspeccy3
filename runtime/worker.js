@@ -11,6 +11,26 @@ let tapePulses = null;
 let stopped = false;
 let tape = null;
 let tapeIsPlaying = false;
+let tapePositionTstates = 0;      // tape consumed since load/seek, drives the cassette counter
+let framesSincePositionPost = 0;  // throttle position updates to the UI
+
+const TSTATES_PER_MS = 3500;
+
+const postTapeInfo = () => {
+    if (!tape) return;
+    postMessage({
+        message: 'tapeInfo',
+        segments: tape.segments,
+        totalMs: tape.totalMs,
+        totalBytes: tape.totalBytes,
+        positionMs: tapePositionTstates / TSTATES_PER_MS,
+    });
+};
+
+const postTapePosition = () => {
+    postMessage({ message: 'tapePosition', positionMs: tapePositionTstates / TSTATES_PER_MS });
+    framesSincePositionPost = 0;
+};
 
 const loadCore = (baseUrl) => {
     WebAssembly.instantiateStreaming(
@@ -59,8 +79,19 @@ const loadSnapshot = (snapshot) => {
 
 const trapTapeLoad = () => {
     if (!tape) return;
+    const beforeIndex = tape.nextBlockIndex;
     const block = tape.getNextLoadableBlock();
     if (!block) return;
+
+    // Advance the cassette counter: an instant (trapped) load jumps straight to
+    // the next block's start, or to the end once we wrap past the last block.
+    if (tape.blockStartMs) {
+        const afterIndex = tape.nextBlockIndex;
+        tapePositionTstates = (afterIndex > beforeIndex && afterIndex < tape.blockStartMs.length)
+            ? tape.blockStartMs[afterIndex] * TSTATES_PER_MS
+            : tape.totalMs * TSTATES_PER_MS;
+        postTapePosition();
+    }
 
     /* get expected block type and load vs verify flag from AF' */
     const af_ = registerPairs[4];
@@ -142,6 +173,10 @@ onmessage = (e) => {
                     tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount
                 );
                 core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
+                // Advance the cassette counter by the tape actually played this frame.
+                tapePositionTstates += tstatesGenerated;
+                framesSincePositionPost++;
+                if (tapeFinished || framesSincePositionPost >= 5) postTapePosition();
                 if (tapeFinished) {
                     tapeIsPlaying = false;
                     postMessage({
@@ -218,22 +253,41 @@ onmessage = (e) => {
         case 'openTAPFile':
             tape = new TAPFile(e.data.data);
             tapeIsPlaying = false;
+            tapePositionTstates = 0;
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
                 mediaType: 'tape',
             });
+            postTapeInfo();
             break;
         case 'openTZXFile':
             tape = new TZXFile(e.data.data);
             tapeIsPlaying = false;
+            tapePositionTstates = 0;
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
                 mediaType: 'tape',
             });
+            postTapeInfo();
             break;
-        
+        case 'seekTape':
+            if (tape) {
+                tape.seekToBlock(e.data.index);
+                tapePositionTstates = (tape.blockStartMs[e.data.index] || 0) * TSTATES_PER_MS;
+                if (core) core.resetTapePulseBuffer();
+                postTapePosition();
+            }
+            break;
+        case 'ejectTape':
+            tape = null;
+            tapeIsPlaying = false;
+            tapePositionTstates = 0;
+            if (core) core.resetTapePulseBuffer();
+            postMessage({ message: 'tapeEjected' });
+            break;
+
         case 'playTape':
             if (tape && !tapeIsPlaying) {
                 tapeIsPlaying = true;

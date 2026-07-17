@@ -18,6 +18,10 @@ import fullscreenIcon from './icons/fullscreen.svg';
 import exitFullscreenIcon from './icons/exitfullscreen.svg';
 import tapePlayIcon from './icons/tape_play.svg';
 import tapePauseIcon from './icons/tape_pause.svg';
+import ejectIcon from './icons/eject.svg';
+import keyboardIcon from './icons/keyboard.svg';
+
+import { createKeyboardOverlay } from './keyboard-overlay.js';
 
 const scriptUrl = document.currentScript.src;
 
@@ -43,10 +47,14 @@ class Emulator extends EventEmitter {
         this.isRunning = false;
         this.isReady = false;
         this.isInitiallyPaused = (!opts.autoStart);
-        this.autoLoadTapes = opts.autoLoadTapes || false;
+        this.autoLoadTapes = ('autoLoadTapes' in opts) ? opts.autoLoadTapes : true;
         this.tapeAutoLoadMode = opts.tapeAutoLoadMode || 'default';  // or usr0
         this.tapeIsPlaying = false;
         this.tapeTrapsEnabled = ('tapeTrapsEnabled' in opts) ? opts.tapeTrapsEnabled : true;
+        this.tapeSegments = [];       // segments of the loaded tape (cassette counter)
+        this.tapeTotalMs = 0;
+        this.tapeTotalBytes = 0;
+        this.tapePositionMs = 0;
 
         this.msPerFrame = 20;
 
@@ -63,7 +71,7 @@ class Emulator extends EventEmitter {
             switch(e.data.message) {
                 case 'ready':
                     this.loadRoms().then(() => {
-                        this.setMachine(opts.machine || 128);
+                        this.setMachine(opts.machine || 48);
                         this.setTapeTraps(this.tapeTrapsEnabled);
                         if (opts.openUrl) {
                             this.openUrlList(opts.openUrl).catch(err => {
@@ -128,6 +136,25 @@ class Emulator extends EventEmitter {
                 case 'stoppedTape':
                     this.tapeIsPlaying = false;
                     this.emit('stoppedTape');
+                    break;
+                case 'tapeInfo':
+                    this.tapeSegments = e.data.segments || [];
+                    this.tapeTotalMs = e.data.totalMs || 0;
+                    this.tapeTotalBytes = e.data.totalBytes || 0;
+                    this.tapePositionMs = e.data.positionMs || 0;
+                    this.emit('tapeInfo');
+                    break;
+                case 'tapePosition':
+                    this.tapePositionMs = e.data.positionMs || 0;
+                    this.emit('tapePosition');
+                    break;
+                case 'tapeEjected':
+                    this.tapeSegments = [];
+                    this.tapeTotalMs = 0;
+                    this.tapeTotalBytes = 0;
+                    this.tapePositionMs = 0;
+                    this.tapeIsPlaying = false;
+                    this.emit('tapeEjected');
                     break;
                 default:
                     console.log('message received by host:', e.data);
@@ -425,6 +452,23 @@ class Emulator extends EventEmitter {
             message: 'stopTape',
         });
     }
+    seekTape(blockIndex) {
+        this.worker.postMessage({
+            message: 'seekTape',
+            index: blockIndex,
+        });
+    }
+    ejectTape() {
+        this.worker.postMessage({
+            message: 'ejectTape',
+        });
+    }
+    keyDown(row, mask) {
+        this.worker.postMessage({ message: 'keyDown', row, mask });
+    }
+    keyUp(row, mask) {
+        this.worker.postMessage({ message: 'keyUp', row, mask });
+    }
 
     exit() {
         this.pause();
@@ -445,9 +489,9 @@ window.JSSpeccy = (container, opts) => {
     const uiEnabled = ('uiEnabled' in opts) ? opts.uiEnabled : true;
 
     const emu = new Emulator(canvas, {
-        machine: opts.machine || 128,
+        machine: opts.machine || 48,
         autoStart: opts.autoStart || false,
-        autoLoadTapes: opts.autoLoadTapes || false,
+        autoLoadTapes: ('autoLoadTapes' in opts) ? opts.autoLoadTapes : true,
         tapeAutoLoadMode: opts.tapeAutoLoadMode || 'default',
         openUrl: opts.openUrl,
         tapeTrapsEnabled: ('tapeTrapsEnabled' in opts) ? opts.tapeTrapsEnabled : true,
@@ -510,16 +554,33 @@ window.JSSpeccy = (container, opts) => {
         updateTapeTrapsCheckbox();
 
         const machineMenu = ui.menuBar.addMenu('Machine');
+        // Which 48K ROM is active: 'standard' (roms/48.rom) or 'gw03' (the
+        // "Gosh Wonderful" alternate 48K ROM). Both run as a 48K machine; they
+        // differ only in the ROM loaded into page 10, so switching swaps that
+        // page and reboots.
+        let rom48Variant = 'standard';
+        const boot48 = (variant, romFile) => {
+            rom48Variant = variant;
+            emu.loadRom(romFile, 10).then(() => {
+                emu.setMachine(48);
+                emu.reset();
+                emu.focus();
+            });
+        };
         const machine48Item = machineMenu.addItem('Spectrum 48K', () => {
-            emu.setMachine(48);
-            emu.focus();
+            boot48('standard', 'roms/48.rom');
+        });
+        const machine48gwItem = machineMenu.addItem('Spectrum 48K gw03', () => {
+            boot48('gw03', 'roms/gw03.rom');
         });
         const machine128Item = machineMenu.addItem('Spectrum 128K', () => {
             emu.setMachine(128);
+            emu.reset();
             emu.focus();
         });
         const machinePentagonItem = machineMenu.addItem('Pentagon 128', () => {
             emu.setMachine(5);
+            emu.reset();
             emu.focus();
         });
         const joystickMenu = ui.menuBar.addMenu('Joystick');
@@ -627,17 +688,16 @@ window.JSSpeccy = (container, opts) => {
         setZoomCheckbox(ui.zoom);
 
         emu.on('setMachine', (type) => {
+            machine48Item.unsetBullet();
+            machine48gwItem.unsetBullet();
+            machine128Item.unsetBullet();
+            machinePentagonItem.unsetBullet();
             if (type == 48) {
-                machine48Item.setBullet();
-                machine128Item.unsetBullet();
-                machinePentagonItem.unsetBullet();
+                if (rom48Variant === 'gw03') machine48gwItem.setBullet();
+                else machine48Item.setBullet();
             } else if (type == 128) {
-                machine48Item.unsetBullet();
                 machine128Item.setBullet();
-                machinePentagonItem.unsetBullet();
             } else { // pentagon
-                machine48Item.unsetBullet();
-                machine128Item.unsetBullet();
                 machinePentagonItem.setBullet();
             }
         });
@@ -685,6 +745,62 @@ window.JSSpeccy = (container, opts) => {
             tapeButton.setLabel('Start tape');
         });
 
+        /* Cassette counter: shows tape position / total (advancing as the tape
+         * loads, instantly under tape-traps or gradually in real time), and the
+         * loaded game's size. Click it to jump to any segment (a portion of the
+         * game split at the silences between blocks), which also supports the
+         * multi-load games whose parts load one at a time. */
+        const fmtMs = (ms) => {
+            const s = Math.round(ms / 1000);
+            return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+        };
+        const counterButton = ui.toolbar.addTextButton('--:--', {label: 'Cassette counter'}, () => {
+            if (ui.isTapePopupOpen()) { ui.hideTapePopup(); return; }
+            const segs = emu.tapeSegments || [];
+            if (segs.length === 0) return;
+            const pos = emu.tapePositionMs;
+            let currentSeg = 0;
+            for (let i = 0; i < segs.length; i++) {
+                if (segs[i].startMs <= pos + 1) currentSeg = i;
+            }
+            const items = segs.map((seg, i) => ({ label: seg.label, current: i === currentSeg }));
+            ui.showTapePopup('Jump to tape segment', items, (index) => {
+                emu.seekTape(segs[index].index);
+                if (!emu.tapeTrapsEnabled) emu.playTape();  // real-time loaders need pulses flowing
+                emu.focus();
+            });
+        });
+        counterButton.disable();
+        const updateCounter = () => {
+            counterButton.setText(fmtMs(emu.tapePositionMs) + '/' + fmtMs(emu.tapeTotalMs));
+        };
+        emu.on('tapeInfo', () => {
+            counterButton.enable();
+            updateCounter();
+            counterButton.setLabel(
+                'Tape: ' + Math.round(emu.tapeTotalBytes / 1024) + 'K, '
+                + emu.tapeSegments.length + ' segment(s) — click to jump to a part');
+        });
+        emu.on('tapePosition', updateCounter);
+
+        /* Eject: remove the loaded tape and reset the counter. */
+        const ejectButton = ui.toolbar.addButton(ejectIcon, {label: 'Eject tape'}, () => {
+            emu.ejectTape();
+            emu.focus();
+        });
+        ejectButton.disable();
+        emu.on('tapeInfo', () => {
+            ejectButton.enable();
+        });
+        emu.on('tapeEjected', () => {
+            ui.hideTapePopup();
+            counterButton.setText('--:--');
+            counterButton.setLabel('Cassette counter');
+            counterButton.disable();
+            ejectButton.disable();
+            tapeButton.disable();
+        });
+
         const fullscreenButton = ui.toolbar.addButton(
             fullscreenIcon,
             {label: 'Enter full screen mode', align: 'right'},
@@ -693,13 +809,33 @@ window.JSSpeccy = (container, opts) => {
             }
         )
 
+        /* On-screen clickable ZX Spectrum keyboard, shown under the emulation
+         * area (as wide as the display, scaling with it). Toggled from the
+         * toolbar next to the fullscreen button; hidden in fullscreen. */
+        const keyboard = createKeyboardOverlay(emu, new URL('zx_keyboard.png', scriptUrl).href);
+        ui.appContainer.appendChild(keyboard.element);
+        let keyboardWanted = true;   // shown by default
+        const keyboardButton = ui.toolbar.addButton(
+            keyboardIcon,
+            {label: 'Hide keyboard', align: 'right'},
+            () => {
+                keyboardWanted = !keyboardWanted;
+                if (keyboardWanted && !ui.isFullscreen) { keyboard.show(); } else { keyboard.hide(); }
+                keyboardButton.setLabel(keyboardWanted ? 'Hide keyboard' : 'Show keyboard');
+                emu.focus();
+            }
+        );
+        keyboard.show();
+
         ui.on('setZoom', (factor) => {
             if (factor == 'fullscreen') {
                 fullscreenButton.setIcon(exitFullscreenIcon);
                 fullscreenButton.setLabel('Exit full screen mode');
+                keyboard.hide();                       // ignored in fullscreen
             } else {
                 fullscreenButton.setIcon(fullscreenIcon);
                 fullscreenButton.setLabel('Enter full screen mode');
+                if (keyboardWanted) keyboard.show();   // restore on leaving fullscreen
             }
         });
     }

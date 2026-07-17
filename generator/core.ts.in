@@ -391,6 +391,13 @@ export function setTapePulseBufferState(writeIndex: u16, tstateCount:u32):void {
     tapePulseWriteIndex = writeIndex;
     tapePulseBufferTstateCount = tstateCount;
 }
+export function resetTapePulseBuffer():void {
+    // Discard any buffered pulses so the tape can restart cleanly after a seek.
+    tapePulseReadIndex = 0;
+    tapePulseWriteIndex = 0;
+    tapePulseCyclesElapsed = 0;
+    tapePulseBufferTstateCount = 0;
+}
 
 function readMem(addr:u16):u8 {
     const page:u8 = memoryPageReadMap[addr >> 14];

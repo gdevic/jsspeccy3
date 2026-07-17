@@ -1,3 +1,99 @@
+/* T-states per millisecond at the 3.5 MHz Spectrum clock (a PauseSegment of N ms
+ * emits N*3500 t-states — see PauseSegment.getNextPulseLength below). */
+const TSTATES_PER_MS = 3500;
+
+/* A pause at least this long (ms) after a block ends the current tape "segment"
+ * (a loadable portion of the game): segments are split at the silences between
+ * blocks. Tunable. */
+const SEGMENT_PAUSE_MS = 500;
+
+/* Popcount lookup, used to total the 1-bits of a data block so we can compute a
+ * block's exact play duration without walking every bit individually. */
+const BIT_COUNTS = new Uint8Array(256);
+for (let i = 0; i < 256; i++) {
+    BIT_COUNTS[i] = (i & 1) + ((i >> 1) & 1) + ((i >> 2) & 1) + ((i >> 3) & 1)
+        + ((i >> 4) & 1) + ((i >> 5) & 1) + ((i >> 6) & 1) + ((i >> 7) & 1);
+}
+
+/* Exact t-states to play a data block: each bit is two pulses of its (zero/one)
+ * length, and only the top `lastByteBits` bits of the final byte are emitted. */
+function dataBlockTstates(data, lastByteBits, zeroLen, oneLen) {
+    if (data.length === 0) return 0;
+    let ones = 0;
+    for (let i = 0; i < data.length - 1; i++) ones += BIT_COUNTS[data[i]];
+    const last = data[data.length - 1];
+    for (let b = 0; b < lastByteBits; b++) {
+        if (last & (0x80 >> b)) ones++;
+    }
+    const totalBits = (data.length - 1) * 8 + lastByteBits;
+    const zeros = totalBits - ones;
+    return 2 * (ones * oneLen + zeros * zeroLen);
+}
+
+/* Read the 10-character program name out of a standard-speed header block
+ * (flag byte 0x00, 19 bytes: flag, type, 10-char name, ...). Returns '' if the
+ * block is not a header. Gives segments human labels like "ELITE" / "ManicMine". */
+function headerName(data) {
+    if (!data || data.length < 12 || (data[0] & 0x80)) return '';
+    let name = '';
+    for (let i = 2; i < 12; i++) name += String.fromCharCode(data[i]);
+    return name.replace(/[^\x20-\x7e]/g, ' ').trim();
+}
+
+function msToString(ms) {
+    const secs = Math.round(ms / 1000);
+    return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
+}
+
+/* Group a flat list of {index, tstates, bytes, name, pauseAfterMs, loadable}
+ * timed blocks into segments, breaking after any block whose trailing pause is
+ * at least SEGMENT_PAUSE_MS. Returns {segments, totalMs, totalBytes}. */
+function groupSegments(timed) {
+    const segments = [];
+    const blockStartMs = [];      // ms at which each block starts (indexed by block index)
+    let totalTstates = 0;
+    let totalBytes = 0;
+    let cur = null;
+    const closeSegment = () => {
+        if (cur) { segments.push(cur); cur = null; }
+    };
+    for (const b of timed) {
+        blockStartMs[b.index] = totalTstates / TSTATES_PER_MS;
+        totalTstates += b.tstates;
+        totalBytes += b.bytes;
+        if (!cur) {
+            cur = {
+                index: b.index,           // block to seek to when this segment is chosen
+                startMs: blockStartMs[b.index],
+                tstates: 0, bytes: 0, name: '',
+            };
+        }
+        if (!cur.name && b.name) cur.name = b.name;
+        cur.tstates += b.tstates;
+        cur.bytes += b.bytes;
+        if (b.pauseAfterMs >= SEGMENT_PAUSE_MS) closeSegment();
+    }
+    closeSegment();
+    let n = 0;
+    for (const s of segments) {
+        s.durationMs = s.tstates / TSTATES_PER_MS;
+        // Show sub-kilobyte segments (headers, tiny blocks) in exact bytes rather
+        // than a useless "0K".
+        const kb = Math.round(s.bytes / 1024);
+        const sizeStr = (kb === 0) ? (s.bytes + 'B') : (kb + 'K');
+        s.label = (s.name || ('Part ' + (n + 1)))
+            + '  @' + msToString(s.startMs) + '  (' + msToString(s.durationMs)
+            + ', ' + sizeStr + ')';
+        n++;
+    }
+    return {
+        segments,
+        totalMs: totalTstates / TSTATES_PER_MS,
+        totalBytes,
+        blockStartMs,
+    };
+}
+
 class ToneSegment {
     constructor(pulseLength, pulseCount) {
         this.pulseLength = pulseLength;
@@ -79,6 +175,14 @@ class PulseGenerator {
     addSegment(segment) {
         this.segments.push(segment);
     }
+    reset() {
+        /* Drop any queued/partly-emitted pulses so playback can restart cleanly
+         * from a newly-sought tape position. */
+        this.segments = [];
+        this.pendingCycles = 0;
+        this.level = 0x0000;
+        this.tapeIsFinished = false;
+    }
     emitPulses(buffer, startIndex, cycleCount) {
         let cyclesEmitted = 0;
         let index = startIndex;
@@ -152,6 +256,40 @@ export class TAPFile {
             // return false if tape has ended
             return this.nextBlockIndex != 0;
         });
+
+        this.buildTimeline();
+    }
+
+    /* Per-block timing/size for the cassette-counter UI; a standard TAP block is
+     * leader + sync + data + a 1000 ms pause, so every block ends a segment. */
+    buildTimeline() {
+        const timed = this.blocks.map((block, index) => {
+            const isHeader = !(block[0] & 0x80);
+            const leader = 2168 * (isHeader ? 8063 : 3223);
+            const sync = 667 + 735;
+            const data = dataBlockTstates(block, 8, 855, 1710);
+            const pauseMs = 1000;
+            return {
+                index,
+                tstates: leader + sync + data + pauseMs * TSTATES_PER_MS,
+                bytes: block.length,
+                name: headerName(block),
+                pauseAfterMs: pauseMs,
+                loadable: true,
+            };
+        });
+        const t = groupSegments(timed);
+        this.segments = t.segments;
+        this.totalMs = t.totalMs;
+        this.totalBytes = t.totalBytes;
+        this.blockStartMs = t.blockStartMs;
+    }
+
+    /* Rewind/fast-forward so the next block loaded is `index`. */
+    seekToBlock(index) {
+        if (index < 0 || index >= this.blocks.length) return;
+        this.nextBlockIndex = index;
+        this.pulseGenerator.reset();
     }
 
     getNextLoadableBlock() {
@@ -513,6 +651,74 @@ export class TZXFile {
             block.generatePulses(generator);
             return true;
         });
+
+        this.buildTimeline();
+    }
+
+    /* Per-block timing/size for the cassette-counter UI. Uses linear block order
+     * (loops/jumps are rare and only wrap pilot tones), which is accurate enough
+     * for the segment list. */
+    blockTiming(block) {
+        switch (block.type) {
+            case 'StandardSpeedData': {
+                const isHeader = !(block.data[0] & 0x80);
+                const t = 2168 * (isHeader ? 8063 : 3223) + (667 + 735)
+                    + dataBlockTstates(block.data, 8, 855, 1710)
+                    + block.pause * TSTATES_PER_MS;
+                return { tstates: t, bytes: block.data.length, name: headerName(block.data),
+                    pauseAfterMs: block.pause, loadable: true };
+            }
+            case 'TurboSpeedData': {
+                const t = block.pilotPulseLength * block.pilotPulseCount
+                    + (block.syncPulse1Length + block.syncPulse2Length)
+                    + dataBlockTstates(block.data, block.lastByteMask, block.zeroBitLength, block.oneBitLength)
+                    + block.pause * TSTATES_PER_MS;
+                return { tstates: t, bytes: block.data.length, name: headerName(block.data),
+                    pauseAfterMs: block.pause, loadable: true };
+            }
+            case 'PureData': {
+                const t = dataBlockTstates(block.data, block.lastByteMask, block.zeroBitLength, block.oneBitLength)
+                    + block.pause * TSTATES_PER_MS;
+                return { tstates: t, bytes: block.data.length, name: '', pauseAfterMs: block.pause, loadable: true };
+            }
+            case 'DirectRecording': {
+                const samples = (block.data.length - 1) * 8 + block.lastByteMask;
+                const t = samples * block.tstatesPerSample + block.pause * TSTATES_PER_MS;
+                return { tstates: t, bytes: block.data.length, name: '', pauseAfterMs: block.pause, loadable: true };
+            }
+            case 'PureTone':
+                return { tstates: block.pulseLength * block.pulseCount, bytes: 0, name: '', pauseAfterMs: 0, loadable: false };
+            case 'PulseSequence':
+                return { tstates: block.pulseLengths.reduce((a, b) => a + b, 0), bytes: 0, name: '', pauseAfterMs: 0, loadable: false };
+            case 'Pause':
+                return { tstates: block.pause * TSTATES_PER_MS, bytes: 0, name: '', pauseAfterMs: block.pause, loadable: false };
+            case 'GroupStart':
+                return { tstates: 0, bytes: 0, name: block.name, pauseAfterMs: 0, loadable: false };
+            default:
+                return { tstates: 0, bytes: 0, name: '', pauseAfterMs: 0, loadable: false };
+        }
+    }
+
+    buildTimeline() {
+        const timed = this.blocks.map((block, index) => {
+            const info = this.blockTiming(block);
+            return { index, ...info };
+        });
+        const t = groupSegments(timed);
+        this.segments = t.segments;
+        this.totalMs = t.totalMs;
+        this.totalBytes = t.totalBytes;
+        this.blockStartMs = t.blockStartMs;
+    }
+
+    /* Rewind/fast-forward so the next meaningful block played/loaded is `index`. */
+    seekToBlock(index) {
+        if (index < 0 || index >= this.blocks.length) return;
+        this.nextBlockIndex = index;
+        this.loopToBlockIndex = undefined;
+        this.repeatCount = undefined;
+        this.callStack = [];
+        this.pulseGenerator.reset();
     }
 
     getNextMeaningfulBlock(wrapAtEnd) {
