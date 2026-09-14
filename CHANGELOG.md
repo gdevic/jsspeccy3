@@ -1,11 +1,14 @@
-Unreleased
-----------
-
+3.2.1 (2026-09-13)
+------------------
 
 * Add a Pokes (game cheats) browser (File → Pokes…) over the complete Tipshop poke database: fuzzy-matches the loaded game's title, applies/undoes trainers with checkboxes, supports user-supplied values and 128K bank-specific pokes (.POK semantics)
 * Add support for a local (PC) joystick / gamepad via the browser Gamepad API, with Kempston, Cursor and Sinclair mappings selectable via the `joystickType` option, the Joystick menu, or the `setJoystickType` API endpoint
 * Add `joystickEnabled` configuration option
 * Add controller selection when more than one gamepad is connected, via the Controller menu, the `joystickDevice` option, or the `setJoystickDevice` API endpoint
+* Add a clickable on-screen ZX Spectrum keyboard below the display, toggled from the toolbar, with sticky CAPS SHIFT/SYMBOL SHIFT and Shift/Ctrl modifiers
+* Add a cassette counter with a segment popup for jumping to any part of a loaded tape, plus an eject button
+* Add a "Spectrum 48K gw03" machine (the Gosh Wonderful alternate 48K ROM)
+* Fix the SZX halted flag being read from the wrong offset, which spuriously restored halted=true and corrupted the stack in some games
 
 
 3.2 (2024-11-23)
