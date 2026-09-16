@@ -1,3 +1,12 @@
+3.2.2 (2026-09-16)
+------------------
+
+* Add a PlayZX game browser (File → PlayZX open…) over the PlayZX online catalog of around 10,800 ZX Spectrum tape images: browse by initial letter, then title, then the individual releases with publisher, year and playing time, or search live by title, publisher, a raw SQL condition, or a random pick, and load the chosen tape straight into the emulator
+* Fix jumping to a tape segment doing nothing when nothing was left reading the tape: the ROM tape loader is now booted for a fresh LOAD, while a load already in flight picks up the new position by itself
+* Fix the tape segment popup highlighting the wrong part once a whole tape had loaded, by marking the block the tape is parked on rather than where the cassette counter happens to sit
+* Fix the start button drifting off centre when the menu bar, toolbar or on-screen keyboard changed the height of the display
+
+
 3.2.1 (2026-09-13)
 ------------------
 
