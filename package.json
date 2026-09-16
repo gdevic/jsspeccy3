@@ -10,7 +10,7 @@
     "build:wasm:debug": "asc build/core.ts --target debug",
     "build:wasm:release": "asc build/core.ts --target release",
     "build:js": "mkdir -p dist/jsspeccy && webpack",
-    "build:static": "mkdir -p dist/jsspeccy && cp static/index.html dist/ && cp static/favicon.ico dist/ && cp README.md dist/ && cp COPYING dist/ && cp CHANGELOG.md dist/ && cp -r static/roms dist/jsspeccy && cp -r static/tapeloaders dist/jsspeccy && mkdir -p dist/jsspeccy/pokes && cp static/pokes/pokes.json dist/jsspeccy/pokes/ && cp static/zx_keyboard.png dist/jsspeccy/",
+    "build:static": "mkdir -p dist/jsspeccy && cp static/index.html dist/ && cp static/favicon.ico dist/ && cp README.md dist/ && cp COPYING dist/ && cp CHANGELOG.md dist/ && cp -r static/roms dist/jsspeccy && cp -r static/tapeloaders dist/jsspeccy && mkdir -p dist/jsspeccy/pokes && cp static/pokes/pokes.json dist/jsspeccy/pokes/ && cp static/zx_keyboard.png dist/jsspeccy/ && cp -r static/playzx dist/jsspeccy/ && cp node_modules/sql.js/dist/sql-wasm.wasm dist/jsspeccy/",
     "build": "npm run build:core && npm run build:wasm:debug && npm run build:js && npm run build:static",
     "build:release": "npm run build:core && npm run build:wasm:release && npm run build:js && npm run build:static",
     "watch": "npm-watch"
@@ -43,11 +43,13 @@
     "build:static": {
       "patterns": [
         "static/*.html",
-        "static/*.rom"
+        "static/*.rom",
+        "static/playzx/*"
       ],
       "extensions": [
         "html",
-        "rom"
+        "rom",
+        "db"
       ]
     }
   },
@@ -63,6 +65,7 @@
   "dependencies": {
     "file-dialog": "^0.0.8",
     "jszip": "^3.7.1",
-    "pako": "^2.0.4"
+    "pako": "^2.0.4",
+    "sql.js": "^1.14.2"
   }
 }

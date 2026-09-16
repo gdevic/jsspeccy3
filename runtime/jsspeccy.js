@@ -10,6 +10,8 @@ import { StandardKeyboardHandler, RecreatedZXSpectrumHandler } from './keyboard.
 import { JoystickHandler } from './joystick.js';
 import { AudioHandler } from './audio.js';
 import { openPokesDialog } from './pokes.js';
+import { openPlayZXDialog } from './playzx.js';
+import { isPlayZXAvailable } from './playzx-session.js';
 
 import openIcon from './icons/open.svg';
 import resetIcon from './icons/reset.svg';
@@ -52,10 +54,11 @@ class Emulator extends EventEmitter {
         this.tapeAutoLoadMode = opts.tapeAutoLoadMode || 'default';  // or usr0
         this.tapeIsPlaying = false;
         this.tapeTrapsEnabled = ('tapeTrapsEnabled' in opts) ? opts.tapeTrapsEnabled : true;
-        this.tapeSegments = [];       // segments of the loaded tape (cassette counter)
+        this.tapeSegments = []; // segments of the loaded tape (cassette counter)
         this.tapeTotalMs = 0;
         this.tapeTotalBytes = 0;
         this.tapePositionMs = 0;
+        this.tapeBlockIndex = 0; // block the tape is parked on: what the next load reads
 
         this.msPerFrame = 20;
 
@@ -121,12 +124,7 @@ class Emulator extends EventEmitter {
                     break;
                 case 'fileOpened':
                     if (e.data.mediaType == 'tape' && this.autoLoadTapes) {
-                        const TAPE_LOADERS_BY_MACHINE = {
-                            '48': {'default': 'tapeloaders/tape_48.szx', 'usr0': 'tapeloaders/tape_48.szx'},
-                            '128': {'default': 'tapeloaders/tape_128.szx', 'usr0': 'tapeloaders/tape_128_usr0.szx'},
-                            '5': {'default': 'tapeloaders/tape_pentagon.szx', 'usr0': 'tapeloaders/tape_pentagon_usr0.szx'},
-                        };
-                        this.openUrl(new URL(TAPE_LOADERS_BY_MACHINE[this.machineType][this.tapeAutoLoadMode], scriptUrl), {trackName: false});
+                        this.bootTapeLoader();
                         if (!this.tapeTrapsEnabled) {
                             this.playTape();
                         }
@@ -155,17 +153,28 @@ class Emulator extends EventEmitter {
                     this.tapeTotalMs = e.data.totalMs || 0;
                     this.tapeTotalBytes = e.data.totalBytes || 0;
                     this.tapePositionMs = e.data.positionMs || 0;
+                    this.tapeBlockIndex = e.data.blockIndex || 0;
                     this.emit('tapeInfo');
                     break;
                 case 'tapePosition':
                     this.tapePositionMs = e.data.positionMs || 0;
+                    this.tapeBlockIndex = e.data.blockIndex || 0;
                     this.emit('tapePosition');
+                    break;
+                case 'tapeSeeked':
+                    if (!this.tapeTrapsEnabled) {
+                        this.playTape();
+                    } else if (!e.data.loadInFlight && this.autoLoadTapes) {
+                        this.bootTapeLoader();
+                    }
+                    this.emit('tapeSeeked');
                     break;
                 case 'tapeEjected':
                     this.tapeSegments = [];
                     this.tapeTotalMs = 0;
                     this.tapeTotalBytes = 0;
                     this.tapePositionMs = 0;
+                    this.tapeBlockIndex = 0;
                     this.tapeIsPlaying = false;
                     this.emit('tapeEjected');
                     break;
@@ -500,6 +509,19 @@ class Emulator extends EventEmitter {
             message: 'stopTape',
         });
     }
+    /* Boot the ROM tape loader for the current machine: a snapshot parked at a
+     * LOAD "" prompt, which is how a tape starts loading without the user typing
+     * it. Does nothing for a machine with no loader snapshot. */
+    bootTapeLoader() {
+        const TAPE_LOADERS_BY_MACHINE = {
+            '48': {'default': 'tapeloaders/tape_48.szx', 'usr0': 'tapeloaders/tape_48.szx'},
+            '128': {'default': 'tapeloaders/tape_128.szx', 'usr0': 'tapeloaders/tape_128_usr0.szx'},
+            '5': {'default': 'tapeloaders/tape_pentagon.szx', 'usr0': 'tapeloaders/tape_pentagon_usr0.szx'},
+        };
+        const loaders = TAPE_LOADERS_BY_MACHINE[this.machineType];
+        if (!loaders) return;
+        return this.openUrl(new URL(loaders[this.tapeAutoLoadMode], scriptUrl), {trackName: false});
+    }
     seekTape(blockIndex) {
         this.worker.postMessage({
             message: 'seekTape',
@@ -571,6 +593,10 @@ window.JSSpeccy = (container, opts) => {
             fileMenu.addItem('Find games...', () => {
                 openGameBrowser();
             });
+            // Only where a download can actually succeed; see isPlayZXAvailable()
+            if (isPlayZXAvailable()) {
+                fileMenu.addItem('PlayZX open…', () => openPlayZXDialog(ui, emu));
+            }
             fileMenu.addItem('Pokes…', () => openPokesDialog(ui, emu));
             const autoLoadTapesMenuItem = fileMenu.addItem('Auto-load tapes', () => {
                 emu.setAutoLoadTapes(!emu.autoLoadTapes);
@@ -807,15 +833,19 @@ window.JSSpeccy = (container, opts) => {
             if (ui.isTapePopupOpen()) { ui.hideTapePopup(); return; }
             const segs = emu.tapeSegments || [];
             if (segs.length === 0) return;
-            const pos = emu.tapePositionMs;
+            /* Mark the part the next load will read, which is the block the
+             * tape is parked on, not where the counter sits: once a whole tape
+             * has loaded the counter stays at the end while the tape itself has
+             * wrapped back round to the first block. */
+            const block = emu.tapeBlockIndex;
             let currentSeg = 0;
             for (let i = 0; i < segs.length; i++) {
-                if (segs[i].startMs <= pos + 1) currentSeg = i;
+                if (segs[i].index <= block) currentSeg = i;
             }
             const items = segs.map((seg, i) => ({ label: seg.label, current: i === currentSeg }));
             ui.showTapePopup('Jump to tape segment', items, (index) => {
+                // The worker's reply starts whatever needs to read the tape.
                 emu.seekTape(segs[index].index);
-                if (!emu.tapeTrapsEnabled) emu.playTape();  // real-time loaders need pulses flowing
                 emu.focus();
             });
         });
@@ -828,7 +858,7 @@ window.JSSpeccy = (container, opts) => {
             updateCounter();
             counterButton.setLabel(
                 'Tape: ' + Math.round(emu.tapeTotalBytes / 1024) + 'K, '
-                + emu.tapeSegments.length + ' segment(s) — click to jump to a part');
+                + emu.tapeSegments.length + ' segment(s), click to jump to a part');
         });
         emu.on('tapePosition', updateCounter);
 

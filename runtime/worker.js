@@ -13,8 +13,16 @@ let tape = null;
 let tapeIsPlaying = false;
 let tapePositionTstates = 0;      // tape consumed since load/seek, drives the cassette counter
 let framesSincePositionPost = 0;  // throttle position updates to the UI
+let framesSinceTapeTrap = 0;      // frames since the machine last pulled a block through the trap
 
 const TSTATES_PER_MS = 3500;
+
+/* A load counts as "in flight" while the machine has pulled a block through the
+ * tape trap within this many frames (~1s at 50fps). Seeking during one lets the
+ * running loader pick up the new position by itself; seeking outside one leaves
+ * nothing to read the tape, so the UI boots the tape loader to start a fresh
+ * LOAD from where the user jumped to. */
+const TRAP_IDLE_FRAMES = 50;
 
 const postTapeInfo = () => {
     if (!tape) return;
@@ -24,11 +32,16 @@ const postTapeInfo = () => {
         totalMs: tape.totalMs,
         totalBytes: tape.totalBytes,
         positionMs: tapePositionTstates / TSTATES_PER_MS,
+        blockIndex: tape.nextBlockIndex,
     });
 };
 
 const postTapePosition = () => {
-    postMessage({ message: 'tapePosition', positionMs: tapePositionTstates / TSTATES_PER_MS });
+    postMessage({
+        message: 'tapePosition',
+        positionMs: tapePositionTstates / TSTATES_PER_MS,
+        blockIndex: tape ? tape.nextBlockIndex : 0,
+    });
     framesSincePositionPost = 0;
 };
 
@@ -79,6 +92,7 @@ const loadSnapshot = (snapshot) => {
 
 const trapTapeLoad = () => {
     if (!tape) return;
+    framesSinceTapeTrap = 0;
     const beforeIndex = tape.nextBlockIndex;
     const block = tape.getNextLoadableBlock();
     if (!block) return;
@@ -151,6 +165,7 @@ onmessage = (e) => {
             break;
         case 'runFrame':
             if (stopped) return;
+            if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
             const frameBuffer = e.data.frameBuffer;
             const frameData = new Uint8Array(frameBuffer);
 
@@ -279,6 +294,7 @@ onmessage = (e) => {
             tape = new TAPFile(e.data.data);
             tapeIsPlaying = false;
             tapePositionTstates = 0;
+            framesSinceTapeTrap = TRAP_IDLE_FRAMES;
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
@@ -290,6 +306,7 @@ onmessage = (e) => {
             tape = new TZXFile(e.data.data);
             tapeIsPlaying = false;
             tapePositionTstates = 0;
+            framesSinceTapeTrap = TRAP_IDLE_FRAMES;
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
@@ -303,12 +320,20 @@ onmessage = (e) => {
                 tapePositionTstates = (tape.blockStartMs[e.data.index] || 0) * TSTATES_PER_MS;
                 if (core) core.resetTapePulseBuffer();
                 postTapePosition();
+                /* Moving the tape is all we can do here: something still has to
+                 * read it. Tell the UI whether a load is already in flight, so
+                 * it knows whether one needs starting. */
+                postMessage({
+                    message: 'tapeSeeked',
+                    loadInFlight: framesSinceTapeTrap < TRAP_IDLE_FRAMES,
+                });
             }
             break;
         case 'ejectTape':
             tape = null;
             tapeIsPlaying = false;
             tapePositionTstates = 0;
+            framesSinceTapeTrap = TRAP_IDLE_FRAMES;
             if (core) core.resetTapePulseBuffer();
             postMessage({ message: 'tapeEjected' });
             break;

@@ -13,3 +13,4 @@
 *.jpg binary
 *.jpeg binary
 *.gif binary
+*.db binary

@@ -311,6 +311,13 @@ export class UIController extends EventEmitter {
             this.startButton.style.display = 'block';
         });
 
+        /* The menu bar, toolbar and on-screen keyboard are built and toggled after
+         * this point, each time changing where the canvas sits inside the
+         * container, so re-centre the overlay whenever the container resizes. */
+        if (window.ResizeObserver) {
+            new ResizeObserver(() => {this.centerStartButton();}).observe(this.appContainer);
+        }
+
         /* variables for tracking zoom / fullscreen state */
         this.zoom = null;
         this.isFullscreen = false;
@@ -350,6 +357,7 @@ export class UIController extends EventEmitter {
 
                     this.hideUI();
                 }
+                this.centerStartButton();
                 this.emit('setZoom', 'fullscreen');
                 emulator.focus();
             } else {
@@ -419,7 +427,17 @@ export class UIController extends EventEmitter {
         this.canvas.style.width = '' + displayWidth + 'px';
         this.canvas.style.height = '' + displayHeight + 'px';
         this.appContainer.style.width = '' + displayWidth + 'px';
+        this.centerStartButton();
         this.emit('setZoom', factor);
+    }
+
+    centerStartButton() {
+        const canvasHeight = this.canvas.offsetHeight;
+        if (canvasHeight) {
+            this.startButton.style.top = (this.canvas.offsetTop + (canvasHeight / 2)) + 'px';
+        } else {
+            this.startButton.style.top = '50%';   // not laid out yet; best guess
+        }
     }
 
     enterFullscreen() {
