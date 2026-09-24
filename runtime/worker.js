@@ -19,6 +19,26 @@ let autoPlaySuppressed = false;   // the user stopped the tape, so detection mus
 let loaderIdleFrames = 0;         // frames in which the machine read the port but no loader sampled it
 let tapeTrapsEnabled = true;
 
+/* Interface 1 / Microdrive: per-drive bookkeeping the core doesn't expose
+ * directly. mdrTokens identifies which cartridge (an opaque id from the UI's
+ * storage layer) is in each drive, so a flush can be posted back with an id
+ * that still points at the right record even if the drive's been swapped by
+ * the time the message arrives; mdrBlocks is the sector count last passed to
+ * insertMicrodrive, needed to know how many bytes of the drive's (always
+ * full-size) slot in MICRODRIVE_DATA are actually its cartridge. */
+let mdrTokens = [null, null, null, null, null, null, null, null];
+let mdrBlocks = [0, 0, 0, 0, 0, 0, 0, 0];
+let mdrFramesSinceFlush = [0, 0, 0, 0, 0, 0, 0, 0];
+let mdrLastMotors = 0;
+let mdrFramesSinceStatus = 0;
+
+/* How often a still-spinning, still-dirty drive gets force-flushed anyway
+ * (long multi-block SAVEs shouldn't sit unflushed for their whole duration),
+ * and how often the LED/head status gets posted regardless of whether it
+ * changed (so the UI's head-position animation stays smooth). */
+const MDR_FORCE_FLUSH_FRAMES = 250;
+const MDR_STATUS_INTERVAL_FRAMES = 4;
+
 const TSTATES_PER_MS = 3500;
 
 /* A load counts as "in flight" while the machine has pulled a block through the
@@ -121,6 +141,88 @@ const loadCore = (baseUrl) => {
 
 const loadMemoryPage = (page, data) => {
     memoryData.set(data, core.MACHINE_MEMORY + page * 0x4000);
+};
+
+/* Writes a cartridge's bytes into drive `drive`'s slice of MICRODRIVE_DATA
+ * and tells the core about it. `data` is a full .mdr image (blocks*543
+ * bytes, optionally with one trailing write-protect byte); a shorter
+ * cartridge than the slot last held is fine, the slot is blanked first.
+ * Flushes whatever cartridge was already in the drive first, so swapping
+ * doesn't silently drop an unsaved change. */
+const insertMicrodrive = (drive, data, token) => {
+    flushMicrodrive(drive);
+    const bytes = new Uint8Array(data);
+    const blockLen = core.MICRODRIVE_BLOCK_LEN;
+    let dataLen = bytes.length;
+    let writeProtect = false;
+    if (dataLen % blockLen === 1) {
+        writeProtect = !!bytes[dataLen - 1];
+        dataLen -= 1;
+    }
+    const blocks = Math.floor(dataLen / blockLen);
+    const offset = core.MICRODRIVE_DATA + drive * core.MICRODRIVE_DRIVE_BYTES;
+    memoryData.fill(0xff, offset, offset + core.MICRODRIVE_DRIVE_BYTES);
+    memoryData.set(bytes.subarray(0, blocks * blockLen), offset);
+    core.insertMicrodrive(drive, blocks, writeProtect);
+    mdrTokens[drive] = token;
+    mdrBlocks[drive] = blocks;
+    mdrFramesSinceFlush[drive] = 0;
+};
+
+const ejectMicrodrive = (drive) => {
+    flushMicrodrive(drive);
+    core.ejectMicrodrive(drive);
+    mdrTokens[drive] = null;
+    mdrBlocks[drive] = 0;
+};
+
+/* Reads drive `drive`'s current bytes out of MICRODRIVE_DATA (if it's
+ * inserted, dirty and has somewhere to go) and posts them back as a .mdr
+ * image. Returns whether anything was sent. */
+const flushMicrodrive = (drive) => {
+    if (mdrTokens[drive] == null) return false;
+    if (!(core.getMicrodriveModified() & (1 << drive))) return false;
+    const blockLen = core.MICRODRIVE_BLOCK_LEN;
+    const dataLen = mdrBlocks[drive] * blockLen;
+    const offset = core.MICRODRIVE_DATA + drive * core.MICRODRIVE_DRIVE_BYTES;
+    const image = new Uint8Array(dataLen + 1);
+    image.set(memoryData.subarray(offset, offset + dataLen));
+    image[dataLen] = core.getMicrodriveWriteProtect(drive) ? 1 : 0;
+    core.clearMicrodriveModified(drive);
+    mdrFramesSinceFlush[drive] = 0;
+    postMessage({
+        message: 'microdriveData',
+        drive,
+        token: mdrTokens[drive],
+        data: image.buffer,
+    }, [image.buffer]);
+    return true;
+};
+
+/* Called once per frame: posts LED/head-position status on change (or at
+ * least every MDR_STATUS_INTERVAL_FRAMES, so the UI's head animation stays
+ * smooth), and flushes a dirty drive once its motor stops, or periodically
+ * anyway if it's been spinning and dirty for a long single save. */
+const serviceMicrodrives = () => {
+    if (!core.getMicrodriveMotors) return; // core predates this feature (shouldn't happen, but be defensive)
+    const motors = core.getMicrodriveMotors();
+    mdrFramesSinceStatus++;
+    if (motors !== mdrLastMotors || mdrFramesSinceStatus >= MDR_STATUS_INTERVAL_FRAMES) {
+        mdrLastMotors = motors;
+        mdrFramesSinceStatus = 0;
+        const heads = [];
+        for (let d = 0; d < 8; d++) heads.push(core.getMicrodriveHeadPos(d));
+        postMessage({ message: 'microdriveStatus', motors, heads });
+    }
+    const modifiedMask = core.getMicrodriveModified();
+    for (let d = 0; d < 8; d++) {
+        if (!(modifiedMask & (1 << d))) continue;
+        mdrFramesSinceFlush[d]++;
+        const motorOn = (motors & (1 << d)) !== 0;
+        if (!motorOn || mdrFramesSinceFlush[d] >= MDR_FORCE_FLUSH_FRAMES) {
+            flushMicrodrive(d);
+        }
+    }
 };
 
 const loadSnapshot = (snapshot) => {
@@ -261,6 +363,7 @@ const runEmulatedFrame = () => {
         status = core.resumeFrame();
     }
     serviceLoaderDetection();
+    serviceMicrodrives();
 };
 
 onmessage = (e) => {
@@ -429,6 +532,26 @@ onmessage = (e) => {
         case 'setTapeTraps':
             tapeTrapsEnabled = e.data.value;
             core.setTapeTraps(e.data.value);
+            break;
+        case 'setInterface1':
+            // Flush every dirty drive before unpaging - disconnecting never
+            // ejects a cartridge, but it's the natural moment to save it.
+            if (!e.data.enabled) {
+                for (let d = 0; d < 8; d++) flushMicrodrive(d);
+            }
+            core.setInterface1Enabled(!!e.data.enabled);
+            break;
+        case 'insertMicrodrive':
+            insertMicrodrive(e.data.drive, e.data.data, e.data.token);
+            break;
+        case 'ejectMicrodrive':
+            ejectMicrodrive(e.data.drive);
+            break;
+        case 'setMicrodriveWriteProtect':
+            core.setMicrodriveWriteProtect(e.data.drive, !!e.data.value);
+            break;
+        case 'debugIf1': // TEMP diagnostic, remove before commit
+            postMessage({ message: 'debugIf1Reply', pageIns: core.getIf1DebugPageIns(), motors: core.getMicrodriveMotors() });
             break;
         default:
             console.log('message received by worker:', e.data);

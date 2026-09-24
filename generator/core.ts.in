@@ -7,6 +7,7 @@ export const FRAME_BUFFER:usize = (&frameBuffer);
 // 10 = 48 rom, 11 = scratch area for ROM writes
 // 12 = Pentagon rom 0 (Pentagon ROM 1 is identical to 128 rom 1)
 // 13 = TRDOS rom
+// 14 = Interface 1 rom (8K, mirrored across the 16K /ROMCS window)
 #alloc machineMemory[0x40000]: u8
 export const MACHINE_MEMORY:usize = (&machineMemory);
 
@@ -15,8 +16,8 @@ export const MACHINE_MEMORY:usize = (&machineMemory);
 export const MEMORY_PAGE_READ_MAP:usize = (&memoryPageReadMap);
 export const MEMORY_PAGE_WRITE_MAP:usize = (&memoryPageWriteMap);
 
-#alloc pageIsContended[12]: u8
-pageIsContended = [0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0];
+#alloc pageIsContended[16]: u8
+pageIsContended = [0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
 
 #regpair AF A F
 export const REGISTERS:usize = (&AF);
@@ -81,6 +82,46 @@ export const LOG_ENTRIES:usize = (&logEntries);
 
 #alloc ayRegisters[14]: u8
 
+/* ZX Interface 1 / Microdrive state.
+Cartridge bytes hold only the persisted .MDR block layout (libspectrum's
+LIBSPECTRUM_MICRODRIVE_BLOCK_LEN = 543 bytes/block: 15-byte header + 15-byte
+record descriptor + 512 data bytes + 1 checksum byte), one block per sector;
+the hardware preamble/sync pattern that precedes each half on the physical
+tape is not data and is not stored - it's synthesised in the sync-state
+array below.
+Up to 254 blocks/drive (libspectrum's LIBSPECTRUM_MICRODRIVE_BLOCK_MAX) x
+8 drives (the IF1's daisy-chain limit). */
+#alloc mdrCartridges[1103376]: u8
+export const MICRODRIVE_DATA:usize = (&mdrCartridges);
+export const MICRODRIVE_DRIVE_BYTES:u32 = 137922;  // 254 * 543
+export const MICRODRIVE_BLOCK_LEN:u32 = 543;
+export const MICRODRIVE_MAX_BLOCKS:u32 = 254;
+
+// Per drive, one sync-state byte per block-half (index 0-253 for
+// the header half of block N, 256-509 for its record half), matching FUSE's
+// microdrive_t "pream" field. 0 = no preamble written yet ("gap" never goes low,
+// so the ROM's low-level primitive can't find this half at all); 0xff =
+// preamble complete (SYNC_OK); 1-12 = mid-write, counting preamble bytes.
+// 8 drives * 512
+#alloc mdrPream[4096]: u8
+
+#alloc mdrMotorOn[8]: u8
+#alloc mdrInserted[8]: u8
+#alloc mdrWriteProtect[8]: u8
+#alloc mdrModified[8]: u8
+// sectors formatted into the cartridge, 10-254
+#alloc mdrBlocks[8]: u8
+// last byte read (repeats on overrun, FUSE's mdr->last)
+#alloc mdrLast[8]: u8
+#alloc mdrGapCounter[8]: u8
+#alloc mdrSyncCounter[8]: u8
+// byte offset into this drive's cartridge slice
+#alloc mdrHeadPos[8]: u32
+// bytes moved over port 0xE7 since the last status poll
+#alloc mdrTransferred[8]: u32
+// 15 (header half) or 528 (record half)
+#alloc mdrMaxBytes[8]: u32
+
 let requestedSamplesPerFrame:u32 = 0;
 let samplesPerFrame:u32 = 0;
 let ayCyclesPerSample:f64 = 0.0;
@@ -95,6 +136,21 @@ let rom1Page:u8 = 9;
 let betadiskEnabled:bool = false;
 let betadiskROMActive:bool = false;
 let tapeTrapsEnabled:bool = true;
+
+// ZX Interface 1: if1Enabled is the user-facing "is it plugged in" switch
+// (ports/paging are inert while false); if1ROMActive tracks whether the 8K
+// shadow ROM is currently paged into 0x0000-0x3fff *right now*, which is a
+// transient state of the running program, independent of whether a
+// microdrive has a cartridge in it. Disabling if1Enabled never touches a
+// drive's inserted/formatted state or its cartridge bytes - a cartridge
+// stays "in the drive" (with its content intact) across disconnect,
+// reconnect and reset; only ejectMicrodrive() removes it.
+let if1Enabled:bool = false;
+let if1ROMActive:bool = false;
+let if1SavedROMPage:u8 = 0;
+let if1CommsClk:bool = false;
+let if1DebugPageIns:u32 = 0;  // TEMP diagnostic counter, remove before commit
+export function getIf1DebugPageIns():u32 { return if1DebugPageIns; }
 
 // Loader detection: custom (turbo, Speedlock etc.) loaders bypass the ROM routine the tape trap catches
 let tapeInserted:bool = false;
@@ -306,6 +362,22 @@ export function reset():void {
     halted = false;
     opcodePrefix = 0;
     framebufferIndex = 0;
+
+    // Interface 1: unpage the shadow ROM (the ROM page map is fresh above)
+    // and reset the drives to their FUSE-equivalent power-on state - motors
+    // off, heads at block 0, gap/sync counters primed - without touching
+    // which cartridges are inserted or what's written on them.
+    if1ROMActive = false;
+    if1SavedROMPage = 0;
+    if1CommsClk = false;
+    for (let m:i32 = 0; m < 8; m++) {
+        mdrMotorOn[m] = 0;
+        mdrHeadPos[m] = 0;
+        mdrTransferred[m] = 0;
+        mdrGapCounter[m] = 15;
+        mdrSyncCounter[m] = 15;
+        mdrMaxBytes[m] = 15;
+    }
 }
 setMachineType(48);
 
@@ -517,6 +589,149 @@ export function poke(addr:u16, val:u8):void {
     machineMemory[pageOffset | (addr & 0x3fff)] = val;
 }
 
+/* ---- ZX Interface 1 / Microdrive emulation ----
+Ported from FUSE's peripherals/if1.c (port_mdr_in/out, port_ctr_in/out,
+increment_head, microdrives_restart), which this aims to match bit-for-bit
+so the real IF1 ROM's low-level primitives (SEL-DRIVE, RD-BYTES, WR-BYTES
+etc.) work unmodified. See tech_notes.md for the block layout and the
+gap/sync/preamble model this implements. */
+
+function mdrGetByte(m:i32, pos:u32):u8 {
+    return mdrCartridges[u32(m) * MICRODRIVE_DRIVE_BYTES + pos];
+}
+function mdrSetByte(m:i32, pos:u32, val:u8):void {
+    mdrCartridges[u32(m) * MICRODRIVE_DRIVE_BYTES + pos] = val;
+}
+
+function mdrIncrementHead(m:i32):void {
+    mdrHeadPos[m] = mdrHeadPos[m] + 1;
+    if (mdrHeadPos[m] >= u32(mdrBlocks[m]) * MICRODRIVE_BLOCK_LEN) {
+        mdrHeadPos[m] = 0;
+    }
+}
+
+/* Re-aligns every drive's head to the start of a block-half (offset 0 or 15
+within its 543-byte block) and recomputes max_bytes for whichever half it's
+now sitting at. Called after every access to the control/status port (0xef),
+matching FUSE - a running motor's head is always "in position" by the next
+status poll. Harmless no-op for a drive with no cartridge (blocks=0 keeps
+head_pos pinned at 0). */
+function microdrivesRestart():void {
+    for (let m:i32 = 0; m < 8; m++) {
+        while ((mdrHeadPos[m] % MICRODRIVE_BLOCK_LEN) != 0 && (mdrHeadPos[m] % MICRODRIVE_BLOCK_LEN) != 15) {
+            mdrIncrementHead(m);
+        }
+        mdrTransferred[m] = 0;
+        if ((mdrHeadPos[m] % MICRODRIVE_BLOCK_LEN) == 0) {
+            mdrMaxBytes[m] = 15;             // header half
+        } else {
+            mdrMaxBytes[m] = 15 + 512 + 1;   // record half (528)
+        }
+    }
+}
+
+/* Port 0xe7 read: every running, cartridge-loaded drive ORs its next byte
+into the result (a real daisy-chained bus would only have one drive driving
+it, since only one motor is ever selected at a time, but ANDing/ORing every
+live drive costs nothing and matches FUSE exactly). */
+function mdrPortMdrIn():u8 {
+    let ret:u8 = 0xff;
+    for (let m:i32 = 0; m < 8; m++) {
+        if (mdrMotorOn[m] && mdrInserted[m]) {
+            if (mdrTransferred[m] < mdrMaxBytes[m]) {
+                mdrLast[m] = mdrGetByte(m, mdrHeadPos[m]);
+                mdrIncrementHead(m);
+            }
+            // reading past max_bytes repeats the last byte without moving the head
+            mdrTransferred[m] = mdrTransferred[m] + 1;
+            ret &= mdrLast[m];
+        }
+    }
+    return ret;
+}
+
+/* Port 0xe7 write: the first 12 bytes of a half are the preamble (10x 0x00
+then 2x 0xff) and are recognised but not stored (a .MDR file holds only the
+543 persisted bytes/block, not the preamble); once that pattern is seen,
+this half's sync state flips to SYNC_OK (0xff) so the status port starts
+reporting gap/sync activity for it. Bytes 12..max_bytes+11 are the real
+header/record data. */
+function mdrPortMdrOut(val:u8):void {
+    for (let m:i32 = 0; m < 8; m++) {
+        if (mdrMotorOn[m] && mdrInserted[m]) {
+            const half:i32 = (mdrMaxBytes[m] == 15) ? 0 : 256;
+            const preamIdx:i32 = (m << 9) | (half + i32(mdrHeadPos[m] / MICRODRIVE_BLOCK_LEN));
+            const transferred = mdrTransferred[m];
+            if (transferred == 0 && val == 0x00) {
+                mdrPream[preamIdx] = 1;
+            } else if (transferred > 0 && transferred < 10 && val == 0x00) {
+                mdrPream[preamIdx] = mdrPream[preamIdx] + 1;
+            } else if (transferred > 9 && transferred < 12 && val == 0xff) {
+                mdrPream[preamIdx] = mdrPream[preamIdx] + 1;
+            } else if (transferred == 12 && mdrPream[preamIdx] == 12) {
+                mdrPream[preamIdx] = 0xff;  // SYNC_OK
+            }
+            if (transferred > 11 && transferred < mdrMaxBytes[m] + 12) {
+                // write protect is enforced by the ROM reading status bit 0,
+                // not by the hardware - a protected drive still accepts bytes
+                mdrSetByte(m, mdrHeadPos[m], val);
+                mdrIncrementHead(m);
+                mdrModified[m] = 1;
+            }
+            mdrTransferred[m] = transferred + 1;
+        }
+    }
+}
+
+/* Port 0xef read: status. Bit 0 = write protect (active low, only while a
+drive's motor runs), bit 1 = sync, bit 2 = gap (both active low once a
+half's preamble has been written, alternating 15 reads high/low so the
+ROM's edge-driven primitive can find a sector boundary), bit 3 = busy
+(unused by the ROM), bit 4 = DTR (RS232, always "not ready" - nothing
+attached). */
+function mdrPortCtrIn():u8 {
+    let ret:u8 = 0xff;
+    for (let m:i32 = 0; m < 8; m++) {
+        if (mdrMotorOn[m] && mdrInserted[m]) {
+            const half:i32 = (mdrMaxBytes[m] == 15) ? 0 : 256;
+            const preamIdx:i32 = (m << 9) | (half + i32(mdrHeadPos[m] / MICRODRIVE_BLOCK_LEN));
+            if (mdrPream[preamIdx] == 0xff) {
+                if (mdrGapCounter[m] > 0) {
+                    mdrGapCounter[m] = mdrGapCounter[m] - 1;
+                } else {
+                    ret &= 0xf9;
+                    if (mdrSyncCounter[m] > 0) {
+                        mdrSyncCounter[m] = mdrSyncCounter[m] - 1;
+                    } else {
+                        mdrGapCounter[m] = 15;
+                        mdrSyncCounter[m] = 15;
+                    }
+                }
+            }
+            if (mdrWriteProtect[m]) ret &= 0xfe;
+        }
+    }
+    ret &= 0xf7;  // DTR: nothing attached on the RS232/net port
+    ret &= 0xef;  // BUSY: never asserted (unused by the ROM in practice)
+    microdrivesRestart();
+    return ret;
+}
+
+/* Port 0xef write: bit 1 (COMMS CLK) shifts a single 0 bit down the 8-drive
+daisy chain on its falling edge, bit 0 (COMMS DATA) is the bit being shifted
+in (0 = select, motor on). This is the entire motor-select mechanism; a
+drive runs iff it currently holds the shifted-in 0. */
+function mdrPortCtrOut(val:u8):void {
+    if (!(val & 0x02) && if1CommsClk) {
+        for (let m:i32 = 7; m > 0; m--) {
+            mdrMotorOn[m] = mdrMotorOn[m - 1];
+        }
+        mdrMotorOn[0] = (val & 0x01) ? 0 : 1;
+    }
+    if1CommsClk = bool(val & 0x02);
+    microdrivesRestart();
+}
+
 export function readPort(addr:u16):u8 {
     /* apply pre-read contention */
     const page:u8 = memoryPageReadMap[addr >> 14];
@@ -542,6 +757,20 @@ export function readPort(addr:u16):u8 {
             updateTapePulses(t);
             result |= tapeLevel;
             if (tapeInserted) detectLoader();
+        } else if (if1Enabled && (addr & 0x0018) != 0x0018) {
+            /* Interface 1: 0xe7 = microdrive data, 0xef = microdrive
+            control/status, 0xf7 = RS232/SinclairNet (unimplemented - reads
+            as "nothing attached", matching FUSE with no serial device). Only
+            address bits 3-4 are decoded (as FUSE does), gated to odd ports
+            here so it can't shadow the ULA's relaxed even-port decode. */
+            const if1Port:u16 = addr & 0x0018;
+            if (if1Port == 0x0000) {
+                result = mdrPortMdrIn();
+            } else if (if1Port == 0x0008) {
+                result = mdrPortCtrIn();
+            } else {
+                result = 0x7e;
+            }
         } else if ((addr & 0xc002) == 0xc000) {
             result = readAYRegister(selectedAYRegister);
         } else if (!(addr & 0x00e0)) {
@@ -605,9 +834,25 @@ export function writePort(addr:u16, val:u8):void {
             memoryPageReadMap[3] = val & 0x07;
             memoryPageWriteMap[3] = val & 0x07;
             screenPageIndex = (val & 0x08) ? 7 : 5;
-            memoryPageReadMap[0] = (val & 0x10) ? rom1Page : rom0Page;
+            // While the IF1 shadow ROM is paged in (/ROMCS), it overrides
+            // whichever ROM this selects; remember the selection for when
+            // the ROM unpages instead of clobbering the page it's using now.
+            if (if1ROMActive) {
+                if1SavedROMPage = (val & 0x10) ? rom1Page : rom0Page;
+            } else {
+                memoryPageReadMap[0] = (val & 0x10) ? rom1Page : rom0Page;
+            }
             pagingLocked = bool(val & 0x20);
         }
+    } else if (if1Enabled && (addr & 0x0018) != 0x0018) {
+        /* see the matching decode in readPort */
+        const if1Port:u16 = addr & 0x0018;
+        if (if1Port == 0x0000) {
+            mdrPortMdrOut(val);
+        } else if (if1Port == 0x0008) {
+            mdrPortCtrOut(val);
+        }
+        // port 0xf7: accepted and ignored, nothing attached
     } else if ((addr & 0xc002) == 0xc000) {
         selectedAYRegister = val;
     } else if ((addr & 0xc002) == 0x8000) {
@@ -803,6 +1048,119 @@ export function setKempstonState(state:u8):void {
     kempstonState = state;
 }
 
+export function setInterface1Enabled(enabled:bool):void {
+    if1Enabled = enabled;
+    if (!enabled) {
+        // Unpage the shadow ROM if it happened to be active, and stop every
+        // motor - but leave what's inserted and its content alone, so
+        // reconnecting finds every drive exactly as it was left.
+        if (if1ROMActive) {
+            if1ROMActive = false;
+            memoryPageReadMap[0] = if1SavedROMPage;
+        }
+        for (let m:i32 = 0; m < 8; m++) {
+            mdrMotorOn[m] = 0;
+        }
+        if1CommsClk = false;
+    }
+}
+
+function mdrIsBlank(m:i32, byteOffset:u32, len:u32):bool {
+    for (let i:u32 = 0; i < len; i++) {
+        if (mdrGetByte(m, byteOffset + i) != 0xff) return false;
+    }
+    return true;
+}
+
+/* Called once the worker has already copied a cartridge's bytes into
+MICRODRIVE_DATA at drive*MICRODRIVE_DRIVE_BYTES. Derives each block-half's
+formatted/blank state by scanning its bytes: a half that's all 0xff (as a
+freshly-created blank cartridge, or an .mdr file's padding, is) reads as
+"preamble never written" so the ROM's SEL-DRIVE can't find it and reports
+"Microdrive not present" until FORMAT runs - matching a real unformatted
+cartridge. Any other content is treated as already formatted, regardless of
+whether its checksums actually validate (the real hardware's sync detection
+knows nothing about header/record content either; the ROM validates that
+itself once it has read the bytes over the data port). */
+export function insertMicrodrive(drive:i32, blocks:u32, writeProtect:bool):void {
+    if (drive < 0 || drive > 7) return;
+    if (blocks > MICRODRIVE_MAX_BLOCKS) blocks = MICRODRIVE_MAX_BLOCKS;
+    mdrBlocks[drive] = u8(blocks);
+    mdrWriteProtect[drive] = writeProtect ? 1 : 0;
+    mdrModified[drive] = 0;
+    mdrHeadPos[drive] = 0;
+    mdrTransferred[drive] = 0;
+    mdrGapCounter[drive] = 15;
+    mdrSyncCounter[drive] = 15;
+    mdrMaxBytes[drive] = 15;
+    mdrLast[drive] = 0xff;
+    mdrMotorOn[drive] = 0;
+
+    const base:u32 = u32(drive) << 9;
+    for (let b:u32 = 0; b < MICRODRIVE_MAX_BLOCKS; b++) {
+        let headerFormatted:bool = false;
+        let recordFormatted:bool = false;
+        if (b < blocks) {
+            const blockStart:u32 = b * MICRODRIVE_BLOCK_LEN;
+            headerFormatted = !mdrIsBlank(drive, blockStart, 15);
+            recordFormatted = !mdrIsBlank(drive, blockStart + 15, 513);
+        }
+        mdrPream[base + b] = headerFormatted ? 0xff : 0;
+        mdrPream[base + 256 + b] = recordFormatted ? 0xff : 0;
+    }
+    mdrInserted[drive] = 1;
+}
+
+export function ejectMicrodrive(drive:i32):void {
+    if (drive < 0 || drive > 7) return;
+    mdrInserted[drive] = 0;
+    mdrModified[drive] = 0;
+    mdrMotorOn[drive] = 0;
+    mdrHeadPos[drive] = 0;
+    mdrBlocks[drive] = 0;
+}
+
+export function setMicrodriveWriteProtect(drive:i32, value:bool):void {
+    if (drive < 0 || drive > 7) return;
+    mdrWriteProtect[drive] = value ? 1 : 0;
+}
+
+export function getMicrodriveWriteProtect(drive:i32):bool {
+    if (drive < 0 || drive > 7) return false;
+    return bool(mdrWriteProtect[drive]);
+}
+
+// Bitmask, bit N = drive N. Polled by the worker each frame to drive the
+// dock's LEDs and to know when a drive has gone idle and is safe to flush.
+export function getMicrodriveMotors():u8 {
+    let mask:i32 = 0;
+    for (let m:i32 = 0; m < 8; m++) {
+        if (mdrMotorOn[m]) mask = mask | (1 << m);
+    }
+    return u8(mask);
+}
+
+// Bitmask, bit N = drive N has been written to since its last flush/insert.
+export function getMicrodriveModified():u8 {
+    let mask:i32 = 0;
+    for (let m:i32 = 0; m < 8; m++) {
+        if (mdrModified[m]) mask = mask | (1 << m);
+    }
+    return u8(mask);
+}
+
+export function clearMicrodriveModified(drive:i32):void {
+    if (drive < 0 || drive > 7) return;
+    mdrModified[drive] = 0;
+}
+
+// Byte offset of the head within its drive's cartridge; head/blockLen gives
+// the sector index for the UI's tape-loop head marker.
+export function getMicrodriveHeadPos(drive:i32):u32 {
+    if (drive < 0 || drive > 7) return 0;
+    return mdrHeadPos[drive];
+}
+
 function pollKeyboard(addr:u8):u8 {
     let result:u8 = 0xbf;
     for (let row:u8 = 0; row < 8; row++) {
@@ -946,11 +1304,30 @@ export function runUntil(maxT:u32):i16 {
             }
         }
 
+        // Interface 1: page the shadow ROM in on an M1 fetch from its two
+        // entry points (0x0008 = RST 8 error/hook, 0x1708 = inside CLOSE#),
+        // exactly as FUSE's if1p check does. Skipped while TR-DOS is paged
+        // in (page 13) so the two shadow ROMs never fight over page 0.
+        if (if1Enabled && !if1ROMActive && (pc == 0x0008 || pc == 0x1708) && memoryPageReadMap[0] != 13) {
+            if1ROMActive = true;
+            if1SavedROMPage = memoryPageReadMap[0];
+            memoryPageReadMap[0] = 14;
+            if1DebugPageIns = if1DebugPageIns + 1;
+        }
+
         interruptible = true; // unless overridden by opcode
         if (opcodePrefix == 0) {
             contendRead(pc);
             t += 4;
             let op:u8 = readMemInternal(pc++);
+
+            // Interface 1: the shadow ROM's L0700 is a bare RET; fetching it
+            // pages the ROM back out again (FUSE's if1u check), so this must
+            // run right after the fetch, before the RET itself executes.
+            if (if1ROMActive && pc == 0x0701) {
+                if1ROMActive = false;
+                memoryPageReadMap[0] = if1SavedROMPage;
+            }
 
             const r = R;
             R = (r & 0x80) | ((r + 1) & 0x7f);

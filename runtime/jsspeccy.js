@@ -12,6 +12,8 @@ import { AudioHandler } from './audio.js';
 import { openPokesDialog } from './pokes.js';
 import { openPlayZXDialog } from './playzx.js';
 import { isPlayZXAvailable } from './playzx-session.js';
+import { validateMDRFile } from './mdr.js';
+import { createMicrodriveDock } from './microdrive-ui.js';
 
 import openIcon from './icons/open.svg';
 import resetIcon from './icons/reset.svg';
@@ -23,6 +25,7 @@ import tapePlayIcon from './icons/tape_play.svg';
 import tapePauseIcon from './icons/tape_pause.svg';
 import ejectIcon from './icons/eject.svg';
 import keyboardIcon from './icons/keyboard.svg';
+import microdriveIcon from './icons/microdrive.svg';
 
 import { createKeyboardOverlay } from './keyboard-overlay.js';
 
@@ -76,6 +79,19 @@ class Emulator extends EventEmitter {
         this.activePokes = new Map();
         this.nextPokesID = 0;
         this.pokesPromiseResolutions = {};
+
+        /* Interface 1 / Microdrive support. interface1Enabled mirrors whether
+         * the shadow ROM is plugged in (independent of what's inserted -
+         * disconnecting never ejects a cartridge). microdriveMotors is a
+         * bitmask (bit N = drive N's LED); microdriveHeads is a head-position
+         * byte offset per drive, for the tape-loop animation. microdriveTokens
+         * tracks which cartridge (an opaque id from whatever's storing them)
+         * is in each of the 8 drives, so a 'microdriveData' flush can be
+         * matched back to the right one. */
+        this.interface1Enabled = false;
+        this.microdriveMotors = 0;
+        this.microdriveHeads = [0, 0, 0, 0, 0, 0, 0, 0];
+        this.microdriveTokens = [null, null, null, null, null, null, null, null];
 
         this.onReadyHandlers = [];
 
@@ -178,6 +194,18 @@ class Emulator extends EventEmitter {
                     this.tapeIsPlaying = false;
                     this.emit('tapeEjected');
                     break;
+                case 'microdriveStatus':
+                    this.microdriveMotors = e.data.motors;
+                    this.microdriveHeads = e.data.heads;
+                    this.emit('microdriveStatus');
+                    break;
+                case 'microdriveData':
+                    // A drive went idle (or hit the periodic force-flush) with
+                    // unsaved changes; e.data.data is a full .mdr image
+                    // (ArrayBuffer). Whoever's tracking cartridges listens for
+                    // this to persist it against e.data.token.
+                    this.emit('microdriveData', e.data.drive, e.data.token, e.data.data);
+                    break;
                 default:
                     console.log('message received by host:', e.data);
             }
@@ -270,6 +298,24 @@ class Emulator extends EventEmitter {
         await this.loadRom('roms/48.rom', 10);
         await this.loadRom('roms/pentagon-0.rom', 12);
         await this.loadRom('roms/trdos.rom', 13);
+        await this.loadInterface1Rom();
+    }
+
+    /* The Interface 1 ROM is 8K, but every page in the core's memory is a
+     * full 16K /ROMCS window, mirrored across both halves (as the real
+     * hardware maps it) - so it's loaded as one 16K buffer with the same 8K
+     * copied to both 0x0000 and 0x2000, rather than through loadRom(). */
+    async loadInterface1Rom() {
+        const response = await fetch(new URL('roms/if1-2.rom', scriptUrl));
+        const rom = new Uint8Array(await response.arrayBuffer());
+        const mirrored = new Uint8Array(0x4000);
+        mirrored.set(rom, 0);
+        mirrored.set(rom, 0x2000);
+        this.worker.postMessage({
+            message: 'loadMemory',
+            data: mirrored,
+            page: 14,
+        });
     }
 
 
@@ -394,6 +440,23 @@ class Emulator extends EventEmitter {
                     return this.openTZXFile(arrayBuffer);
                 }
             };
+        } else if (cleanName.endsWith('.mdr')) {
+            return async arrayBuffer => {
+                if (!validateMDRFile(arrayBuffer)) {
+                    alert('Invalid Microdrive cartridge (.mdr) file');
+                    return { mediaType: 'microdrive' };
+                }
+                if (this.listenerCount('microdriveImageOpened') > 0) {
+                    // Something's tracking cartridges (the cartridge box UI) -
+                    // hand it off rather than guessing where it should go.
+                    this.emit('microdriveImageOpened', { name: filename, data: arrayBuffer });
+                } else {
+                    // No UI listening: just connect and insert it into drive 1.
+                    this.setInterface1(true);
+                    this.insertMicrodrive(0, arrayBuffer, null);
+                }
+                return { mediaType: 'microdrive' };
+            };
         } else if (cleanName.endsWith('.zip')) {
             return async arrayBuffer => {
                 const zip = await JSZip.loadAsync(arrayBuffer);
@@ -448,7 +511,10 @@ class Emulator extends EventEmitter {
         if (opener) {
             const buf = await file.arrayBuffer();
             return opener(buf).then((res) => {
-                this.setLoadedGame(file.name);
+                // A microdrive cartridge tracks its own label, not the
+                // loaded-game name (it's not "the game", and inserting one
+                // shouldn't invalidate pokes applied to what's running).
+                if (res.mediaType !== 'microdrive') this.setLoadedGame(file.name);
                 return res;
             }).catch(err => {alert(err);});
         } else {
@@ -465,7 +531,7 @@ class Emulator extends EventEmitter {
             return opener(buf).then((res) => {
                 // Internal loads (e.g. tape-loader snapshots) must not
                 // masquerade as the loaded game.
-                if (opts.trackName !== false) {
+                if (opts.trackName !== false && res.mediaType !== 'microdrive') {
                     const basename = decodeURIComponent(
                         url.toString().split('/').pop().split('?')[0]);
                     this.setLoadedGame(basename);
@@ -540,6 +606,53 @@ class Emulator extends EventEmitter {
         this.worker.postMessage({ message: 'keyUp', row, mask });
     }
 
+    /* Plugs in (or unplugs) the Interface 1. This is purely the "is it
+     * connected" switch - it never ejects a cartridge, so reconnecting finds
+     * every drive exactly as it was left. */
+    setInterface1(enabled) {
+        this.interface1Enabled = enabled;
+        this.worker.postMessage({ message: 'setInterface1', enabled });
+        if (!enabled) {
+            this.microdriveMotors = 0;
+            this.emit('microdriveStatus');
+        }
+        this.emit('setInterface1', enabled);
+    }
+    /* Inserts a cartridge (a full .mdr image, as an ArrayBuffer) into drive
+     * 0-7. `token` is an opaque id the caller can use to recognise this
+     * cartridge again in a later 'microdriveData' event (e.g. a storage
+     * record id) - pass null if that doesn't matter. Whatever was already in
+     * the drive is flushed (if it had unsaved changes) before being replaced. */
+    insertMicrodrive(drive, data, token) {
+        this.microdriveTokens[drive] = token ?? null;
+        // Accept an ArrayBuffer or a typed array; either way, transfer a
+        // fresh standalone copy so the caller keeps whatever it passed in.
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+        const buf = bytes.slice(0).buffer;
+        this.worker.postMessage({ message: 'insertMicrodrive', drive, data: buf, token }, [buf]);
+        this.emit('insertMicrodrive', drive, token);
+    }
+    ejectMicrodrive(drive) {
+        this.microdriveTokens[drive] = null;
+        this.worker.postMessage({ message: 'ejectMicrodrive', drive });
+        this.emit('ejectMicrodrive', drive);
+    }
+    setMicrodriveWriteProtect(drive, value) {
+        this.worker.postMessage({ message: 'setMicrodriveWriteProtect', drive, value });
+    }
+
+    /* Calls back once loadRoms() has resolved and any openUrl/autoStart from
+     * the constructor's opts has run - immediately if that's already
+     * happened. The public JSSpeccy(...) return value's onReady delegates
+     * to this. */
+    onReady(callback) {
+        if (this.isReady) {
+            callback();
+        } else {
+            this.onReadyHandlers.push(callback);
+        }
+    }
+
     exit() {
         this.pause();
         this.worker.terminate();
@@ -571,6 +684,7 @@ window.JSSpeccy = (container, opts) => {
         joystickType: opts.joystickType || 'kempston',
         joystickDevice: opts.joystickDevice || null,
     });
+    window.__mdrDebug = emu; // TEMP debug hook, remove before commit
     const ui = new UIController(container, emu, {
         zoom: opts.zoom || 1,
         sandbox: opts.sandbox,
@@ -888,6 +1002,31 @@ window.JSSpeccy = (container, opts) => {
             }
         )
 
+        /* Microdrive dock: two drives standing to the left of the Spectrum,
+         * joined to it by a ribbon. Showing it plugs in the Interface 1; hiding it
+         * unplugs it again (a cartridge stays in its drive either way - see
+         * runtime/microdrive-ui.js). Toggled from the toolbar between the
+         * keyboard and fullscreen buttons; hidden (but still connected) in
+         * fullscreen, same as the keyboard. */
+        if (!opts.sandbox) {
+            const microdriveDock = createMicrodriveDock(ui, emu);
+            const microdriveButton = ui.toolbar.addButton(
+                microdriveIcon,
+                {label: 'Show Microdrives', align: 'right'},
+                () => {
+                    microdriveDock.toggle();
+                    emu.focus();
+                }
+            );
+            emu.on('setInterface1', (enabled) => {
+                microdriveButton.setLabel(enabled ? 'Hide Microdrives' : 'Show Microdrives');
+            });
+            ui.on('setZoom', (factor) => {
+                microdriveDock.setFullscreen(factor === 'fullscreen');
+            });
+            fileMenu.addItem('Microdrive cartridges…', () => microdriveDock.openBox());
+        }
+
         /* On-screen clickable ZX Spectrum keyboard, shown under the emulation
          * area (as wide as the display, scaling with it). Toggled from the
          * toolbar next to the fullscreen button; hidden in fullscreen. */
@@ -1046,13 +1185,7 @@ window.JSSpeccy = (container, opts) => {
         loadSnapshotFromStruct: (snapshot) => {
             emu.loadSnapshot(snapshot);
         },
-        onReady: (callback) => {
-            if (emu.isReady) {
-                callback();
-            } else {
-                emu.onReadyHandlers.push(callback);
-            }
-        },
+        onReady: (callback) => { emu.onReady(callback); },
         exit: () => {exit();},
     };
 };
