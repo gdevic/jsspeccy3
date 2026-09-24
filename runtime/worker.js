@@ -14,6 +14,10 @@ let tapeIsPlaying = false;
 let tapePositionTstates = 0;      // tape consumed since load/seek, drives the cassette counter
 let framesSincePositionPost = 0;  // throttle position updates to the UI
 let framesSinceTapeTrap = 0;      // frames since the machine last pulled a block through the trap
+let tapeAutoPlayed = false;       // the tape was started by loader detection, not by the user
+let autoPlaySuppressed = false;   // the user stopped the tape, so detection must not restart it
+let loaderIdleFrames = 0;         // frames in which the machine read the port but no loader sampled it
+let tapeTrapsEnabled = true;
 
 const TSTATES_PER_MS = 3500;
 
@@ -23,6 +27,59 @@ const TSTATES_PER_MS = 3500;
  * nothing to read the tape, so the UI boots the tape loader to start a fresh
  * LOAD from where the user jumped to. */
 const TRAP_IDLE_FRAMES = 50;
+
+/* With instant loading on, a custom loader that the trap cannot catch is run faster
+ * than real time instead: each frame request runs extra frames for up to this many
+ * milliseconds while the detected loader has the tape playing. */
+const FAST_LOAD_MS = 12;
+
+/* An auto-started tape is stopped once this many frames (~0.5s) have read the
+ * port without a loader sampling it in an edge-timing loop, so a multi-load game
+ * waiting between levels finds the tape where the last load left it. A frame is
+ * active if it saw at least LOADER_ACTIVE_READS loader-like reads, which a game
+ * polling the keyboard does not reach. A frame with no reads at all counts
+ * neither way: loaders sit in long delays without touching the port (the ROM
+ * and Speedlock both wait about a second into the pilot tone), and a stop only
+ * takes effect at a frame boundary, so stopping there would cut the tone short
+ * or corrupt a block. */
+const LOADER_IDLE_FRAMES = 25;
+const LOADER_ACTIVE_READS = 10;
+
+const setTapePlaying = (playing, auto) => {
+    if (playing == tapeIsPlaying) return;
+    tapeIsPlaying = playing;
+    tapeAutoPlayed = playing && !!auto;
+    loaderIdleFrames = 0;
+    if (core) core.setTapeState(!!tape, playing);
+    postMessage({
+        message: playing ? 'playingTape' : 'stoppedTape',
+    });
+};
+
+/* A tape freshly inserted or ejected starts out stopped. */
+const resetTapeState = () => {
+    if (tapeIsPlaying) postMessage({ message: 'stoppedTape' });
+    tapeIsPlaying = false;
+    tapeAutoPlayed = false;
+    autoPlaySuppressed = false;
+    if (core) core.setTapeState(!!tape, false);
+};
+
+/* Start the tape when the core has seen a loader start sampling EAR, and stop it
+ * once the loader has gone idle. Only a tape that detection started is stopped
+ * by it, so a tape the user set playing keeps running. */
+const serviceLoaderDetection = () => {
+    const startRequested = core.takeLoaderStartRequest();
+    const active = core.takeLoaderActivity() >= LOADER_ACTIVE_READS;
+    const portRead = core.takeEarReads() > 0;
+    if (startRequested && tape && !tapeIsPlaying && !autoPlaySuppressed && !tape.pulseGenerator.isAtEnd()) {
+        setTapePlaying(true, true);
+    } else if (tapeIsPlaying && tapeAutoPlayed) {
+        if (active) loaderIdleFrames = 0;
+        else if (portRead) loaderIdleFrames++;
+        if (loaderIdleFrames >= LOADER_IDLE_FRAMES) setTapePlaying(false);
+    }
+};
 
 const postTapeInfo = () => {
     if (!tape) return;
@@ -138,10 +195,22 @@ const trapTapeLoad = () => {
 
             // if loading is going right, we should still have a checksum byte left to read
             success &= (offset < block.length);
+            let lastByte = loadedBytes ? block[offset - 1] : 0;
             if (success) {
                 const expectedChecksum = block[offset];
-                success = (checksum === expectedChecksum);
+                lastByte = expectedChecksum;
+                checksum ^= expectedChecksum;
+                success = (checksum === 0);
             }
+
+            /* Leave the registers as LD-BYTES itself does on return: IX past the
+             * last byte stored, DE counting the bytes still wanted, H holding the
+             * running parity (0 on success) and L the last byte read. Loaders run
+             * code from the block they just loaded that picks up from IX, e.g.
+             * Tomahawk's BASIC decrypts itself relative to it. */
+            registerPairs[8] = addr;  /* IX */
+            registerPairs[2] = (requestedLength - loadedBytes) & 0xffff;  /* DE */
+            registerPairs[3] = ((checksum & 0xff) << 8) | lastByte;  /* HL */
         } else {
             // VERIFY. TODO: actually verify.
             success = true;
@@ -158,6 +227,42 @@ const trapTapeLoad = () => {
     core.setPC(0x05e2);  /* address at which to exit the tape trap */
 }
 
+const runEmulatedFrame = () => {
+    if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
+
+    if (tape && tapeIsPlaying) {
+        const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
+        const tapePulseWriteIndex = core.getTapePulseWriteIndex();
+        const [newTapePulseWriteIndex, tstatesGenerated, tapeFinished] = tape.pulseGenerator.emitPulses(
+            tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount
+        );
+        core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
+        // Advance the cassette counter by the tape actually played this frame.
+        tapePositionTstates += tstatesGenerated;
+        framesSincePositionPost++;
+        if (tapeFinished || framesSincePositionPost >= 5) postTapePosition();
+        if (tapeFinished) setTapePlaying(false);
+    }
+
+    let status = core.runFrame();
+    while (status) {
+        switch (status) {
+            case 1:
+                stopped = true;
+                throw("Unrecognised opcode!");
+            case 2:
+                trapTapeLoad();
+                break;
+            default:
+                stopped = true;
+                throw("runFrame returned unexpected result: " + status);
+        }
+
+        status = core.resumeFrame();
+    }
+    serviceLoaderDetection();
+};
+
 onmessage = (e) => {
     switch (e.data.message) {
         case 'loadCore':
@@ -165,7 +270,6 @@ onmessage = (e) => {
             break;
         case 'runFrame':
             if (stopped) return;
-            if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
             const frameBuffer = e.data.frameBuffer;
             const frameData = new Uint8Array(frameBuffer);
 
@@ -181,40 +285,11 @@ onmessage = (e) => {
                 core.setAudioSamplesPerFrame(0);
             }
 
-            if (tape && tapeIsPlaying) {
-                const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
-                const tapePulseWriteIndex = core.getTapePulseWriteIndex();
-                const [newTapePulseWriteIndex, tstatesGenerated, tapeFinished] = tape.pulseGenerator.emitPulses(
-                    tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount
-                );
-                core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
-                // Advance the cassette counter by the tape actually played this frame.
-                tapePositionTstates += tstatesGenerated;
-                framesSincePositionPost++;
-                if (tapeFinished || framesSincePositionPost >= 5) postTapePosition();
-                if (tapeFinished) {
-                    tapeIsPlaying = false;
-                    postMessage({
-                        message: 'stoppedTape',
-                    });
-                }
-            }
-
-            let status = core.runFrame();
-            while (status) {
-                switch (status) {
-                    case 1:
-                        stopped = true;
-                        throw("Unrecognised opcode!");
-                    case 2:
-                        trapTapeLoad();
-                        break;
-                    default:
-                        stopped = true;
-                        throw("runFrame returned unexpected result: " + status);
-                }
-
-                status = core.resumeFrame();
+            runEmulatedFrame();
+            if (tapeTrapsEnabled) {
+                const fastLoadStart = performance.now();
+                while (tapeIsPlaying && tapeAutoPlayed && (performance.now() - fastLoadStart) < FAST_LOAD_MS)
+                    runEmulatedFrame();
             }
 
             frameData.set(workerFrameData);
@@ -292,7 +367,7 @@ onmessage = (e) => {
             break;
         case 'openTAPFile':
             tape = new TAPFile(e.data.data);
-            tapeIsPlaying = false;
+            resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
             postMessage({
@@ -304,7 +379,7 @@ onmessage = (e) => {
             break;
         case 'openTZXFile':
             tape = new TZXFile(e.data.data);
-            tapeIsPlaying = false;
+            resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
             postMessage({
@@ -317,6 +392,7 @@ onmessage = (e) => {
         case 'seekTape':
             if (tape) {
                 tape.seekToBlock(e.data.index);
+                autoPlaySuppressed = false;
                 tapePositionTstates = (tape.blockStartMs[e.data.index] || 0) * TSTATES_PER_MS;
                 if (core) core.resetTapePulseBuffer();
                 postTapePosition();
@@ -325,13 +401,13 @@ onmessage = (e) => {
                  * it knows whether one needs starting. */
                 postMessage({
                     message: 'tapeSeeked',
-                    loadInFlight: framesSinceTapeTrap < TRAP_IDLE_FRAMES,
+                    loadInFlight: framesSinceTapeTrap < TRAP_IDLE_FRAMES || tapeIsPlaying,
                 });
             }
             break;
         case 'ejectTape':
             tape = null;
-            tapeIsPlaying = false;
+            resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
             if (core) core.resetTapePulseBuffer();
@@ -339,22 +415,19 @@ onmessage = (e) => {
             break;
 
         case 'playTape':
-            if (tape && !tapeIsPlaying) {
-                tapeIsPlaying = true;
-                postMessage({
-                    message: 'playingTape',
-                });
+            if (tape) {
+                autoPlaySuppressed = false;
+                setTapePlaying(true);
             }
             break;
         case 'stopTape':
-            if (tape && tapeIsPlaying) {
-                tapeIsPlaying = false;
-                postMessage({
-                    message: 'stoppedTape',
-                });
+            if (tape) {
+                autoPlaySuppressed = true;
+                setTapePlaying(false);
             }
             break;
         case 'setTapeTraps':
+            tapeTrapsEnabled = e.data.value;
             core.setTapeTraps(e.data.value);
             break;
         default:

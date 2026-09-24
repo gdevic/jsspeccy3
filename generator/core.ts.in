@@ -96,6 +96,16 @@ let betadiskEnabled:bool = false;
 let betadiskROMActive:bool = false;
 let tapeTrapsEnabled:bool = true;
 
+// Loader detection: custom (turbo, Speedlock etc.) loaders bypass the ROM routine the tape trap catches
+let tapeInserted:bool = false;
+let tapePlaying:bool = false;
+let loaderReadCount:u32 = 0;  // successive loader-like reads while the tape is stopped
+let loaderActivity:u32 = 0;  // loader-like reads since the worker last asked
+let earReads:u32 = 0;  // all EAR reads since the worker last asked
+let lastEarReadT:i32 = -100000;
+let lastEarReadB:u8 = 0;
+let loaderStartRequest:bool = false;
+
 let i:u8 = 0;
 while (true) {
     sz53Table[i] = u8(i) & ( FLAG_3 | FLAG_5 | FLAG_S );
@@ -357,6 +367,46 @@ export function getHalted():bool {
 export function setTapeTraps(val:bool):void {
     tapeTrapsEnabled = val;
 }
+export function setTapeState(inserted:bool, playing:bool):void {
+    tapeInserted = inserted;
+    tapePlaying = playing;
+    loaderReadCount = 0;
+    loaderStartRequest = false;
+}
+export function takeLoaderStartRequest():bool {
+    const request = loaderStartRequest;
+    loaderStartRequest = false;
+    return request;
+}
+export function takeLoaderActivity():u32 {
+    const activity = loaderActivity;
+    loaderActivity = 0;
+    return activity;
+}
+export function takeEarReads():u32 {
+    const reads = earReads;
+    earReads = 0;
+    return reads;
+}
+
+function detectLoader():void {
+    const tDiff:i32 = i32(t) - lastEarReadT;
+    const bDiff:u8 = B - lastEarReadB;
+    lastEarReadT = i32(t);
+    lastEarReadB = B;
+    earReads++;
+
+    const counting:bool = bDiff == 1 || bDiff == 0xff;
+    if (tDiff <= 1000 && (counting || bDiff == 0)) loaderActivity++;
+    if (counting && tDiff <= 500) {
+        if (!tapePlaying) {
+            loaderReadCount++;
+            if (loaderReadCount >= 10) loaderStartRequest = true;
+        }
+    } else {
+        loaderReadCount = 0;
+    }
+}
 
 function log(time:u32, type:u16, addr:u16, val:u8):void {
     logEntries[logPtr++] = u16(time);
@@ -491,6 +541,7 @@ export function readPort(addr:u16):u8 {
             result = pollKeyboard(u8(addr >> 8));
             updateTapePulses(t);
             result |= tapeLevel;
+            if (tapeInserted) detectLoader();
         } else if ((addr & 0xc002) == 0xc000) {
             result = readAYRegister(selectedAYRegister);
         } else if (!(addr & 0x00e0)) {
@@ -833,6 +884,7 @@ export function resumeFrame():i16 {
 
     t -= frameCycleCount;
     lastAudioT -= frameCycleCount;
+    if (lastEarReadT > -100000) lastEarReadT -= i32(frameCycleCount);
     audioBufferPointer -= samplesPerFrame;
 
     return 0;

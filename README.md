@@ -10,7 +10,8 @@ A ZX Spectrum emulator for the browser
 * AY and beeper audio
 * Play using a joystick / gamepad connected to your PC (Kempston, Cursor and Sinclair)
 * Loads SZX, Z80 and SNA snapshots
-* Loads TZX and TAP tape images (via traps only)
+* Loads TZX and TAP tape images, instantly through the ROM loader or in real time
+* Detects custom tape loaders (Speedlock and other turbo loaders) and plays the tape for them automatically, fast-forwarded when instant loading is on
 * Loads any of the above files from inside a ZIP file
 * Opens games straight from the PlayZX online catalog (~10,800 titles)
 * 100% / 200% / 300% and fullscreen display modes
@@ -67,7 +68,7 @@ The available configuration options are:
 * `openUrl`: specifies a URL, or an array of URLs, to a file (or files) to load on startup, in any supported snapshot, tape or archive format. Standard browser security restrictions apply for loading remote files: if the URL being loaded is not on the same domain as the calling page, it must serve [CORS HTTP headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) to be loadable.
 * `zoom`: specifies the size of the emulator window; 1 for 100% size (one Spectrum pixel per screen pixel), 2 for 200% size and so on.
 * `sandbox`: if true, all UI options for opening a new file are disabled - useful if you're showcasing a specific bit of Spectrum software on your page.
-* `tapeTrapsEnabled`: if true (the default), the emulator will recognise when the tape loading routine in the ROM is called, and load tape files instantly instead.
+* `tapeTrapsEnabled`: if true (the default), the emulator will recognise when the tape loading routine in the ROM is called, and load tape files instantly instead. Custom loaders that bypass the ROM routine cannot be trapped; the emulator recognises them sampling the tape, plays the tape for them, and runs the machine faster than real time until the loader stops. With this option off, a detected loader still starts the tape, but loading runs at normal speed.
 * `keyboardEnabled`: True by default; if false, the emulator will not respond to keypresses.
 * `uiEnabled`: True by default; if false, the menu bar and toolbar will not be shown.
 * `keyboardMap`: if this is set to the value `"recreated"`, the emulator will accept keypresses in the encoded format emitted by the [Recreated ZX Spectrum](https://recreatedzxspectrum.com/) keyboard in "game mode". If it is unset or set to any other value, the emulator will accept keypresses as normal.

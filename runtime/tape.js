@@ -183,6 +183,10 @@ class PulseGenerator {
         this.level = 0x0000;
         this.tapeIsFinished = false;
     }
+    /* True once every pulse up to the end of the tape has been emitted. */
+    isAtEnd() {
+        return this.tapeIsFinished && this.segments.length === 0 && this.pendingCycles === 0;
+    }
     emitPulses(buffer, startIndex, cycleCount) {
         let cyclesEmitted = 0;
         let index = startIndex;
