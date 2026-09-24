@@ -640,6 +640,11 @@ class Emulator extends EventEmitter {
     setMicrodriveWriteProtect(drive, value) {
         this.worker.postMessage({ message: 'setMicrodriveWriteProtect', drive, value });
     }
+    /* Renames the cartridge in drive 0-7 in place, files untouched; the
+     * renamed image comes back in a 'microdriveData' event. */
+    renameMicrodrive(drive, name) {
+        this.worker.postMessage({ message: 'renameMicrodrive', drive, name });
+    }
 
     /* Calls back once loadRoms() has resolved and any openUrl/autoStart from
      * the constructor's opts has run - immediately if that's already

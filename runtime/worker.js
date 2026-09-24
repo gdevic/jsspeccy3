@@ -1,5 +1,6 @@
 import { FRAME_BUFFER_SIZE } from './constants.js';
 import { TAPFile, TZXFile } from './tape.js';
+import { setCartridgeName } from './mdr.js';
 
 let core = null;
 let memory = null;
@@ -177,11 +178,13 @@ const ejectMicrodrive = (drive) => {
 };
 
 /* Reads drive `drive`'s current bytes out of MICRODRIVE_DATA (if it's
- * inserted, dirty and has somewhere to go) and posts them back as a .mdr
+ * inserted, dirty and has somewhere to go, or unconditionally for any
+ * inserted cartridge when `force` is set) and posts them back as a .mdr
  * image. Returns whether anything was sent. */
-const flushMicrodrive = (drive) => {
-    if (mdrTokens[drive] == null) return false;
-    if (!(core.getMicrodriveModified() & (1 << drive))) return false;
+const flushMicrodrive = (drive, force) => {
+    if (!mdrBlocks[drive]) return false;
+    if (!force && mdrTokens[drive] == null) return false;
+    if (!force && !(core.getMicrodriveModified() & (1 << drive))) return false;
     const blockLen = core.MICRODRIVE_BLOCK_LEN;
     const dataLen = mdrBlocks[drive] * blockLen;
     const offset = core.MICRODRIVE_DATA + drive * core.MICRODRIVE_DRIVE_BYTES;
@@ -550,8 +553,14 @@ onmessage = (e) => {
         case 'setMicrodriveWriteProtect':
             core.setMicrodriveWriteProtect(e.data.drive, !!e.data.value);
             break;
-        case 'debugIf1': // TEMP diagnostic, remove before commit
-            postMessage({ message: 'debugIf1Reply', pageIns: core.getIf1DebugPageIns(), motors: core.getMicrodriveMotors() });
+        case 'renameMicrodrive':
+            // Renames the live copy, so nothing written since the last flush
+            // is lost, then posts the whole image back straight away.
+            if (mdrBlocks[e.data.drive]) {
+                const offset = core.MICRODRIVE_DATA + e.data.drive * core.MICRODRIVE_DRIVE_BYTES;
+                setCartridgeName(memoryData.subarray(offset, offset + mdrBlocks[e.data.drive] * core.MICRODRIVE_BLOCK_LEN), e.data.name);
+                flushMicrodrive(e.data.drive, true);
+            }
             break;
         default:
             console.log('message received by worker:', e.data);

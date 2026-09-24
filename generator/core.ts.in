@@ -149,8 +149,6 @@ let if1Enabled:bool = false;
 let if1ROMActive:bool = false;
 let if1SavedROMPage:u8 = 0;
 let if1CommsClk:bool = false;
-let if1DebugPageIns:u32 = 0;  // TEMP diagnostic counter, remove before commit
-export function getIf1DebugPageIns():u32 { return if1DebugPageIns; }
 
 // Loader detection: custom (turbo, Speedlock etc.) loaders bypass the ROM routine the tape trap catches
 let tapeInserted:bool = false;
@@ -1312,7 +1310,6 @@ export function runUntil(maxT:u32):i16 {
             if1ROMActive = true;
             if1SavedROMPage = memoryPageReadMap[0];
             memoryPageReadMap[0] = 14;
-            if1DebugPageIns = if1DebugPageIns + 1;
         }
 
         interruptible = true; // unless overridden by opcode

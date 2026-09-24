@@ -2,7 +2,9 @@
  * runtime/microdrive-store.js — persistent storage for Microdrive cartridges.
  *
  * Cartridges (full .mdr images plus a label/colour) live in IndexedDB, so
- * they survive a page reload. Which cartridge (if any) is inserted in each
+ * they survive a page reload. The label is a copy of the name the cartridge
+ * was formatted with ('' when unformatted), kept so the cartridge box can
+ * list names without reading every image. Which cartridge (if any) is inserted in each
  * of the 8 drives, and whether the Interface 1 is connected, is small enough
  * to keep in localStorage instead. Every access is wrapped defensively -
  * a private-browsing tab or a blocked/cleared origin should degrade to "the
@@ -116,7 +118,7 @@ export async function create({ label, colour, data }) {
     const now = Date.now();
     const record = {
         id,
-        label: label || 'Untitled',
+        label: label || '',
         colour: colour || CARTRIDGE_COLOURS[0],
         data: data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
         created: now,
@@ -165,10 +167,10 @@ export async function remove(id) {
     }
 }
 
-export async function duplicate(id, label) {
+export async function duplicate(id) {
     const record = await get(id);
     if (!record) return null;
-    return create({ label: label || (record.label + ' copy'), colour: record.colour, data: record.data });
+    return create({ label: record.label, colour: record.colour, data: record.data });
 }
 
 /* Which cartridge (by id, or null) sits in each of the 8 drives, and whether

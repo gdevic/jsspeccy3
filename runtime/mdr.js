@@ -131,6 +131,36 @@ export function quickFormat(blocks, name) {
     return bytes;
 }
 
+const headerValid = (blockBytes, base) => (blockBytes[base + HDFLAG] & 0x01) !== 0
+    && checksum(blockBytes, base, 14) === blockBytes[base + HDCHK];
+
+/* The name a cartridge was formatted with (trailing spaces dropped), read
+ * from its first valid sector header; null if it isn't formatted. `data` is
+ * a full .mdr image. */
+export function cartridgeName(data) {
+    const blockBytes = splitMDRFile(data).data;
+    const blocks = Math.floor(blockBytes.length / BLOCK_LEN);
+    for (let b = 0; b < blocks; b++) {
+        if (headerValid(blockBytes, b * BLOCK_LEN)) return readName(blockBytes, b * BLOCK_LEN + HDNAME, 10);
+    }
+    return null;
+}
+
+/* Rewrites the cartridge name in every valid sector header, in place, and
+ * re-checksums each one; `blockBytes` holds whole blocks only. Files are
+ * untouched. An emulator convenience: a real Microdrive only writes headers
+ * while formatting, so renaming there means reformatting. */
+export function setCartridgeName(blockBytes, name) {
+    const nameBytes = padName((name || '').slice(0, 10), 10);
+    const blocks = Math.floor(blockBytes.length / BLOCK_LEN);
+    for (let b = 0; b < blocks; b++) {
+        const base = b * BLOCK_LEN;
+        if (!headerValid(blockBytes, base)) continue;
+        blockBytes.set(nameBytes, base + HDNAME);
+        blockBytes[base + HDCHK] = checksum(blockBytes, base, 14);
+    }
+}
+
 /* File-header prefix that record 0 of a SAVEd file carries in its first 9
  * data bytes (mirrors a tape header): type, length, start address,
  * program-length-or-array-name, autorun line. */
@@ -167,9 +197,7 @@ export function parse(blockBytes, writeProtect) {
 
     for (let b = 0; b < blocks; b++) {
         const base = b * BLOCK_LEN;
-        const hdflag = blockBytes[base + HDFLAG];
-        const hdValid = (hdflag & 0x01) !== 0
-            && checksum(blockBytes, base, 14) === blockBytes[base + HDCHK];
+        const hdValid = headerValid(blockBytes, base);
         if (hdValid) {
             formatted = true;
             if (cartridgeName === null) cartridgeName = readName(blockBytes, base + HDNAME, 10);
