@@ -36,6 +36,7 @@ const PAPER_W = 78;                         // 100mm of paper
 const PAPER_X = (PRINTER_W - PAPER_W) / 2;
 const DOT_UNITS = PAPER_W / PAPER_DOTS;
 const SLOT_Y = 38;
+const FOLD_Y = 58;                          // pulled down, the paper hangs to half way down ZX PRINTER
 const BAR_Y = 33, BAR_H = 14;
 const ROLL_BASE_Y = 36, ROLL_FULL_D = 28, ROLL_CORE_D = 7;
 const CABLE_W = 26;
@@ -155,6 +156,17 @@ function buildPrinterArt() {
     paper.width = PAPER_DOTS;
     paper.height = 1;
     paperWrap.appendChild(paper);
+    // Folded over the cutter bar, the hanging part is a shade darker, with a
+    // highlight along the bend.
+    const hanging = el('div', {
+        position: 'absolute', left: '0', right: '0', bottom: '0', height: (FOLD_Y - BAR_Y) + 'px',
+        background: 'rgba(0,0,0,0.08)', display: 'none', pointerEvents: 'none',
+    });
+    const bend = el('div', {
+        position: 'absolute', left: '0', right: '0', bottom: (FOLD_Y - BAR_Y - 0.7) + 'px', height: '1.4px',
+        background: 'linear-gradient(to bottom, rgba(255,255,255,0.6), rgba(0,0,0,0.25))', display: 'none', pointerEvents: 'none',
+    });
+    paperWrap.append(hanging, bend);
     box.appendChild(paperWrap);
 
     /* ---------- in front of the paper: body, towers, cutter bar ---------- */
@@ -221,6 +233,21 @@ function buildPrinterArt() {
         setLight(on) {
             light.setAttribute('fill', on ? '#ff3b30' : '#3a1210');
             light.style.filter = on ? 'drop-shadow(0 0 2px #ff3b30)' : 'none';
+        },
+        // Sizes the paper: `height` from the slot up to the top of the screen,
+        // plus `drop` pulled down below the slot, hanging folded over the
+        // front of the printer.
+        setDrop(drop, height) {
+            const folded = drop > 0;
+            paperWrap.style.bottom = (PRINTER_H - SLOT_Y - drop) + 'px';
+            paperWrap.style.height = (height + drop) + 'px';
+            paperWrap.style.zIndex = folded ? '1' : '';
+            paperWrap.style.boxShadow = folded ? '0 1px 1.5px rgba(0,0,0,0.6)' : 'none';
+            const hangingHeight = SLOT_Y + drop - BAR_Y;
+            hanging.style.height = hangingHeight + 'px';
+            bend.style.bottom = (hangingHeight - 0.7) + 'px';
+            hanging.style.display = folded ? 'block' : 'none';
+            bend.style.display = folded ? 'block' : 'none';
         },
         setFeedPressed(pressed) {
             feedCap.setAttribute('fill', pressed ? '#1b1b1d' : '#2d2d30');
@@ -529,18 +556,94 @@ export function createPrinter(ui, emu) {
     /* ---------- drawing the printout ---------- */
     const ctx = art.paper.getContext('2d');
     let visibleRows = 1;
+    let paperHeight = 0;  // from the slot up to the top of the screen
+
+    /* Scrolled back with the mouse wheel, the paper is pulled down: first it
+     * slides out over the front of the printer until it hangs folded down to
+     * FOLD_Y, then the printout scrolls on under the fold, showing older
+     * printing. `pull` is how far it has been pulled, in rows, easing towards
+     * `pullTarget` a little every animation frame so it glides; FOLD_ROWS of
+     * it bring the paper down to the fold, and the rest is scrollOffset, how
+     * many rows back from the newest its bottom edge is. It stays folded until
+     * printer activity - the Spectrum printing, FEED, or the panel - slides it
+     * back up into the normal view. */
+    const FOLD_ROWS = (FOLD_Y - SLOT_Y) / DOT_UNITS;
+    let pull = 0, pullTarget = 0, gliding = false;
+    let scrollOffset = 0;
 
     function redrawPaper() {
-        const shown = Math.min(printout.length, visibleRows);
+        const end = printout.length - scrollOffset;
+        const shown = Math.min(end, visibleRows);
         ctx.clearRect(0, 0, PAPER_DOTS, visibleRows);
-        if (!shown) return;
+        if (shown <= 0) return;
         const img = ctx.createImageData(PAPER_DOTS, shown);
-        const first = printout.length - shown;
+        const first = end - shown;
         for (let i = 0; i < shown; i++) paintRow(img.data, i * PAPER_DOTS * 4, printout[first + i], first + i);
         ctx.putImageData(img, 0, visibleRows - shown);
     }
 
+    /* Places and draws the paper for the current pull. The canvas always has
+     * room for the paper hanging all the way down to the fold, and is drawn
+     * from its bottom edge up; the paper's box clips what is out of view. */
+    function layoutPaper() {
+        const rows = Math.max(1, Math.ceil((paperHeight / DOT_UNITS) + FOLD_ROWS));
+        if (rows !== visibleRows) {
+            visibleRows = rows;
+            art.paper.height = rows;
+            art.paper.style.height = (rows * DOT_UNITS) + 'px';
+        }
+        art.setDrop(Math.min(pull, FOLD_ROWS) * DOT_UNITS, paperHeight);
+        scrollOffset = Math.max(0, Math.round(pull - FOLD_ROWS));
+        redrawPaper();
+    }
+
+    function glide() {
+        const distance = pullTarget - pull;
+        let step = distance * 0.25;
+        // Sliding out over the front of the printer or back into the slot
+        // goes no faster than a tenth of the way per frame, so the fold is
+        // always seen to happen.
+        if (pull < FOLD_ROWS || (pull + step) < FOLD_ROWS) {
+            const limit = FOLD_ROWS / 10;
+            step = Math.max(-limit, Math.min(limit, step));
+            if (pull > FOLD_ROWS && (pull + step) < FOLD_ROWS) step = FOLD_ROWS - pull;
+        }
+        pull = (Math.abs(distance) < 0.5) ? pullTarget : (pull + step);
+        layoutPaper();
+        if (pull !== pullTarget) {
+            requestAnimationFrame(glide);
+        } else {
+            gliding = false;
+        }
+    }
+    function pullTo(target) {
+        pullTarget = target;
+        if (!gliding && pull !== pullTarget) {
+            gliding = true;
+            requestAnimationFrame(glide);
+        }
+    }
+    const unfold = () => pullTo(0);
+    const isNormalView = () => pull === 0 && pullTarget === 0;
+
+    const dockScale = () => DOCK_SCALE * (typeof ui.zoom === 'number' ? ui.zoom : 1);
+
+    // Wheel down pulls the paper down, wheel up takes it back up. Only once
+    // the printout's top is cut off at the top of the screen is there
+    // anything to pull down to; once folded, the fold is as far as it goes
+    // back up.
+    art.paperWrap.addEventListener('wheel', (e) => {
+        const normalRows = Math.floor(paperHeight / DOT_UNITS);
+        if (pullTarget === 0 && (e.deltaY <= 0 || printout.length <= normalRows)) return;
+        e.preventDefault();
+        const pixels = e.deltaY * (e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 400 : 1));
+        const rows = pixels / (DOT_UNITS * dockScale());
+        const maxPull = FOLD_ROWS + Math.max(0, printout.length - visibleRows);
+        pullTo(Math.max(FOLD_ROWS, Math.min(maxPull, Math.max(pullTarget, FOLD_ROWS) + rows)));
+    }, { passive: false });
+
     // New rows come in at the slot: the paper above moves up by as many.
+    // Only in the normal view; while the paper glides, each frame redraws it.
     function addRows(count) {
         if (count >= visibleRows) { redrawPaper(); return; }
         ctx.globalCompositeOperation = 'copy';
@@ -648,6 +751,7 @@ export function createPrinter(ui, emu) {
         get printoutSaved() { return printoutSaved || !printout.length; },
         get feeding() { return !!releaseHeldFeed; },
         tearOff() {
+            unfold();
             printout = [];
             printoutSaved = true;
             redrawPaper();
@@ -655,6 +759,7 @@ export function createPrinter(ui, emu) {
             refreshPanel();
         },
         newRoll() {
+            unfold();
             state.paper = ROLL_ROWS;
             emu.setPrinterPaper(state.paper);
             art.setRoll(state.paper);
@@ -662,6 +767,7 @@ export function createPrinter(ui, emu) {
             refreshPanel();
         },
         async save() {
+            unfold();
             if (!printout.length) return;
             const blob = await printoutBlob(printout);
             if (!blob) return;
@@ -691,6 +797,7 @@ export function createPrinter(ui, emu) {
                 e.preventDefault();
                 e.stopPropagation();
                 if (state.paper <= 0) return;
+                unfold();
                 held = true;
                 releaseHeldFeed = release;
                 if (target.setPointerCapture) target.setPointerCapture(e.pointerId);
@@ -712,6 +819,7 @@ export function createPrinter(ui, emu) {
 
     emu.on('printerOutput', (bytes) => {
         const count = bytes.length / ROW_BYTES;
+        if (count || emu.printerMotor) unfold();
         for (let i = 0; i < count; i++) {
             const row = bytes.subarray(i * ROW_BYTES, (i + 1) * ROW_BYTES);
             if (row.some(b => b)) {
@@ -721,7 +829,7 @@ export function createPrinter(ui, emu) {
                 printout.push(BLANK_ROW);
             }
         }
-        if (count) addRows(count);
+        if (count && isNormalView()) addRows(count);
         const ranOut = state.paper > 0 && emu.printerPaper === 0;
         state.paper = emu.printerPaper;
         art.setRoll(state.paper);
@@ -740,13 +848,15 @@ export function createPrinter(ui, emu) {
         if (!show) {
             releaseFeed();
             closePanel();
+            pull = pullTarget = 0;
+            layoutPaper();
         }
         if (show) reposition();
     }
 
     function reposition() {
         if (element.style.display === 'none') return;
-        const scale = DOCK_SCALE * (typeof ui.zoom === 'number' ? ui.zoom : 1);
+        const scale = dockScale();
         const bar = ui.toolbar.elem;
         const top = bar.offsetTop + (bar.offsetHeight / 2) - (RIBBON_PLUG_Y * scale);
         element.style.top = top + 'px';
@@ -754,13 +864,9 @@ export function createPrinter(ui, emu) {
         // The paper reaches from the slot up to the top of the screen.
         const screenTop = emu.canvas.getBoundingClientRect().top - ui.appContainer.getBoundingClientRect().top;
         const height = Math.max(0, SLOT_Y + ((top - screenTop) / scale));
-        art.paperWrap.style.height = height + 'px';
-        const rows = Math.max(1, Math.ceil(height / DOT_UNITS));
-        if (rows !== visibleRows) {
-            visibleRows = rows;
-            art.paper.height = rows;
-            art.paper.style.height = (rows * DOT_UNITS) + 'px';
-            redrawPaper();
+        if (height !== paperHeight) {
+            paperHeight = height;
+            layoutPaper();
         }
         positionPanel();
     }
