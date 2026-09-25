@@ -12,6 +12,7 @@
 
 import { DOCK_SCALE, RIBBON_PLUG_Y } from './microdrive-ui.js';
 import closeIcon from './icons/close.svg';
+import mouseWheelIcon from './icons/mouse-wheel.svg';
 
 const STATE_KEY = 'jsspeccy-zxprinter';
 const ROLL_KEY = 'jsspeccy-zxprinter-roll';
@@ -167,6 +168,16 @@ function buildPrinterArt() {
         background: 'linear-gradient(to bottom, rgba(255,255,255,0.6), rgba(0,0,0,0.25))', display: 'none', pointerEvents: 'none',
     });
     paperWrap.append(hanging, bend);
+    // A mouse with its wheel in the top right corner, while there is more of
+    // the printout above the top of the screen to scroll to.
+    const scrollHint = el('div', {
+        position: 'absolute', top: '1.5px', right: '1.5px', width: '6.5px', height: '9.75px',
+        display: 'none', filter: 'drop-shadow(0 0 0.4px rgba(255,255,255,0.9))',
+    });
+    scrollHint.innerHTML = mouseWheelIcon;
+    Object.assign(scrollHint.firstElementChild.style, { width: '100%', height: '100%', display: 'block' });
+    scrollHint.title = 'More of the printout above: scroll the mouse wheel to see it';
+    paperWrap.appendChild(scrollHint);
     box.appendChild(paperWrap);
 
     /* ---------- in front of the paper: body, towers, cutter bar ---------- */
@@ -248,6 +259,15 @@ function buildPrinterArt() {
             bend.style.bottom = (hangingHeight - 0.7) + 'px';
             hanging.style.display = folded ? 'block' : 'none';
             bend.style.display = folded ? 'block' : 'none';
+        },
+        setScrollHint(shown) {
+            scrollHint.style.display = shown ? 'block' : 'none';
+        },
+        // An open hand over paper that can be scrolled, a closed one while
+        // it is held.
+        setGrab(can, holding) {
+            paperWrap.style.cursor = can ? (holding ? 'grabbing' : 'grab') : '';
+            paperWrap.style.touchAction = can ? 'none' : '';
         },
         setFeedPressed(pressed) {
             feedCap.setAttribute('fill', pressed ? '#1b1b1d' : '#2d2d30');
@@ -570,8 +590,23 @@ export function createPrinter(ui, emu) {
     const FOLD_ROWS = (FOLD_Y - SLOT_Y) / DOT_UNITS;
     let pull = 0, pullTarget = 0, gliding = false;
     let scrollOffset = 0;
+    let canScroll = false;       // whether there is anywhere to scroll the paper to
+    let drag = null;             // the paper held by the pointer: {id, y, from, moved}
+    let dragJustEnded = false;   // a drag ends in a click, which isn't one
+
+    // The mouse wheel hint shows while the printout goes on above the top of
+    // the screen.
+    function updateScrollHint() {
+        const drop = Math.min(pull, FOLD_ROWS) * DOT_UNITS;
+        const rowsInView = Math.ceil((paperHeight + drop) / DOT_UNITS);
+        const moreAbove = printout.length - scrollOffset > rowsInView;
+        art.setScrollHint(moreAbove);
+        canScroll = moreAbove || pullTarget > 0;
+        art.setGrab(canScroll, !!drag);
+    }
 
     function redrawPaper() {
+        updateScrollHint();
         const end = printout.length - scrollOffset;
         const shown = Math.min(end, visibleRows);
         ctx.clearRect(0, 0, PAPER_DOTS, visibleRows);
@@ -623,7 +658,11 @@ export function createPrinter(ui, emu) {
             requestAnimationFrame(glide);
         }
     }
-    const unfold = () => pullTo(0);
+    // Printer activity takes the paper out of the hand holding it.
+    const unfold = () => {
+        drag = null;
+        pullTo(0);
+    };
     const isNormalView = () => pull === 0 && pullTarget === 0;
 
     const dockScale = () => DOCK_SCALE * (typeof ui.zoom === 'number' ? ui.zoom : 1);
@@ -642,10 +681,46 @@ export function createPrinter(ui, emu) {
         pullTo(Math.max(FOLD_ROWS, Math.min(maxPull, Math.max(pullTarget, FOLD_ROWS) + rows)));
     }, { passive: false });
 
+    /* Dragging the paper moves it with the hand, as the wheel does: down to
+     * pull it over the printer, up to take it back as far as the fold. Let
+     * go part way into the fold, it folds the rest of the way. A drag is
+     * not a click, so it doesn't open the panel. */
+    art.paperWrap.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || !canScroll) return;
+        drag = { id: e.pointerId, y: e.clientY, from: pullTarget, moved: false };
+        art.setGrab(true, true);
+        try {
+            art.paperWrap.setPointerCapture(e.pointerId);
+        } catch (err) { /* a pointer no longer down: the drag still works while it stays over the paper */ }
+    });
+    art.paperWrap.addEventListener('pointermove', (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const dy = e.clientY - drag.y;
+        if (!drag.moved && Math.abs(dy) < 3) return;
+        drag.moved = true;
+        const maxPull = FOLD_ROWS + Math.max(0, printout.length - visibleRows);
+        const least = drag.from > 0 ? FOLD_ROWS : 0;
+        pull = pullTarget = Math.max(least, Math.min(maxPull, drag.from + (dy / (DOT_UNITS * dockScale()))));
+        layoutPaper();
+    });
+    const endDrag = (e) => {
+        if (!drag || e.pointerId !== drag.id) return;
+        const moved = drag.moved;
+        drag = null;
+        art.setGrab(canScroll, false);
+        if (!moved) return;
+        dragJustEnded = true;
+        setTimeout(() => { dragJustEnded = false; }, 0);
+        if (pullTarget > 0 && pullTarget < FOLD_ROWS) pullTo(FOLD_ROWS);
+    };
+    art.paperWrap.addEventListener('pointerup', endDrag);
+    art.paperWrap.addEventListener('pointercancel', endDrag);
+
     // New rows come in at the slot: the paper above moves up by as many.
     // Only in the normal view; while the paper glides, each frame redraws it.
     function addRows(count) {
         if (count >= visibleRows) { redrawPaper(); return; }
+        updateScrollHint();
         ctx.globalCompositeOperation = 'copy';
         ctx.drawImage(art.paper, 0, -count);
         ctx.globalCompositeOperation = 'source-over';
@@ -814,6 +889,7 @@ export function createPrinter(ui, emu) {
     printer.holdToFeed(art.feed, art.feed);
     art.setRoll(state.paper);
     art.element.addEventListener('click', () => {
+        if (dragJustEnded) return;
         if (panel) closePanel(); else openPanel();
     });
 
