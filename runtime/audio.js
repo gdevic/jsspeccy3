@@ -1,5 +1,81 @@
 const ENABLE_OSCILLOSCOPE = false;
-const BUFFER_SIZE = 0x10000;
+
+/* Buffers the emulator's audio between frames (which arrive in 20ms bursts,
+ * paced by requestAnimationFrame) and the audio output (which pulls small
+ * blocks at its own steady rate). Playback starts once `startSamples` are
+ * queued, and restarts the same way after running dry, so a late frame
+ * costs a short gap rather than a crackle on every block. If a burst of
+ * frames queues more than `maxSamples`, the oldest audio is dropped down to
+ * `trimSamples`, so latency can never build up.
+ *
+ * It must not refer to anything outside itself: its source text is also
+ * what runs inside the AudioWorklet. */
+class LatencyBuffer {
+    constructor(size, startSamples, maxSamples, trimSamples) {
+        this.left = new Float32Array(size);
+        this.right = new Float32Array(size);
+        this.size = size;
+        this.startSamples = startSamples;
+        this.maxSamples = maxSamples;
+        this.trimSamples = trimSamples;
+        this.readPtr = 0;
+        this.available = 0;
+        this.playing = false;
+    }
+    push(left, right) {
+        const count = Math.min(left.length, this.size);
+        let writePtr = (this.readPtr + this.available) % this.size;
+        for (let i = 0; i < count; i++) {
+            this.left[writePtr] = left[i];
+            this.right[writePtr] = right[i];
+            writePtr = (writePtr + 1) % this.size;
+        }
+        this.available = Math.min(this.available + count, this.size);
+        if (this.available > this.maxSamples) {
+            const drop = this.available - this.trimSamples;
+            this.readPtr = (this.readPtr + drop) % this.size;
+            this.available -= drop;
+        }
+    }
+    pull(left, right) {
+        if (!this.playing && this.available >= this.startSamples) this.playing = true;
+        let count = 0;
+        if (this.playing) {
+            count = Math.min(left.length, this.available);
+            for (let i = 0; i < count; i++) {
+                left[i] = this.left[this.readPtr];
+                right[i] = this.right[this.readPtr];
+                this.readPtr = (this.readPtr + 1) % this.size;
+            }
+            this.available -= count;
+            if (this.available === 0) this.playing = false;
+        }
+        left.fill(0, count);
+        right.fill(0, count);
+    }
+}
+
+/* The AudioWorklet side: a processor that owns a LatencyBuffer, fed frame
+ * by frame through its message port. Loaded from a Blob URL, so the build
+ * needs no separate worklet file. */
+const WORKLET_SOURCE = `
+const LatencyBuffer = ${LatencyBuffer.toString()};
+class JSSpeccyAudioProcessor extends AudioWorkletProcessor {
+    constructor(options) {
+        super();
+        const o = options.processorOptions;
+        this.buffer = new LatencyBuffer(o.size, o.startSamples, o.maxSamples, o.trimSamples);
+        this.port.onmessage = (e) => this.buffer.push(e.data.left, e.data.right);
+    }
+    process(inputs, outputs) {
+        const output = outputs[0];
+        this.buffer.pull(output[0], output[1] || output[0]);
+        return true;
+    }
+}
+registerProcessor('jsspeccy-audio', JSSpeccyAudioProcessor);
+`;
+let workletUrl = null;
 
 export class AudioHandler {
     constructor() {
@@ -13,53 +89,46 @@ export class AudioHandler {
     }
     start() {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
-        this.audioContext = new AudioContext({latencyHint: 'interactive'});
-        this.samplesPerFrame = this.audioContext.sampleRate / 50;
+        const audioContext = new AudioContext({latencyHint: 'interactive'});
+        this.audioContext = audioContext;
+        this.samplesPerFrame = audioContext.sampleRate / 50;
 
         this.frameBuffers = [
             new ArrayBuffer(this.samplesPerFrame * 4),
             new ArrayBuffer(this.samplesPerFrame * 4)
         ];
 
-        this.leftBuffer = new Float32Array(BUFFER_SIZE);
-        this.rightBuffer = new Float32Array(BUFFER_SIZE);
-        this.readPtr = 0;
-        this.writePtr = 0;
+        // Two frames queued before playing (frames arrive in bursts, up to
+        // about 33ms apart), and never more than five: a burst beyond that is
+        // trimmed back to two.
+        const bufferOptions = {
+            size: this.samplesPerFrame * 16,
+            startSamples: this.samplesPerFrame * 2,
+            maxSamples: this.samplesPerFrame * 5,
+            trimSamples: this.samplesPerFrame * 2,
+        };
 
-        this.scriptNode = this.audioContext.createScriptProcessor(0, 0, 2);
-        this.scriptNode.onaudioprocess = (audioProcessingEvent) => {
-            const outputBuffer = audioProcessingEvent.outputBuffer;
-            const leftData = outputBuffer.getChannelData(0);
-            const rightData = outputBuffer.getChannelData(1);
-
-            let availableDataLength = this.writePtr - this.readPtr;
-            if (availableDataLength < 0) availableDataLength += BUFFER_SIZE;
-
-            if (availableDataLength >= leftData.length) {
-                // enough data is available to fill the buffer
-                if (this.readPtr + leftData.length <= BUFFER_SIZE) {
-                    // can copy all in one go
-                    leftData.set(this.leftBuffer.slice(this.readPtr, this.readPtr + leftData.length));
-                    rightData.set(this.rightBuffer.slice(this.readPtr, this.readPtr + rightData.length));
-                    this.readPtr = (this.readPtr + leftData.length) % BUFFER_SIZE;
-                } else {
-                    // straddles the end of our circular buffer - need to copy in two steps
-                    const firstChunkLength = BUFFER_SIZE - this.readPtr;
-                    const secondChunkLength = leftData.length - firstChunkLength;
-
-                    leftData.set(this.leftBuffer.slice(this.readPtr, this.readPtr + firstChunkLength));
-                    rightData.set(this.rightBuffer.slice(this.readPtr, this.readPtr + firstChunkLength));
-                    leftData.set(this.leftBuffer.slice(0, secondChunkLength), firstChunkLength);
-                    rightData.set(this.rightBuffer.slice(0, secondChunkLength), firstChunkLength);
-
-                    this.readPtr = secondChunkLength;
-                }
-                if (ENABLE_OSCILLOSCOPE) {
-                    this.drawOscilloscope(leftData, rightData);
-                }
-            }
+        this.workletNode = null;
+        this.scriptNode = null;
+        if (audioContext.audioWorklet && window.AudioWorkletNode) {
+            // Runs on the audio thread, so a busy page can't starve the output.
+            if (!workletUrl) workletUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], {type: 'application/javascript'}));
+            audioContext.audioWorklet.addModule(workletUrl).then(() => {
+                if (this.audioContext !== audioContext || audioContext.state === 'closed') return;
+                this.workletNode = new AudioWorkletNode(audioContext, 'jsspeccy-audio', {
+                    numberOfInputs: 0,
+                    outputChannelCount: [2],
+                    processorOptions: bufferOptions,
+                });
+                this.workletNode.connect(audioContext.destination);
+            }).catch((e) => {
+                console.warn('Audio worklet unavailable, falling back to ScriptProcessorNode:', e);
+                this.startScriptProcessor(audioContext, bufferOptions);
+            });
+        } else {
+            // AudioWorklet needs a secure context (https or localhost).
+            this.startScriptProcessor(audioContext, bufferOptions);
         }
-        this.scriptNode.connect(this.audioContext.destination);
 
         this.isActive = true;
 
@@ -69,8 +138,31 @@ export class AudioHandler {
         }
     }
 
+    /* Main-thread fallback. Its callbacks can be delayed by a busy page, but
+     * the same LatencyBuffer keeps that from turning into growing lag. */
+    startScriptProcessor(audioContext, bufferOptions) {
+        if (this.audioContext !== audioContext || audioContext.state === 'closed') return;
+        // Each callback takes a whole chunk, so the thresholds sit that much
+        // higher than the worklet's.
+        const chunk = 2048;
+        const buffer = new LatencyBuffer(
+            bufferOptions.size, chunk + bufferOptions.startSamples,
+            chunk + bufferOptions.maxSamples, chunk + bufferOptions.trimSamples
+        );
+        this.scriptBuffer = buffer;
+        this.scriptNode = audioContext.createScriptProcessor(chunk, 0, 2);
+        this.scriptNode.onaudioprocess = (audioProcessingEvent) => {
+            const outputBuffer = audioProcessingEvent.outputBuffer;
+            buffer.pull(outputBuffer.getChannelData(0), outputBuffer.getChannelData(1));
+        };
+        this.scriptNode.connect(audioContext.destination);
+    }
+
     stop() {
-        this.scriptNode.disconnect(this.audioContext.destination);
+        if (this.workletNode) this.workletNode.disconnect();
+        if (this.scriptNode) this.scriptNode.disconnect();
+        this.workletNode = null;
+        this.scriptNode = null;
         this.audioContext.close();
     }
 
@@ -80,36 +172,28 @@ export class AudioHandler {
 
         if (!this.isActive) return;
 
-        const dataLength = audioBufferLeft.byteLength / 4;
-        if (this.writePtr + dataLength <= BUFFER_SIZE) {
-            /* can copy all in one go */
-            const leftData = new Float32Array(audioBufferLeft);
-            const rightData = new Float32Array(audioBufferRight);
-            this.leftBuffer.set(leftData, this.writePtr);
-            this.rightBuffer.set(rightData, this.writePtr);
-            this.writePtr = (this.writePtr + dataLength) % BUFFER_SIZE;
-        } else {
-            /* straddles the end of our circular buffer - need to copy in two steps */
-            const firstChunkLength = BUFFER_SIZE - this.writePtr;
-            const secondChunkLength = dataLength - firstChunkLength;
-            const leftData1 = new Float32Array(audioBufferLeft, 0, firstChunkLength);
-            const rightData1 = new Float32Array(audioBufferRight, 0, firstChunkLength);
-            this.leftBuffer.set(leftData1, this.writePtr);
-            this.rightBuffer.set(rightData1, this.writePtr);
-            const leftData2 = new Float32Array(audioBufferLeft, firstChunkLength * 4, secondChunkLength);
-            const rightData2 = new Float32Array(audioBufferRight, firstChunkLength * 4, secondChunkLength);
-            this.leftBuffer.set(leftData2, 0);
-            this.rightBuffer.set(rightData2, 0);
-            this.writePtr = secondChunkLength;
+        // frameBuffers go back to the worker for the next frame, so the
+        // output gets its own copy of the samples.
+        const left = new Float32Array(audioBufferLeft);
+        const right = new Float32Array(audioBufferRight);
+        if (this.workletNode) {
+            const leftCopy = left.slice();
+            const rightCopy = right.slice();
+            this.workletNode.port.postMessage({left: leftCopy, right: rightCopy}, [leftCopy.buffer, rightCopy.buffer]);
+        } else if (this.scriptNode) {
+            this.scriptBuffer.push(left, right);
+        }
+
+        if (ENABLE_OSCILLOSCOPE) {
+            this.drawOscilloscope(left, right);
         }
     }
 
-    drawOscilloscope(leftBuffer, rightBuffer) {
+    drawOscilloscope(leftData, rightData) {
         this.canvasCtx.fillStyle = '#000';
         this.canvasCtx.strokeStyle = '#0f0';
         this.canvasCtx.fillRect(0, 0, this.samplesPerFrame, 64);
 
-        const leftData = new Float32Array(leftBuffer);
         this.canvasCtx.beginPath();
         this.canvasCtx.moveTo(0, 16);
         for (let i = 0; i < this.samplesPerFrame; i++) {
@@ -117,7 +201,6 @@ export class AudioHandler {
         }
         this.canvasCtx.stroke();
 
-        const rightData = new Float32Array(rightBuffer);
         this.canvasCtx.beginPath();
         this.canvasCtx.moveTo(0, 48);
         for (let i = 0; i < this.samplesPerFrame; i++) {
