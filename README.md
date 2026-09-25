@@ -13,12 +13,13 @@ A ZX Spectrum emulator for the browser
 * Loads TZX and TAP tape images, instantly through the ROM loader or in real time
 * Detects custom tape loaders (Speedlock and other turbo loaders) and plays the tape for them automatically, fast-forwarded when instant loading is on
 * Loads any of the above files from inside a ZIP file
+* ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * Opens games straight from the PlayZX online catalog (~10,800 titles)
 * 100% / 200% / 300% and fullscreen display modes
 
 ## Implementation notes
 
-JSSpeccy 3 is a complete rewrite of JSSpeccy to make full use of the web technologies and APIs available as of 2021 for high-performance web apps. The emulation runs in a Web Worker, freeing up the UI thread to handle screen and audio updates, with the emulator core (consisting of the Z80 processor emulation and any auxiliary processes that are likely to interrupt its execution multiple times per frame, such as constructing the video output, reading the keyboard and generating audio) running in WebAssembly, compiled from AssemblyScript (with a custom preprocessor).
+JSSpeccy 3 is a complete rewrite of JSSpeccy to make full use of the web technologies and APIs available as of 2021 for high-performance web apps. The emulation runs in a Web Worker, freeing up the UI thread to handle screen updates, and sound plays from an AudioWorklet on the browser's audio thread, so a busy page can't starve it. The emulator core (consisting of the Z80 processor emulation and any auxiliary processes that are likely to interrupt its execution multiple times per frame, such as constructing the video output, reading the keyboard and generating audio) runs in WebAssembly, compiled from AssemblyScript (with a custom preprocessor).
 
 ## Pokes (game cheats)
 
@@ -27,6 +28,14 @@ The **File → Pokes…** menu item opens a cheat browser over a committed catal
 ## PlayZX game catalog
 
 The **File → PlayZX open…** menu item browses the PlayZX catalog of ZX Spectrum tape images and loads one straight into the emulator. The **All** tab walks the catalog by initial letter, then by title, then lists the individual releases under that title (publisher, year, playing time, and any variation note). The **Search** tab is a live query box: plain text matches a title prefix, a leading space matches a publisher prefix, a leading `=` is spliced in as a raw SQL condition over the `Name, Pub, Year, Duration, Variation, Rating` columns, and a trailing `?` picks one match at random (two characters minimum, 100 results maximum). The menu item only appears when the page is served from a host the PlayZX server will mint a download session for, since everywhere else the browsing would work and every download would be refused; see `PLAYZX_HOSTS` in `runtime/playzx-session.js`.
+
+## ZX Interface 1 and Microdrives
+
+The toolbar button between the keyboard and fullscreen buttons connects a ZX Interface 1 (edition 2 ROM) with two ZX Microdrives, or disconnects it, without resetting the machine. The drives stand to the left of the Spectrum, joined to it by a ribbon, and a drive's red light shows while its motor runs. The Interface 1 pages its shadow ROM in at the same addresses as the real one (the error restart at 0x0008 and CLOSE # at 0x1708), so its extended BASIC works as documented, for example `FORMAT "m";1;"name"`, `SAVE *"m";1;"name"`, `LOAD *"m";1;"name"`, `VERIFY *"m";1;"name"`, `CAT 1`, `ERASE "m";1;"name"` and `OPEN #` streams to a Microdrive file. Use a 48K machine or 48 BASIC. The RS232 and ZX Net ports are not emulated.
+
+Clicking a drive opens a panel above it for using a cartridge. An empty drive offers the cartridges in the box, a new blank cartridge, or an `.mdr` file from the PC. A loaded drive shows the tape loop with each sector's use, a CAT-style list of its files (clicking one gives the `LOAD *` command to type), a write-protect toggle, a Format button for a blank cartridge, and Eject. The cartridge's label shows its name, handwritten. Dropping an `.mdr` file onto a drive inserts it there; opening one through the File menu or the `openUrl` option puts it in the first free drive and connects the Microdrives.
+
+**File → Microdrive cartridges…** opens the cartridge box, where cartridges are kept. Every cartridge lives in the browser's storage (IndexedDB) and survives a reload, as does which drive holds it. The box creates cartridges (blank, or already formatted with a name), imports `.mdr` files, imports or saves the whole box as a ZIP file, and for each cartridge shows its files, free space and drive, and can rename it, change its colour, save it to the PC as an `.mdr` file, duplicate it or delete it. A cartridge's name is the one FORMAT wrote on the tape, the same name CAT shows; renaming rewrites it in every sector header and leaves the files alone, which a real Microdrive could only do by reformatting.
 
 ## Contributions
 
@@ -67,7 +76,7 @@ The available configuration options are:
 * `machine`: specifies the machine to emulate. Can be `48` (for a 48K Spectrum), `128` (for a 128K Spectrum), or `5` (for a Pentagon 128).
 * `openUrl`: specifies a URL, or an array of URLs, to a file (or files) to load on startup, in any supported snapshot, tape or archive format. Standard browser security restrictions apply for loading remote files: if the URL being loaded is not on the same domain as the calling page, it must serve [CORS HTTP headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) to be loadable.
 * `zoom`: specifies the size of the emulator window; 1 for 100% size (one Spectrum pixel per screen pixel), 2 for 200% size and so on.
-* `sandbox`: if true, all UI options for opening a new file are disabled - useful if you're showcasing a specific bit of Spectrum software on your page.
+* `sandbox`: if true, all UI options for opening a new file are disabled, and the Microdrives are not offered - useful if you're showcasing a specific bit of Spectrum software on your page.
 * `tapeTrapsEnabled`: if true (the default), the emulator will recognise when the tape loading routine in the ROM is called, and load tape files instantly instead. Custom loaders that bypass the ROM routine cannot be trapped; the emulator recognises them sampling the tape, plays the tape for them, and runs the machine faster than real time until the loader stops. With this option off, a detected loader still starts the tape, but loading runs at normal speed.
 * `keyboardEnabled`: True by default; if false, the emulator will not respond to keypresses.
 * `uiEnabled`: True by default; if false, the menu bar and toolbar will not be shown.
