@@ -689,7 +689,6 @@ window.JSSpeccy = (container, opts) => {
         joystickType: opts.joystickType || 'kempston',
         joystickDevice: opts.joystickDevice || null,
     });
-    window.__mdrDebug = emu; // TEMP debug hook, remove before commit
     const ui = new UIController(container, emu, {
         zoom: opts.zoom || 1,
         sandbox: opts.sandbox,
@@ -1008,23 +1007,24 @@ window.JSSpeccy = (container, opts) => {
         )
 
         /* Microdrive dock: two drives standing to the left of the Spectrum,
-         * joined to it by a ribbon. Showing it plugs in the Interface 1; hiding it
-         * unplugs it again (a cartridge stays in its drive either way - see
-         * runtime/microdrive-ui.js). Toggled from the toolbar between the
-         * keyboard and fullscreen buttons; hidden (but still connected) in
-         * fullscreen, same as the keyboard. */
+         * joined to it by a ribbon. The toolbar button between the keyboard
+         * and fullscreen buttons connects the Interface 1 with its drives, or
+         * disconnects it, without resetting the machine (a cartridge stays in
+         * its drive either way - see runtime/microdrive-ui.js). The dock is
+         * shown while connected; in fullscreen it is hidden but stays
+         * connected, same as the keyboard. */
         if (!opts.sandbox) {
             const microdriveDock = createMicrodriveDock(ui, emu);
             const microdriveButton = ui.toolbar.addButton(
                 microdriveIcon,
-                {label: 'Show Microdrives', align: 'right'},
+                {label: 'Connect Microdrives', align: 'right'},
                 () => {
                     microdriveDock.toggle();
                     emu.focus();
                 }
             );
             emu.on('setInterface1', (enabled) => {
-                microdriveButton.setLabel(enabled ? 'Hide Microdrives' : 'Show Microdrives');
+                microdriveButton.setLabel(enabled ? 'Disconnect Microdrives' : 'Connect Microdrives');
             });
             ui.on('setZoom', (factor) => {
                 microdriveDock.setFullscreen(factor === 'fullscreen');

@@ -4,9 +4,9 @@
  * Cartridges (full .mdr images plus a label/colour) live in IndexedDB, so
  * they survive a page reload. The label is a copy of the name the cartridge
  * was formatted with ('' when unformatted), kept so the cartridge box can
- * list names without reading every image. Which cartridge (if any) is inserted in each
- * of the 8 drives, and whether the Interface 1 is connected, is small enough
- * to keep in localStorage instead. Every access is wrapped defensively -
+ * list names without reading every image. Which cartridge (if any) is
+ * inserted in each drive, and whether the Interface 1 is connected, is small
+ * enough to keep in localStorage instead. Every access is wrapped defensively -
  * a private-browsing tab or a blocked/cleared origin should degrade to "the
  * dock starts empty", never break the emulator.
  */
@@ -16,7 +16,7 @@ const DB_VERSION = 1;
 const STORE = 'cartridges';
 const DOCK_KEY = 'jsspeccy-microdrive-dock';
 
-export const DRIVE_COUNT = 8;
+export const DRIVE_COUNT = 2; // Microdrives connected to the Interface 1
 
 // A cartridge shell colour palette, echoing the real Microdrive's own
 // (black, plus the handful of colours WHSmith/Sinclair sold). The UI cycles
@@ -173,10 +173,8 @@ export async function duplicate(id) {
     return create({ label: record.label, colour: record.colour, data: record.data });
 }
 
-/* Which cartridge (by id, or null) sits in each of the 8 drives, and whether
- * the Interface 1 is connected. All 8 slots are tracked even though only
- * drives 1-2 have LEDs in the dock, so nothing is lost if a cartridge was
- * put in drive 3-8 (e.g. from the cartridge box) and the page is reloaded. */
+/* Which cartridge (by id, or null) sits in each drive, and whether the
+ * Interface 1 is connected. */
 export function getDockState() {
     try {
         const raw = localStorage.getItem(DOCK_KEY);

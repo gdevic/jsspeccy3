@@ -1,19 +1,21 @@
 /*
- * runtime/microdrive-ui.js — the Microdrive dock, label card and cartridge box.
+ * runtime/microdrive-ui.js — the Microdrive dock, drive panel and cartridge box.
  *
  * createMicrodriveDock(ui, emu) builds a two-drive dock standing to the left
  * of the Spectrum, joined to it by a ribbon (visible = connected: showing it plugs
  * in the Interface 1, hiding it unplugs it, but never ejects a cartridge -
  * see runtime/mdr.js and generator/core.ts.in for why that distinction
- * matters). Clicking a drive opens a "label card": a tape-loop ring plus a
- * CAT-style file list. The cartridge box (File menu, or clicking an empty
- * drive) is a grid over every cartridge saved in runtime/microdrive-store.js,
- * with insert/rename/duplicate/delete/export/import.
+ * matters). Disconnecting or reloading the page never loses what's in a
+ * drive.
  *
- * The core addresses 8 drives; this dock only draws LEDs for drives 1-2
- * (the common case), but the cartridge box can insert into any of the 8, and
- * every one of them is tracked and persisted independently - disconnecting
- * or reloading the page never loses what's in drive 3-8 either.
+ * The UI splits using a cartridge from keeping one. A drive is where a
+ * cartridge is used: clicking a drive opens its panel, which inserts a
+ * cartridge into an empty drive, or for a loaded one shows the tape (a
+ * tape-loop ring plus a CAT-style file list), formats a blank cartridge,
+ * toggles write protection and ejects. The cartridge box (File menu) is
+ * where cartridges are kept: a grid over every cartridge saved in
+ * runtime/microdrive-store.js, to create, import, export, name, colour,
+ * duplicate and delete them.
  */
 
 import JSZip from 'jszip';
@@ -24,7 +26,7 @@ import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
 import closeIcon from './icons/close.svg';
 
-const DOCKED_DRIVES = 2; // how many of the 8 drives get a physical slot in the dock
+const DRIVE_COUNT = store.DRIVE_COUNT;
 
 /* ---------- small DOM/SVG helpers (mirrors the plain-DOM style already used
  * in pokes.js/keyboard-overlay.js - no framework, no extra dependency) ---------- */
@@ -298,15 +300,15 @@ function buildRing(size) {
     return { element: svg, render, setHead, highlightFile };
 }
 
-/* ==================== controller: state shared by the dock and the box ==================== */
+/* ==================== controller: state shared by the drives and the box ==================== */
 
 function createController(emu) {
     const state = {
         connected: false,
         // {id, label, colour, data (full .mdr Uint8Array), parsed} or null,
-        // per drive 0-7. `label` is always the name on the tape itself ('' if
+        // per drive. `label` is always the name on the tape itself ('' if
         // unformatted), re-read whenever the data changes.
-        drives: new Array(8).fill(null),
+        drives: new Array(DRIVE_COUNT).fill(null),
     };
     const listeners = new Set();
     const notify = () => listeners.forEach(fn => fn());
@@ -349,9 +351,9 @@ function createController(emu) {
         return true;
     }
 
-    /* Adds `data` (a full .mdr image) to the library as a new cartridge and
-     * inserts it. Used for an opened/dropped .mdr file and for "New
-     * cartridge". */
+    /* Adds `data` (a full .mdr image) to the box as a new cartridge and
+     * inserts it. Used for an opened or dropped .mdr file and for a new
+     * blank cartridge made at a drive. */
     async function insertNew(drive, data, colour) {
         const label = mdr.cartridgeName(data) || '';
         const id = await store.create({ label, colour, data });
@@ -377,13 +379,20 @@ function createController(emu) {
     function rename(drive, name) {
         if (state.drives[drive]) emu.renameMicrodrive(drive, name);
     }
-    async function cycleColour(drive) {
-        const d = state.drives[drive];
-        if (!d) return;
-        const i = store.CARTRIDGE_COLOURS.indexOf(d.colour);
-        d.colour = store.CARTRIDGE_COLOURS[(i + 1) % store.CARTRIDGE_COLOURS.length];
-        if (d.id) await store.update(d.id, { colour: d.colour });
-        notify();
+    // Which drive (or -1) holds the cartridge with this id.
+    const driveOf = (id) => state.drives.findIndex(d => d && d.id === id);
+
+    async function setColour(id, colour) {
+        await store.update(id, { colour });
+        const drive = driveOf(id);
+        if (drive >= 0) { state.drives[drive].colour = colour; notify(); }
+    }
+
+    /* Deletes a cartridge from the box, ejecting it first if it's in a drive. */
+    async function remove(id) {
+        const drive = driveOf(id);
+        if (drive >= 0) await eject(drive);
+        await store.remove(id);
     }
     function setWriteProtect(drive, value) {
         emu.setMicrodriveWriteProtect(drive, value);
@@ -429,7 +438,7 @@ function createController(emu) {
 
     async function init() {
         const saved = store.getDockState();
-        for (let d = 0; d < 8; d++) {
+        for (let d = 0; d < DRIVE_COUNT; d++) {
             if (saved.drives[d]) await insertExisting(d, saved.drives[d]);
         }
         if (saved.connected) await setConnected(true);
@@ -439,38 +448,58 @@ function createController(emu) {
     return {
         state, listeners,
         onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-        dataOf, reparse, insertExisting, insertNew, eject, rename, cycleColour,
+        dataOf, reparse, driveOf, insertExisting, insertNew, eject, remove, rename, setColour,
         setWriteProtect, quickFormat, setConnected, init,
     };
 }
 
-/* ==================== the label card ==================== */
+/* ==================== the drive panel ==================== */
 
-function buildCard(ui, emu, controller, driveIndex, onClose) {
-    const card = el('div', {
+/* Opens above a drive when it's clicked and covers everything done with a
+ * drive and the cartridge in it. An empty drive offers the cartridges in
+ * the box that aren't in a drive, plus a new blank one or one from the PC.
+ * A loaded drive shows what's on the tape, formats a blank cartridge,
+ * toggles write protection and ejects. Keeping cartridges (names, colours,
+ * copies, files on the PC) is the cartridge box's job. */
+function buildDrivePanel(emu, controller, driveIndex) {
+    const panel = el('div', {
         position: 'absolute', width: '300px', background: '#1c1e22', color: '#eee',
         border: '1px solid #444', borderRadius: '8px', boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
         fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px', zIndex: '120',
         overflow: 'hidden',
     });
+    const footerStyle = {
+        display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px',
+        borderTop: '1px solid #333', background: '#1a1c20',
+    };
+    const mkBtn = (icon, label) => {
+        const b = el('button', {
+            display: 'flex', alignItems: 'center', gap: '4px', border: 'none', background: '#333',
+            color: '#ccc', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px',
+        });
+        if (icon) {
+            const i = el('span'); i.innerHTML = icon; i.style.filter = 'invert(1)';
+            i.firstChild.style.height = '13px'; i.firstChild.style.display = 'block';
+            b.appendChild(i);
+        }
+        b.appendChild(el('span', {}, { textContent: label }));
+        return b;
+    };
+    // Keys typed into a field must not reach the emulator's keyboard handler
+    // on the document, which also cancels keypress (and with it the typed
+    // character) while the emulator runs.
+    const keepKeys = (input) => {
+        for (const type of ['keydown', 'keyup', 'keypress']) input.addEventListener(type, (e) => e.stopPropagation());
+    };
 
     const header = el('div', {
         display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px',
         background: '#25282e', borderBottom: '1px solid #333',
     });
-    const swatch = el('div', {
-        width: '16px', height: '16px', borderRadius: '3px', cursor: 'pointer', flexShrink: '0',
-        border: '1px solid #000',
+    const title = el('div', {
+        flex: '1', minWidth: '0', fontSize: '13px', fontWeight: 'bold',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     });
-    swatch.title = 'Cartridge colour';
-    const nameInput = el('input', {
-        flex: '1', minWidth: '0', background: 'transparent', border: 'none', color: '#fff',
-        fontSize: '13px', fontWeight: 'bold', outline: 'none',
-    }, { type: 'text', maxLength: 10 });
-    nameInput.title = 'Cartridge name, as FORMAT wrote it on the tape';
-    nameInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') nameInput.blur(); });
-    nameInput.addEventListener('keyup', (e) => e.stopPropagation());
-    nameInput.addEventListener('change', () => controller.rename(driveIndex, nameInput.value));
     const wpBtn = el('button', {
         border: 'none', background: '#333', color: '#ccc', borderRadius: '4px',
         padding: '3px 6px', cursor: 'pointer', fontSize: '11px', flexShrink: '0',
@@ -480,7 +509,11 @@ function buildCard(ui, emu, controller, driveIndex, onClose) {
     closeBtn.innerHTML = closeIcon;
     closeBtn.style.filter = 'invert(1)';
     closeBtn.firstChild.style.height = '14px';
-    header.append(swatch, nameInput, wpBtn, closeBtn);
+    closeBtn.title = 'Close';
+    header.append(title, wpBtn, closeBtn);
+
+    /* ---------- a loaded drive ---------- */
+    const loaded = el('div');
 
     const body = el('div', { display: 'flex', gap: '10px', padding: '10px' });
     const ring = buildRing(120);
@@ -494,18 +527,17 @@ function buildCard(ui, emu, controller, driveIndex, onClose) {
         flex: '1', minWidth: '0', padding: '3px 6px', borderRadius: '4px', border: '1px solid #555',
         background: '#111', color: '#fff',
     }, { type: 'text', placeholder: 'Cartridge name', maxLength: 10 });
-    formatNameInput.addEventListener('keydown', (e) => e.stopPropagation());
-    formatNameInput.addEventListener('keyup', (e) => e.stopPropagation());
+    keepKeys(formatNameInput);
     const formatBtn = el('button', {
         border: 'none', background: '#3a6', color: '#fff', borderRadius: '4px',
         padding: '4px 10px', cursor: 'pointer',
-    }, { textContent: 'Quick format' });
+    }, { textContent: 'Format' });
     formatRow.append(formatNameInput, formatBtn);
     blankNotice.append(
-        el('div', {}, { textContent: "This cartridge isn't formatted yet." }),
-        el('div', { color: '#888', fontSize: '11px', marginTop: '4px' },
-            { textContent: 'Real ZX Spectrum BASIC: FORMAT "m";' + (driveIndex + 1) + ';"name"' }),
+        el('div', {}, { textContent: 'A blank cartridge. Format it to give it a name and use it.' }),
         formatRow,
+        el('div', { color: '#888', fontSize: '11px', marginTop: '6px' },
+            { textContent: 'In BASIC: FORMAT "m";' + (driveIndex + 1) + ';"name"' }),
     );
 
     const cmdRow = el('div', {
@@ -525,112 +557,187 @@ function buildCard(ui, emu, controller, driveIndex, onClose) {
     });
     cmdRow.append(cmdText, copyBtn);
 
-    const footer = el('div', {
-        display: 'flex', gap: '6px', padding: '8px 10px', borderTop: '1px solid #333', background: '#1a1c20',
-    });
-    const mkBtn = (icon, label) => {
-        const b = el('button', {
-            display: 'flex', alignItems: 'center', gap: '4px', border: 'none', background: '#333',
-            color: '#ccc', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px',
-        });
-        if (icon) {
-            const i = el('span'); i.innerHTML = icon; i.style.filter = 'invert(1)';
-            i.firstChild.style.height = '13px'; i.firstChild.style.display = 'block';
-            b.appendChild(i);
-        }
-        b.appendChild(el('span', {}, { textContent: label }));
-        return b;
-    };
+    const loadedFooter = el('div', footerStyle);
     const ejectBtn = mkBtn(ejectIcon, 'Eject');
-    const saveBtn = mkBtn(openIcon, 'Save to PC');
-    const boxBtn = mkBtn(null, 'Cartridge box…');
-    footer.append(ejectBtn, saveBtn, boxBtn);
+    const tapeInfo = el('div', { flex: '1', textAlign: 'right', color: '#999', fontSize: '11px' });
+    loadedFooter.append(ejectBtn, tapeInfo);
 
-    card.append(header, body, blankNotice, cmdRow, footer);
+    loaded.append(body, blankNotice, cmdRow, loadedFooter);
 
-    ejectBtn.addEventListener('click', async () => { await controller.eject(driveIndex); onClose(); });
-    saveBtn.addEventListener('click', () => {
-        const d = controller.state.drives[driveIndex];
-        if (!d) return;
-        downloadBytes(d.data, (d.label || 'cartridge').replace(/[^\w-]+/g, '_') + '.mdr', saveBtn);
-    });
-    boxBtn.addEventListener('click', () => { onClose(); openCartridgeBox(ui, emu, controller, driveIndex); });
-    swatch.addEventListener('click', () => controller.cycleColour(driveIndex));
+    /* ---------- an empty drive ---------- */
+    const empty = el('div');
+    const listHeading = el('div', { padding: '8px 10px 2px', color: '#aaa' });
+    const list = el('div', { maxHeight: '180px', overflowY: 'auto', padding: '4px 6px' });
+    const emptyFooter = el('div', footerStyle);
+    const newBtn = mkBtn(null, 'New blank cartridge');
+    const pcBtn = mkBtn(openIcon, 'From PC…');
+    const fileInput = el('input', { display: 'none' }, { type: 'file', accept: '.mdr' });
+    emptyFooter.append(newBtn, pcBtn, fileInput);
+    empty.append(listHeading, list, emptyFooter);
+
+    panel.append(header, loaded, empty);
+
+    /* ---------- behaviour ---------- */
+    let onClose = () => {};
+    closeBtn.addEventListener('click', () => onClose());
+    ejectBtn.addEventListener('click', () => controller.eject(driveIndex));
     wpBtn.addEventListener('click', () => {
         const d = controller.state.drives[driveIndex];
-        if (!d) return;
-        const split = mdr.splitMDRFile(d.data);
-        controller.setWriteProtect(driveIndex, !split.writeProtect);
-        refresh();
+        if (d) controller.setWriteProtect(driveIndex, !mdr.splitMDRFile(d.data).writeProtect);
     });
-    formatBtn.addEventListener('click', async () => {
-        await controller.quickFormat(driveIndex, formatNameInput.value || 'UNTITLED');
-        refresh();
+    const format = () => {
+        if (formatNameInput.value) controller.quickFormat(driveIndex, formatNameInput.value);
+    };
+    const setFormatEnabled = (enabled) => {
+        formatBtn.disabled = !enabled;
+        formatBtn.style.opacity = enabled ? '1' : '0.45';
+        formatBtn.style.cursor = enabled ? 'pointer' : 'default';
+    };
+    setFormatEnabled(false);
+    formatNameInput.addEventListener('input', () => setFormatEnabled(!!formatNameInput.value));
+    formatNameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') format(); });
+    formatBtn.addEventListener('click', format);
+    newBtn.addEventListener('click', () => controller.insertNew(driveIndex, mdr.createBlank(mdr.MAX_BLOCKS)));
+    pcBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+        const file = fileInput.files[0];
+        fileInput.value = '';
+        if (!file) return;
+        const buf = await readFileAsArrayBuffer(file);
+        if (!mdr.validateMDRFile(buf)) { alert('Invalid Microdrive cartridge (.mdr) file'); return; }
+        controller.insertNew(driveIndex, buf);
     });
-    closeBtn.addEventListener('click', onClose);
 
-    let selectedFile = null;
+    // The selected file is kept by name, so it survives the file list being
+    // rebuilt when the tape changes.
+    let selectedName = null;
+    function selectFile(file) {
+        selectedName = file ? file.name : null;
+        cmdRow.style.display = file ? 'flex' : 'none';
+        if (file) cmdText.textContent = mdr.loadCommand(file, driveIndex);
+        ring.highlightFile(selectedName);
+        for (const row of fileList.children) row.style.background = (row.dataset.file === selectedName) ? '#2a2d33' : '';
+    }
     function renderFiles(parsed) {
         fileList.innerHTML = '';
         if (parsed.files.length === 0) {
             fileList.appendChild(el('div', { color: '#888', padding: '4px 0' }, { textContent: 'No files.' }));
         }
         parsed.files.forEach(file => {
-            const row = el('div', {
-                padding: '4px 6px', borderRadius: '4px', cursor: 'pointer', marginBottom: '2px',
-            });
+            const row = el('div', { padding: '4px 6px', borderRadius: '4px', cursor: 'pointer', marginBottom: '2px' });
+            row.dataset.file = file.name;
             const typeLabel = file.isPrintFile && !file.header ? 'Print file'
                 : (file.header ? file.header.typeName : (file.complete ? 'Data file' : 'Incomplete'));
             row.appendChild(el('div', { fontWeight: 'bold', overflowWrap: 'anywhere' }, { textContent: file.name || '(unnamed)' }));
             row.appendChild(el('div', { color: '#999', fontSize: '10px' },
                 { textContent: `${typeLabel} · ${file.length} bytes${file.complete ? '' : ' · incomplete'}` }));
             row.addEventListener('mouseenter', () => { row.style.background = '#2a2d33'; ring.highlightFile(file.name); });
-            row.addEventListener('mouseleave', () => { if (selectedFile !== file) row.style.background = ''; ring.highlightFile(selectedFile ? selectedFile.name : null); });
-            row.addEventListener('click', () => {
-                selectedFile = (selectedFile === file) ? null : file;
-                cmdRow.style.display = selectedFile ? 'flex' : 'none';
-                if (selectedFile) cmdText.textContent = mdr.loadCommand(file, driveIndex);
-                ring.highlightFile(selectedFile ? selectedFile.name : null);
+            row.addEventListener('mouseleave', () => {
+                if (file.name !== selectedName) row.style.background = '';
+                ring.highlightFile(selectedName);
             });
+            row.addEventListener('click', () => selectFile(file.name === selectedName ? null : file));
             fileList.appendChild(row);
         });
+        selectFile(parsed.files.find(f => f.name === selectedName) || null);
+    }
+
+    // The empty-drive list reads the box, so it's only rebuilt when what's
+    // in the drives changes, not on every refresh.
+    let listKey = null;
+    let listGeneration = 0;
+    async function loadList() {
+        const generation = ++listGeneration;
+        const inDrives = new Set(controller.state.drives.filter(Boolean).map(d => d.id));
+        const cartridges = (await store.list()).filter(meta => !inDrives.has(meta.id));
+        if (generation !== listGeneration) return;
+        listHeading.textContent = cartridges.length ? 'Insert a cartridge from the box:' : 'No other cartridges in the box.';
+        list.style.display = cartridges.length ? 'block' : 'none';
+        list.replaceChildren(...cartridges.map(meta => {
+            const row = el('div', {
+                display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 6px',
+                borderRadius: '4px', cursor: 'pointer',
+            });
+            row.appendChild(el('div', {
+                width: '12px', height: '12px', borderRadius: '2px', flexShrink: '0',
+                background: meta.colour, border: '1px solid #000',
+            }));
+            row.appendChild(el('div', {
+                flex: '1', minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                fontWeight: meta.label ? 'bold' : 'normal', fontStyle: meta.label ? 'normal' : 'italic',
+                color: meta.label ? '#eee' : '#999',
+            }, { textContent: meta.label || 'Blank cartridge' }));
+            row.appendChild(el('div', { color: '#777', fontSize: '10px', flexShrink: '0' },
+                { textContent: meta.modified ? new Date(meta.modified).toLocaleDateString() : '' }));
+            row.addEventListener('mouseenter', () => { row.style.background = '#2a2d33'; });
+            row.addEventListener('mouseleave', () => { row.style.background = ''; });
+            row.addEventListener('click', () => controller.insertExisting(driveIndex, meta.id));
+            return row;
+        }));
     }
 
     function refresh() {
         const d = controller.state.drives[driveIndex];
-        if (!d) { onClose(); return; }
-        swatch.style.background = d.colour;
-        if (document.activeElement !== nameInput) nameInput.value = d.label;
+        loaded.style.display = d ? 'block' : 'none';
+        empty.style.display = d ? 'none' : 'block';
+        wpBtn.style.display = d ? '' : 'none';
+        if (!d) {
+            title.textContent = `Drive ${driveIndex + 1} is empty`;
+            title.style.color = '#ccc';
+            title.style.fontStyle = 'normal';
+            const key = controller.state.drives.map(x => (x ? x.id : '')).join('|');
+            if (key !== listKey) { listKey = key; loadList(); }
+            return;
+        }
+        listKey = null;
+
         const { blockBytes, writeProtect } = controller.dataOf(driveIndex);
         const parsed = d.parsed || mdr.parse(blockBytes, writeProtect);
         d.parsed = parsed;
+        const formatted = parsed.formatted;
+        title.textContent = formatted ? (d.label || '(no name)') : 'Blank cartridge';
+        title.style.color = formatted ? '#fff' : '#999';
+        title.style.fontStyle = formatted ? 'normal' : 'italic';
         wpBtn.style.background = writeProtect ? '#a33' : '#333';
         wpBtn.style.color = writeProtect ? '#fff' : '#ccc';
-        // Only a formatted tape has a name to change, and a write-protected
-        // one can't be written.
-        nameInput.disabled = !parsed.formatted || writeProtect;
-        nameInput.placeholder = parsed.formatted ? '' : 'Not formatted';
 
-        const formatted = parsed.formatted;
         body.style.display = formatted ? 'flex' : 'none';
         blankNotice.style.display = formatted ? 'none' : 'block';
+        formatNameInput.disabled = writeProtect;
+        setFormatEnabled(!writeProtect && !!formatNameInput.value);
         if (formatted) {
+            formatNameInput.value = '';
             ring.render(parsed);
-            const motors = emu.microdriveMotors || 0;
-            const headPos = emu.microdriveHeads ? emu.microdriveHeads[driveIndex] : 0;
-            ring.setHead(headPos, parsed.blocks * mdr.BLOCK_LEN);
+            tick();
             renderFiles(parsed);
+            const n = parsed.files.length;
+            tapeInfo.textContent = `${n} file${n === 1 ? '' : 's'} · ${parsed.freeK}K free`;
         } else {
             cmdRow.style.display = 'none';
+            tapeInfo.textContent = '';
         }
     }
 
-    return { element: card, refresh };
+    // Called on every drive status update: only the head moves.
+    function tick() {
+        const d = controller.state.drives[driveIndex];
+        if (!d || !d.parsed || !d.parsed.formatted) return;
+        const headPos = emu.microdriveHeads ? emu.microdriveHeads[driveIndex] : 0;
+        ring.setHead(headPos, d.parsed.blocks * mdr.BLOCK_LEN);
+    }
+
+    return {
+        element: panel, refresh, tick,
+        set onClose(fn) { onClose = fn; },
+    };
 }
 
 /* ==================== the cartridge box ==================== */
 
-function openCartridgeBox(ui, emu, controller, preferredDrive) {
+/* The box of every cartridge you own, from File > Microdrive cartridges:
+ * create, import and export them, and name, colour, copy, save or delete
+ * each one. Using a cartridge happens at a drive (see buildDrivePanel). */
+function openCartridgeBox(ui, emu, controller) {
     const wasRunning = emu.isRunning;
     emu.pause();
     const body = ui.showDialog();
@@ -650,9 +757,10 @@ function openCartridgeBox(ui, emu, controller, preferredDrive) {
 
     const root = el('div', { fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' });
     body.appendChild(root);
-    root.appendChild(el('h2', { margin: '4px 0 8px 0', fontSize: '18px' }, { textContent: 'Microdrive cartridges' }));
-    root.appendChild(el('div', { color: '#666', fontSize: '90%', marginBottom: '8px' }, {
-        textContent: 'Drives 1 and 2 show in the dock; drives 3-8 work the same but aren’t displayed there yet.',
+    root.appendChild(el('h2', { margin: '4px 0 4px 0', fontSize: '18px' }, { textContent: 'Microdrive cartridges' }));
+    root.appendChild(el('div', { color: '#666', fontSize: '90%', marginBottom: '10px' }, {
+        textContent: 'Your cartridge box. To use a cartridge, click an empty Microdrive'
+            + (controller.state.connected ? '.' : ' (connect the Microdrives from the toolbar first).'),
     }));
 
     const toolbar = el('div', { display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' });
@@ -670,13 +778,15 @@ function openCartridgeBox(ui, emu, controller, preferredDrive) {
     });
     root.appendChild(grid);
 
-    const driveOptions = () => Array.from({ length: 8 }, (_, i) => i);
-
+    // Rendering awaits storage, so overlapping calls could interleave their
+    // cards; each builds off-screen and only the latest one is shown.
+    let renderGeneration = 0;
     async function renderGrid() {
-        grid.innerHTML = '';
+        const generation = ++renderGeneration;
+        const cards = document.createDocumentFragment();
         const cartridges = await store.list();
         if (cartridges.length === 0) {
-            grid.appendChild(el('div', { color: '#666', gridColumn: '1 / -1' }, { textContent: 'No cartridges yet - create or import one.' }));
+            cards.appendChild(el('div', { color: '#666', gridColumn: '1 / -1' }, { textContent: 'No cartridges yet - create or import one.' }));
         }
         for (const meta of cartridges) {
             const card = el('div', {
@@ -684,20 +794,29 @@ function openCartridgeBox(ui, emu, controller, preferredDrive) {
             });
             const top = el('div', { display: 'flex', alignItems: 'center', gap: '6px' });
             const swatch = el('div', {
-                width: '14px', height: '14px', borderRadius: '3px', background: meta.colour, border: '1px solid #999', flexShrink: '0',
+                width: '14px', height: '14px', borderRadius: '3px', background: meta.colour, border: '1px solid #999',
+                flexShrink: '0', cursor: 'pointer',
+            }, { title: 'Cartridge colour (click to change)' });
+            swatch.addEventListener('click', async () => {
+                const i = store.CARTRIDGE_COLOURS.indexOf(meta.colour);
+                await controller.setColour(meta.id, store.CARTRIDGE_COLOURS[(i + 1) % store.CARTRIDGE_COLOURS.length]);
+                renderGrid();
             });
             // The name is read off the tape itself (the stored label is only
             // a copy, corrected here if it has drifted).
             const record = await store.get(meta.id);
             const name = record ? mdr.cartridgeName(record.data) : null;
             if (record && (name || '') !== meta.label) store.update(meta.id, { label: name || '' });
-            const writeProtect = record ? mdr.splitMDRFile(record.data).writeProtect : false;
+            const split = record ? mdr.splitMDRFile(record.data) : null;
+            const parsed = split ? mdr.parse(split.data, split.writeProtect) : null;
+            const writeProtect = split ? split.writeProtect : false;
             const label = el('input', { flex: '1', minWidth: '0', border: '1px solid transparent', font: 'inherit', background: 'transparent' }, {
-                value: name || '', maxLength: 10, placeholder: (name === null) ? 'Not formatted' : '',
+                value: name || '', maxLength: 10, placeholder: (name === null) ? 'Blank cartridge' : '',
                 disabled: (name === null) || writeProtect,
+                title: (name === null) ? 'Format it in a drive to name it' : 'Cartridge name',
             });
             label.addEventListener('keydown', (e) => { if (e.key === 'Enter') label.blur(); });
-            const insertedIn = controller.state.drives.findIndex(d => d && d.id === meta.id);
+            const insertedIn = controller.driveOf(meta.id);
             label.addEventListener('change', async () => {
                 if (insertedIn >= 0) {
                     controller.rename(insertedIn, label.value);
@@ -709,21 +828,20 @@ function openCartridgeBox(ui, emu, controller, preferredDrive) {
             });
             top.append(swatch, label);
             card.appendChild(top);
-            card.appendChild(el('div', { color: '#777', fontSize: '90%', margin: '4px 0' }, {
-                textContent: `Modified ${fmtDate(meta.modified)}` + (insertedIn >= 0 ? ` · in drive ${insertedIn + 1}` : ''),
-            }));
+
+            const status = [];
+            if (parsed && parsed.formatted) {
+                const n = parsed.files.length;
+                status.push(`${n} file${n === 1 ? '' : 's'}, ${parsed.freeK}K free`);
+            } else {
+                status.push('Unformatted');
+            }
+            if (writeProtect) status.push('write-protected');
+            if (insertedIn >= 0) status.push(`in drive ${insertedIn + 1}`);
+            card.appendChild(el('div', { color: '#555', fontSize: '90%', marginTop: '4px' }, { textContent: status.join(' · ') }));
+            card.appendChild(el('div', { color: '#888', fontSize: '85%', marginBottom: '4px' }, { textContent: `Modified ${fmtDate(meta.modified)}` }));
 
             const actions = el('div', { display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '6px' });
-            const driveSelect = el('select', { padding: '2px' });
-            driveOptions().forEach(d => driveSelect.appendChild(el('option', {}, { value: d, textContent: 'Drive ' + (d + 1) })));
-            if (preferredDrive != null) driveSelect.value = preferredDrive;
-            const insertBtn = el('button', {}, { textContent: 'Insert' });
-            insertBtn.addEventListener('click', async () => {
-                const drive = parseInt(driveSelect.value, 10);
-                await controller.insertExisting(drive, meta.id);
-                await controller.setConnected(true);
-                renderGrid();
-            });
             const saveBtn = el('button', {}, { textContent: 'Save to PC' });
             saveBtn.addEventListener('click', async () => {
                 const record = await store.get(meta.id);
@@ -734,17 +852,18 @@ function openCartridgeBox(ui, emu, controller, preferredDrive) {
             const delBtn = el('button', { color: '#a00' }, { textContent: 'Delete' });
             delBtn.addEventListener('click', () => {
                 if (delBtn.dataset.confirm) {
-                    store.remove(meta.id).then(renderGrid);
+                    controller.remove(meta.id).then(renderGrid);
                 } else {
                     delBtn.dataset.confirm = '1';
-                    delBtn.textContent = 'Really delete?';
+                    delBtn.textContent = (insertedIn >= 0) ? 'Eject & delete?' : 'Really delete?';
                     setTimeout(() => { delBtn.dataset.confirm = ''; delBtn.textContent = 'Delete'; }, 3000);
                 }
             });
-            actions.append(driveSelect, insertBtn, saveBtn, dupBtn, delBtn);
+            actions.append(saveBtn, dupBtn, delBtn);
             card.appendChild(actions);
-            grid.appendChild(card);
+            cards.appendChild(card);
         }
+        if (generation === renderGeneration) grid.replaceChildren(cards);
     }
 
     newBtn.addEventListener('click', async () => {
@@ -826,7 +945,7 @@ export function createMicrodriveDock(ui, emu) {
     // Sits to the left of the Spectrum with the ribbon plugged in level with
     // the toolbar strip (the keyboard below it is optional, so it is no
     // anchor): drive 1 nearest the Spectrum and joined to it by the ribbon,
-    // further drives abutting to its left, as with a real daisy chain.
+    // drive 2 abutting to its left, as with a real daisy chain.
     const element = el('div', { position: 'absolute', zIndex: '90', right: '100%', transformOrigin: '100% 0%', display: 'none' });
     const inner = el('div', { display: 'flex', flexDirection: 'row-reverse', alignItems: 'flex-end' });
     element.appendChild(inner);
@@ -844,52 +963,55 @@ export function createMicrodriveDock(ui, emu) {
     ui.appContainer.appendChild(fsIndicator);
 
     const icons = [];
-    let openCard = null;
-    let openCardDrive = -1;
+    let openPanel = null;
+    let openPanelDrive = -1;
 
-    // The card is anchored by its bottom edge, so whenever its height
-    // changes (formatting, a file's LOAD line appearing) it is re-placed.
-    const cardResize = window.ResizeObserver ? new ResizeObserver(() => positionCard()) : null;
+    // The panel is anchored by its bottom edge, so whenever its height
+    // changes (formatting, ejecting, a file's LOAD line appearing) it is
+    // re-placed.
+    const panelResize = window.ResizeObserver ? new ResizeObserver(() => positionPanel()) : null;
 
-    function closeCard() {
-        if (openCard) {
-            if (cardResize) cardResize.unobserve(openCard.element);
-            openCard.element.remove();
-            openCard = null;
-            openCardDrive = -1;
+    function closePanel() {
+        if (openPanel) {
+            if (panelResize) panelResize.unobserve(openPanel.element);
+            openPanel.element.remove();
+            openPanel = null;
+            openPanelDrive = -1;
         }
     }
 
-    function positionCard() {
-        if (!openCard) return;
+    function positionPanel() {
+        if (!openPanel) return;
         // Opens just above the drive it belongs to, left edges aligned, so
-        // it's plain which drive is being edited. The drive's on-screen box
+        // it's plain which drive it is about. The drive's on-screen box
         // already includes the dock's scale transform.
-        const drive = icons[openCardDrive].element.getBoundingClientRect();
+        const drive = icons[openPanelDrive].element.getBoundingClientRect();
         const container = ui.appContainer.getBoundingClientRect();
-        const cardHeight = openCard.element.offsetHeight || 260;
+        const panelHeight = openPanel.element.offsetHeight || 260;
         const gap = 6;
-        openCard.element.style.left = (drive.left - container.left) + 'px';
-        openCard.element.style.top = (drive.top - container.top - cardHeight - gap) + 'px';
+        openPanel.element.style.left = (drive.left - container.left) + 'px';
+        openPanel.element.style.top = (drive.top - container.top - panelHeight - gap) + 'px';
     }
 
-    function openCardFor(drive) {
-        if (openCardDrive === drive) { closeCard(); return; }
-        closeCard();
-        if (!controller.state.drives[drive]) { openCartridgeBox(ui, emu, controller, drive); return; }
-        openCard = buildCard(ui, emu, controller, drive, closeCard);
-        openCardDrive = drive;
-        ui.appContainer.appendChild(openCard.element);
-        openCard.refresh();
-        positionCard();
-        if (cardResize) cardResize.observe(openCard.element);
+    // Clicking a drive opens its panel, empty or not; clicking it again
+    // closes it.
+    function togglePanel(drive) {
+        if (openPanelDrive === drive) { closePanel(); return; }
+        closePanel();
+        openPanel = buildDrivePanel(emu, controller, drive);
+        openPanel.onClose = closePanel;
+        openPanelDrive = drive;
+        ui.appContainer.appendChild(openPanel.element);
+        openPanel.refresh();
+        positionPanel();
+        if (panelResize) panelResize.observe(openPanel.element);
     }
 
-    for (let i = 0; i < DOCKED_DRIVES; i++) {
+    for (let i = 0; i < DRIVE_COUNT; i++) {
         const icon = buildDriveIcon(i);
         icons.push(icon);
         inner.appendChild(icon.element);
-        icon.element.addEventListener('click', () => openCardFor(i));
+        icon.element.addEventListener('click', () => togglePanel(i));
         icon.element.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); icon.setGlow(true); });
         icon.element.addEventListener('dragleave', () => icon.setGlow(false));
         icon.element.addEventListener('drop', async (e) => {
@@ -910,7 +1032,7 @@ export function createMicrodriveDock(ui, emu) {
         const show = controller.state.connected && !fullscreen;
         element.style.display = show ? 'block' : 'none';
         fsIndicator.style.display = (controller.state.connected && fullscreen) ? 'flex' : 'none';
-        if (!show) closeCard();
+        if (!show) closePanel();
     }
 
     function reposition() {
@@ -922,7 +1044,7 @@ export function createMicrodriveDock(ui, emu) {
         const bar = ui.toolbar.elem;
         element.style.top = (bar.offsetTop + (bar.offsetHeight / 2) - (RIBBON_PLUG_Y * scale)) + 'px';
         element.style.transform = `scale(${scale})`;
-        positionCard();
+        positionPanel();
     }
     if (window.ResizeObserver) new ResizeObserver(reposition).observe(ui.appContainer);
     ui.on('setZoom', reposition);
@@ -930,18 +1052,18 @@ export function createMicrodriveDock(ui, emu) {
 
     controller.onChange(() => {
         applyVisibility();
-        for (let i = 0; i < DOCKED_DRIVES; i++) {
+        for (let i = 0; i < DRIVE_COUNT; i++) {
             const d = controller.state.drives[i];
             icons[i].setCartridge(d ? d.colour : null, d ? d.label : '');
         }
-        if (openCard) openCard.refresh();
+        if (openPanel) openPanel.refresh();
         reposition();
     });
 
     emu.on('microdriveStatus', () => {
-        for (let i = 0; i < DOCKED_DRIVES; i++) icons[i].setLed(!!(emu.microdriveMotors & (1 << i)));
+        for (let i = 0; i < DRIVE_COUNT; i++) icons[i].setLed(!!(emu.microdriveMotors & (1 << i)));
         fsIndicator.innerHTML = '';
-        for (let i = 0; i < 8; i++) {
+        for (let i = 0; i < DRIVE_COUNT; i++) {
             if (emu.microdriveMotors & (1 << i)) {
                 fsIndicator.appendChild(el('div', {
                     width: '10px', height: '10px', borderRadius: '50%', background: '#ff3b30',
@@ -949,7 +1071,7 @@ export function createMicrodriveDock(ui, emu) {
                 }));
             }
         }
-        if (openCard) { openCard.refresh(); positionCard(); }
+        if (openPanel) openPanel.tick();
     });
 
     // A .mdr opened with nothing else listening (File -> Open, a URL, or a
@@ -968,6 +1090,6 @@ export function createMicrodriveDock(ui, emu) {
         element,
         toggle() { controller.setConnected(!controller.state.connected); },
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
-        openBox() { openCartridgeBox(ui, emu, controller); },
+        openBox() { closePanel(); openCartridgeBox(ui, emu, controller); },
     };
 }
