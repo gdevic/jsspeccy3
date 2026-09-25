@@ -16,7 +16,7 @@ A ZX Spectrum emulator for the browser
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
 * Opens games straight from the PlayZX online catalog (~10,800 titles)
-* 100% / 200% / 300% and fullscreen display modes, with a compact menu bar and toolbar at 100%
+* 100% / 200% / 300% and fullscreen display modes, with a compact menu bar and toolbar at 100%; the chosen size is remembered for the next visit
 * A switched-off TV screen until the machine is started, which then powers on like a picture tube
 
 ## Implementation notes
@@ -87,7 +87,7 @@ The available configuration options are:
 * `tapeAutoLoadMode`: specifies the mode that the machine should be set to before auto-loading tape files. When set to 'default' (the default), this is equivalent to selecting the Tape Loader menu option on machines that support it; when set to 'usr0', this is equivalent to entering 'usr0' in 128 BASIC then LOAD "" from the resulting 48K BASIC prompt (which leaves 128K memory paging available without the extra housekeeping of the 128K ROM - this mode is commonly used for launching demos).
 * `machine`: specifies the machine to emulate. Can be `48` (for a 48K Spectrum), `128` (for a 128K Spectrum), or `5` (for a Pentagon 128).
 * `openUrl`: specifies a URL, or an array of URLs, to a file (or files) to load on startup, in any supported snapshot, tape or archive format. Standard browser security restrictions apply for loading remote files: if the URL being loaded is not on the same domain as the calling page, it must serve [CORS HTTP headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) to be loadable.
-* `zoom`: specifies the size of the emulator window; 1 for 100% size (one Spectrum pixel per screen pixel), 2 for 200% size and so on.
+* `zoom`: specifies the size of the emulator window; 1 for 100% size (one Spectrum pixel per screen pixel), 2 for 200% size and so on. A size the visitor has chosen from the Display menu is remembered in the browser and takes its place on later visits, unless `uiEnabled` is false. Browsers only allow fullscreen in response to the user, so a remembered fullscreen opens at the size underneath it and goes fullscreen when the play button is pressed.
 * `sandbox`: if true, all UI options for opening a new file are disabled, and the Microdrives and printer are not offered - useful if you're showcasing a specific bit of Spectrum software on your page.
 * `tapeTrapsEnabled`: if true (the default), the emulator will recognise when the tape loading routine in the ROM is called, and load tape files instantly instead. Custom loaders that bypass the ROM routine cannot be trapped; the emulator recognises them sampling the tape, plays the tape for them, and runs the machine faster than real time until the loader stops. With this option off, a detected loader still starts the tape, but loading runs at normal speed.
 * `keyboardEnabled`: True by default; if false, the emulator will not respond to keypresses.

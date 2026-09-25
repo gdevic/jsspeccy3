@@ -698,6 +698,29 @@ class Emulator extends EventEmitter {
     }
 }
 
+/* The display size - 100%, 200%, 300% or fullscreen - is remembered in
+ * localStorage and restored on the next visit. A browser lets a page go
+ * fullscreen only in response to the user, so a remembered fullscreen comes
+ * back on the first press of the start button; until then the display has
+ * the size it had under fullscreen. */
+const DISPLAY_KEY = 'jsspeccy-display';
+
+function loadDisplay() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(DISPLAY_KEY));
+        if (saved && Number.isFinite(saved.zoom) && saved.zoom > 0) {
+            return { zoom: saved.zoom, fullscreen: !!saved.fullscreen };
+        }
+    } catch (e) { /* unreadable: use the page's own setting */ }
+    return null;
+}
+
+function saveDisplay(display) {
+    try {
+        localStorage.setItem(DISPLAY_KEY, JSON.stringify(display));
+    } catch (e) { /* private browsing / quota / disabled storage: just don't persist it */ }
+}
+
 window.JSSpeccy = (container, opts) => {
     // let benchmarkRunCount = 0;
     // let benchmarkRenderCount = 0;
@@ -723,11 +746,22 @@ window.JSSpeccy = (container, opts) => {
         joystickType: opts.joystickType || 'kempston',
         joystickDevice: opts.joystickDevice || null,
     });
+    // Without the menu bar there is no way to change the size, so the page's
+    // own setting always holds.
+    const savedDisplay = uiEnabled ? loadDisplay() : null;
     const ui = new UIController(container, emu, {
-        zoom: opts.zoom || 1,
+        zoom: (savedDisplay && savedDisplay.zoom) || opts.zoom || 1,
         sandbox: opts.sandbox,
         uiEnabled: uiEnabled,
     });
+    if (uiEnabled) {
+        ui.on('setZoom', (factor) => {
+            saveDisplay(factor === 'fullscreen' ? { zoom: ui.zoom, fullscreen: true } : { zoom: factor, fullscreen: false });
+        });
+        if (savedDisplay && savedDisplay.fullscreen) {
+            ui.startButton.addEventListener('click', () => ui.enterFullscreen(), { once: true });
+        }
+    }
 
     if (keyboardEnabled) {
         if (ui.appContainer.tabIndex == -1) {
