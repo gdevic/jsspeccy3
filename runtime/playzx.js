@@ -297,12 +297,14 @@ async function fetchImage(gid) {
 /* Hand the tape to the emulator the same way a local file open would, then get
  * out of the way: the 'fileOpened' handler does the tape-loader autostart. */
 async function insertTape(buffer, format, ui, emu, name) {
+    // Named after the game, so a saved session keeps this tape.
+    const fileName = (name || 'PlayZX game') + (format === 'tzx' ? '.tzx' : '.tap');
     if (format === 'tzx') {
         if (!TZXFile.isValid(buffer)) throw new PlayZXError(UNSUPPORTED_ERROR);
-        await emu.openTZXFile(buffer);
+        await emu.openTZXFile(buffer, { name: fileName });
     } else {
         if (!TAPFile.isValid(buffer)) throw new PlayZXError(UNSUPPORTED_ERROR);
-        await emu.openTAPFile(buffer);
+        await emu.openTAPFile(buffer, { name: fileName });
     }
     // Let the Pokes dialog match trainers against the catalog title.
     if (name) emu.setLoadedGame(name);

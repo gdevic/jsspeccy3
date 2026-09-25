@@ -321,23 +321,12 @@ export class UIController extends EventEmitter {
         }
 
         /* Until the machine first starts there is no picture, so the display
-         * shows a switched-off TV: dark glass, darker towards the corners,
-         * with a faint reflection and scanlines. Starting it plays the
-         * picture tube's power-on (see powerOn). */
-        this.screenOff = document.createElement('div');
-        Object.assign(this.screenOff.style, {
-            position: 'absolute', zIndex: '1', pointerEvents: 'none', overflow: 'hidden',
-            background: [
-                'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 28%, rgba(255,255,255,0) 42%)',
-                'repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0px, rgba(0,0,0,0.22) 1px, rgba(0,0,0,0) 1px, rgba(0,0,0,0) 3px)',
-                'radial-gradient(ellipse at 50% 45%, #2e3531 0%, #1d2320 55%, #0b0d0c 100%)',
-            ].join(', '),
-            boxShadow: 'inset 0 0 50px rgba(0,0,0,0.85)',
-        });
-        // Stacked above the display, which the power-on's brightness filter
-        // would otherwise draw on top of it, and below the menus' drop-down
-        // lists and the start button.
-        this.appContainer.appendChild(this.screenOff);
+         * shows a switched-off TV (see showScreenOff); it comes back when the
+         * machine is switched off, such as by restoring a session saved with
+         * it off. Starting it plays the picture tube's power-on (see
+         * powerOn). */
+        this.screenOff = null;
+        this.showScreenOff();
 
         this.startButton = document.createElement('button');
         this.startButton.innerHTML = playIcon;
@@ -370,6 +359,14 @@ export class UIController extends EventEmitter {
         });
         emulator.on('pause', () => {
             this.startButton.style.display = 'block';
+        });
+        emulator.on('powerOff', () => {
+            this.showScreenOff();
+        });
+        emulator.on('powerOnPaused', () => {
+            // on, with its picture, but not running: no power-on to watch
+            if (this.screenOff) this.screenOff.remove();
+            this.screenOff = null;
         });
 
         /* The menu bar, toolbar and on-screen keyboard are built and toggled after
@@ -453,27 +450,25 @@ export class UIController extends EventEmitter {
             this.appContainer.addEventListener('drop', (ev) => {
                 ev.preventDefault();
                 let loadList = Promise.resolve();
+                // A saved session starts the machine itself, once restored.
+                let sawSession = false;
+                const open = (file) => {
+                    loadList = loadList.then(() => emulator.openFile(file)).then((res) => {
+                        if (res && res.mediaType === 'session') sawSession = true;
+                    }, (err) => { alert(err); });
+                };
                 if (ev.dataTransfer.items) {
                     // Use DataTransferItemList interface to access the file(s)
                     for (const item of ev.dataTransfer.items) {
                         // If dropped items aren't files, reject them
-                        if (item.kind === 'file') {
-                            const file = item.getAsFile();
-                            loadList = loadList.then(() => {
-                                emulator.openFile(file);
-                            });
-                        }
+                        if (item.kind === 'file') open(item.getAsFile());
                     }
                 } else {
                     // Use DataTransfer interface to access the file(s)
-                    for (const file of ev.dataTransfer.files) {
-                        loadList = loadList.then(() => {
-                            emulator.openFile(file);
-                        });
-                    }
+                    for (const file of ev.dataTransfer.files) open(file);
                 }
                 loadList.then(() => {
-                    if (emulator.isInitiallyPaused) emulator.start();
+                    if (emulator.isInitiallyPaused && !sawSession) emulator.start();
                 })
             });
             this.appContainer.addEventListener('dragover', (ev) => {
@@ -523,7 +518,28 @@ export class UIController extends EventEmitter {
         }
     }
 
-    /* The picture tube warming up, the first time the machine starts: a bright
+    /* The switched-off TV: dark glass, darker towards the corners, with a
+     * faint reflection and scanlines, over the display. */
+    showScreenOff() {
+        if (this.screenOff) return;
+        this.screenOff = document.createElement('div');
+        Object.assign(this.screenOff.style, {
+            position: 'absolute', zIndex: '1', pointerEvents: 'none', overflow: 'hidden',
+            background: [
+                'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 28%, rgba(255,255,255,0) 42%)',
+                'repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0px, rgba(0,0,0,0.22) 1px, rgba(0,0,0,0) 1px, rgba(0,0,0,0) 3px)',
+                'radial-gradient(ellipse at 50% 45%, #2e3531 0%, #1d2320 55%, #0b0d0c 100%)',
+            ].join(', '),
+            boxShadow: 'inset 0 0 50px rgba(0,0,0,0.85)',
+        });
+        // Stacked above the display, which the power-on's brightness filter
+        // would otherwise draw on top of it, and below the menus' drop-down
+        // lists and the start button.
+        this.appContainer.appendChild(this.screenOff);
+        if (this.startButton) this.centerStartButton();
+    }
+
+    /* The picture tube warming up, as the machine starts: a bright
      * line flashes across the middle of the black screen, then opens out top
      * and bottom into the picture, which settles from over-bright. Skipped for
      * anyone who asks for reduced motion. */

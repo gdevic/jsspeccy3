@@ -302,6 +302,7 @@ function clearContentionTable(frameCycleCount:u32):void {
 let frameCycleCount:u32 = 69888;
 let screenPageIndex:u32 = 5;
 let pagingLocked:bool = 0;
+let pagingValue:u8 = 0;  // the last value written to the 128K paging port, for snapshots
 let t:u32 = 0;
 let pc:u16 = 0;
 let iff1:bool = 0;
@@ -385,6 +386,7 @@ export function reset():void {
         writeAYRegister(i, 0);
     }
     screenPageIndex = 5;
+    pagingValue = 0;
     t = 0;
     pc = 0;
     iff1 = iff2 = 0;
@@ -1090,6 +1092,7 @@ export function writePort(addr:u16, val:u8):void {
                 memoryPageReadMap[0] = (val & 0x10) ? rom1Page : rom0Page;
             }
             pagingLocked = bool(val & 0x20);
+            pagingValue = val;
         }
     } else if (if1Enabled && (addr & 0x0018) != 0x0018) {
         /* see the matching decode in readPort */
@@ -1315,6 +1318,92 @@ export function setInterface1Enabled(enabled:bool):void {
         }
         if1CommsClk = false;
     }
+}
+
+/* Draws a whole frame of the display from memory as it stands, without
+running the CPU: the picture of a machine that is paused, such as one just
+restored from a snapshot. */
+export function renderStaticFrame():void {
+    const savedT:u32 = t;
+    screenEventPointer = 0;
+    framebufferIndex = 0;
+    t = frameCycleCount;  // every screen fetch of the frame is due
+    updateFramebuffer();
+    t = savedT;
+}
+
+/* ---- Machine state for snapshots ----
+What a snapshot needs beyond the registers and memory, which the worker
+reads directly. */
+export function getMachineType():u32 {
+    return machineType;
+}
+// False straight after EI, when an interrupt can't be taken yet.
+export function getInterruptible():bool {
+    return interruptible;
+}
+export function setInterruptible(val:bool):void {
+    interruptible = val;
+}
+export function getBorderColour():u8 {
+    return borderColour;
+}
+export function getPagingValue():u8 {
+    return pagingValue;
+}
+export function getSelectedAYRegister():u8 {
+    return selectedAYRegister;
+}
+export function getAYRegister(reg:u8):u8 {
+    return readAYRegister(reg);
+}
+
+// Whether the Interface 1 shadow ROM is paged in right now. It can only be
+// paged in while the Interface 1 is connected.
+export function getInterface1Paged():bool {
+    return if1ROMActive;
+}
+export function setInterface1Paged(paged:bool):void {
+    if (paged == if1ROMActive || (paged && !if1Enabled)) return;
+    if (paged) {
+        if1SavedROMPage = memoryPageReadMap[0];
+        memoryPageReadMap[0] = 14;
+    } else {
+        memoryPageReadMap[0] = if1SavedROMPage;
+    }
+    if1ROMActive = paged;
+}
+
+// Whether the TR-DOS ROM is paged in right now (only on a machine with the
+// Beta 128 disk interface).
+export function getBetadiskPaged():bool {
+    return betadiskROMActive;
+}
+export function setBetadiskPaged(paged:bool):void {
+    if (!betadiskEnabled || paged == betadiskROMActive) return;
+    betadiskROMActive = paged;
+    memoryPageReadMap[0] = paged ? 13 : rom1Page;
+}
+
+/* The printer mechanism: bit 0 motor running, bit 1 slow, bit 2 stylus
+powered, bit 3 paper latch, bit 4 encoder latch; and where the stylus is
+along its pass. */
+export function getPrinterMechanism():u32 {
+    return (zxpMotorOn ? 1 : 0) | (zxpSlow ? 2 : 0) | (zxpStylus ? 4 : 0) | (zxpPaperLatch ? 8 : 0) | (zxpPixelLatch ? 16 : 0);
+}
+export function getPrinterPhase():u32 {
+    return zxpPhase;
+}
+export function setPrinterMechanism(bits:u32, phase:u32):void {
+    zxpMotorOn = bool(bits & 1);
+    zxpSlow = bool(bits & 2);
+    zxpStylus = bool(bits & 4);
+    zxpPaperLatch = bool(bits & 8);
+    zxpPixelLatch = bool(bits & 16);
+    zxpPhase = phase % (ZXP_UNITS_PER_DOT * ZXP_DOTS_PER_PASS);
+    zxpDot = false;
+    zxpDotSet = false;
+    zxpLastT = t;
 }
 
 /* Connects or disconnects the ZX Printer. Disconnecting stops its motor;

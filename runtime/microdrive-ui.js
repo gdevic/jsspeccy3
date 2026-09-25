@@ -52,6 +52,14 @@ function colourForName(name) {
 
 const fmtDate = (ms) => ms ? new Date(ms).toLocaleString() : '-';
 
+// Whether two cartridge images hold the same bytes.
+function sameBytes(a, b) {
+    const x = new Uint8Array(a), y = new Uint8Array(b);
+    if (x.length !== y.length) return false;
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+}
+
 /* Triggers a browser download of `bytes` as `filename`, with a brief pulse on
  * `flourishEl` (if given) standing in for a fuller "cartridge flies out to
  * the corner" animation - a first-cut simplification. */
@@ -1091,5 +1099,84 @@ export function createMicrodriveDock(ui, emu) {
         toggle() { controller.setConnected(!controller.state.connected); },
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
         openBox() { closePanel(); openCartridgeBox(ui, emu, controller); },
+
+        /* For a saved session: the whole cartridge box and what is in each
+         * drive. `liveDrives` are the drives' images from the snapshot,
+         * which may hold writes not flushed to the box yet. Which cartridge
+         * is in which drive is taken as it is at the call, before anything
+         * is awaited, so it matches the snapshot. A cartridge the box
+         * couldn't store is still saved, under a made-up id. */
+        async sessionSave(liveDrives) {
+            const connected = controller.state.connected;
+            const driveIds = controller.state.drives.map((d, i) => d ? (d.id || `unsaved-${i}`) : null);
+            const driveColours = controller.state.drives.map(d => d ? d.colour : undefined);
+            const live = new Map(liveDrives.map(d => [d.token || `unsaved-${d.drive}`, d.data]));
+            const cartridges = [];
+            for (const meta of await store.list()) {
+                const record = await store.get(meta.id);
+                if (!record) continue;
+                let data = record.data;
+                let modified = record.modified;
+                if (live.has(meta.id)) {
+                    const newer = live.get(meta.id);
+                    if (!sameBytes(newer, data)) {
+                        data = newer;
+                        modified = Date.now();
+                    }
+                    live.delete(meta.id);
+                }
+                cartridges.push({ id: meta.id, label: mdr.cartridgeName(data) || '', colour: record.colour, created: record.created, modified, data });
+            }
+            for (const [id, data] of live) {
+                const drive = liveDrives.find(d => (d.token || `unsaved-${d.drive}`) === id).drive;
+                cartridges.push({ id, label: mdr.cartridgeName(data) || '', colour: driveColours[drive], modified: Date.now(), data });
+            }
+            return { connected, drives: driveIds, cartridges };
+        },
+
+        /* Restores a saved session's Microdrives. Its cartridges join the
+         * box: one the box already holds unchanged is left as it is; one the
+         * box holds newer work on is added beside it rather than over it;
+         * any other is stored under its own id. The drives and the
+         * connection are then set as they were. Without storage, the
+         * session's cartridges still go into the drives. */
+        async sessionRestore(session) {
+            closePanel();
+            for (let d = 0; d < DRIVE_COUNT; d++) {
+                if (controller.state.drives[d]) await controller.eject(d);
+            }
+            // Ejecting flushes what was in the drives; those writes are
+            // queued ahead of the session's, which go in under the same ids.
+            await emu.barrier();
+            const box = [];
+            for (const meta of await store.list()) {
+                const record = await store.get(meta.id);
+                if (record) box.push(record);
+            }
+            const ids = new Map();       // session id -> id in the box
+            const unstored = new Map();  // session id -> cartridge, where storage failed
+            for (const c of session.cartridges) {
+                const sameId = c.id ? box.find(r => r.id === c.id) : null;
+                const identical = (sameId && sameBytes(sameId.data, c.data)) ? sameId : box.find(r => sameBytes(r.data, c.data));
+                if (identical) {
+                    ids.set(c.id, identical.id);
+                    continue;
+                }
+                const keepBoth = sameId && (sameId.modified || 0) > (c.modified || 0);
+                const ownId = (c.id && !c.id.startsWith('unsaved-') && !keepBoth) ? c.id : null;
+                const id = await store.put({ ...c, id: ownId });
+                if (id) ids.set(c.id, id); else unstored.set(c.id, c);
+            }
+            for (let d = 0; d < DRIVE_COUNT; d++) {
+                const key = session.drives[d];
+                if (!key) continue;
+                if (ids.has(key)) {
+                    await controller.insertExisting(d, ids.get(key));
+                } else if (unstored.has(key)) {
+                    await controller.insertNew(d, unstored.get(key).data, unstored.get(key).colour);
+                }
+            }
+            await controller.setConnected(!!session.connected);
+        },
     };
 }

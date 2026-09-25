@@ -15,8 +15,10 @@ import { isPlayZXAvailable } from './playzx-session.js';
 import { validateMDRFile } from './mdr.js';
 import { createMicrodriveDock } from './microdrive-ui.js';
 import { createPrinter } from './printer-ui.js';
+import { isSessionFile, buildSessionFile, readSessionFile, confirmRestore, chooseSaveTarget, writeSaveTarget } from './session.js';
 
-import openIcon from './icons/open.svg';
+import sessionSaveIcon from './icons/session-save.svg';
+import sessionRestoreIcon from './icons/session-restore.svg';
 import resetIcon from './icons/reset.svg';
 import playIcon from './icons/play.svg';
 import pauseIcon from './icons/pause.svg';
@@ -32,6 +34,22 @@ import printerIcon from './icons/printer.svg';
 import { createKeyboardOverlay } from './keyboard-overlay.js';
 
 const scriptUrl = document.currentScript.src;
+
+// The file name at the end of a path.
+const baseName = (path) => String(path).split('/').pop();
+
+// The file name at the end of a URL, decoded.
+const urlFileName = (url) => {
+    const name = baseName(url).split('?')[0];
+    try {
+        return decodeURIComponent(name);
+    } catch (e) {
+        return name;
+    }
+};
+
+// A copy of a file's bytes as an ArrayBuffer of its own.
+const copyBytes = (data) => (data instanceof ArrayBuffer) ? data.slice(0) : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
 
 class Emulator extends EventEmitter {
     constructor(canvas, opts) {
@@ -64,6 +82,10 @@ class Emulator extends EventEmitter {
         this.tapeTotalBytes = 0;
         this.tapePositionMs = 0;
         this.tapeBlockIndex = 0; // block the tape is parked on: what the next load reads
+        this.tapeFile = null;    // {name, data} of the loaded tape, for saving a session
+        this.rom48Variant = 'standard';  // which 48K ROM is in page 10: 'standard' or 'gw03'
+        this.nextSnapshotID = 0;
+        this.snapshotResolutions = {};
 
         this.msPerFrame = 20;
 
@@ -148,7 +170,11 @@ class Emulator extends EventEmitter {
                     }
                     break;
                 case 'fileOpened':
-                    if (e.data.mediaType == 'tape' && this.autoLoadTapes) {
+                    if (e.data.error) {
+                        this.fileOpenPromiseResolutions[e.data.id]({ mediaType: e.data.mediaType, error: e.data.error });
+                        break;
+                    }
+                    if (e.data.mediaType == 'tape' && this.autoLoadTapes && !e.data.quiet) {
                         this.bootTapeLoader();
                         if (!this.tapeTrapsEnabled) {
                             this.playTape();
@@ -160,6 +186,17 @@ class Emulator extends EventEmitter {
                     if (e.data.mediaType == 'tape') {
                         this.emit('openedTapeFile');
                     }
+                    break;
+                case 'screenRendered':
+                    this.displayHandler.frameCompleted(e.data.frameBuffer);
+                    this.displayHandler.show();
+                    if (this.screenRenderedResolution) this.screenRenderedResolution();
+                    this.screenRenderedResolution = null;
+                    break;
+                case 'snapshot':
+                case 'barrier':
+                    this.snapshotResolutions[e.data.id](e.data.snapshot);
+                    delete this.snapshotResolutions[e.data.id];
                     break;
                 case 'pokesApplied':
                     this.pokesPromiseResolutions[e.data.id](e.data.originals);
@@ -187,7 +224,9 @@ class Emulator extends EventEmitter {
                     this.emit('tapePosition');
                     break;
                 case 'tapeSeeked':
-                    if (!this.tapeTrapsEnabled) {
+                    if (e.data.quiet) {
+                        // restoring a session: the tape just moves
+                    } else if (!this.tapeTrapsEnabled) {
                         this.playTape();
                     } else if (!e.data.loadInFlight && this.autoLoadTapes) {
                         this.bootTapeLoader();
@@ -195,6 +234,7 @@ class Emulator extends EventEmitter {
                     this.emit('tapeSeeked');
                     break;
                 case 'tapeEjected':
+                    this.tapeFile = null;
                     this.tapeSegments = [];
                     this.tapeTotalMs = 0;
                     this.tapeTotalBytes = 0;
@@ -386,7 +426,61 @@ class Emulator extends EventEmitter {
         this.worker.postMessage({message: 'reset'});
     }
 
+    /* Puts the standard ('standard') or the alternate ('gw03') ROM in as the
+     * 48K ROM; the machine keeps running whatever is in memory. */
+    async setRom48Variant(variant) {
+        this.rom48Variant = (variant === 'gw03') ? 'gw03' : 'standard';
+        await this.loadRom(this.rom48Variant === 'gw03' ? 'roms/gw03.rom' : 'roms/48.rom', 10);
+    }
+
+    /* The machine as it stands between two frames: a snapshot in the
+     * structure the snapshot parsers produce, with the extras a saved
+     * session keeps (see takeSnapshot in the worker). */
+    getSnapshot() {
+        const id = this.nextSnapshotID++;
+        this.worker.postMessage({ message: 'getSnapshot', id });
+        return new Promise((resolve) => {
+            this.snapshotResolutions[id] = resolve;
+        });
+    }
+
+    /* Switches the machine off: it stops, and shows the switched-off
+     * screen until it is started again. */
+    powerOff() {
+        this.pause();
+        this.isInitiallyPaused = true;
+        this.emit('powerOff');
+    }
+
+    /* Switches the machine on without starting it: it stays paused, showing
+     * its screen (see showScreen). */
+    powerOnPaused() {
+        this.isInitiallyPaused = false;
+        this.emit('powerOnPaused');
+    }
+
+    /* Draws the machine's screen from its memory without running it, for a
+     * paused machine that has just been given a new state. */
+    showScreen() {
+        const frameBuffer = this.displayHandler.getNextFrameBuffer();
+        this.worker.postMessage({ message: 'renderScreen', frameBuffer }, [frameBuffer]);
+        return new Promise((resolve) => {
+            this.screenRenderedResolution = resolve;
+        });
+    }
+
+    /* Resolves once every message the worker sent before this call has
+     * been handled here. */
+    barrier() {
+        const id = this.nextSnapshotID++;
+        this.worker.postMessage({ message: 'barrier', id });
+        return new Promise((resolve) => {
+            this.snapshotResolutions[id] = resolve;
+        });
+    }
+
     loadSnapshot(snapshot) {
+        this.machineType = snapshot.model;
         const fileID = this.nextFileOpenID++;
         this.worker.postMessage({
             message: 'loadSnapshot',
@@ -399,32 +493,45 @@ class Emulator extends EventEmitter {
         });
     }
 
-    openTAPFile(data) {
+    /* Inserts a tape. opts.name is its file name, kept with a copy of the
+     * bytes for saving a session (a tape opened without a name isn't
+     * saved); opts.quiet (restoring a session) inserts it without
+     * auto-loading it. */
+    openTAPFile(data, opts) {
+        opts = opts || {};
+        this.tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
         const fileID = this.nextFileOpenID++;
         this.worker.postMessage({
             message: 'openTAPFile',
             id: fileID,
             data,
+            quiet: !!opts.quiet,
         })
         return new Promise((resolve, reject) => {
             this.fileOpenPromiseResolutions[fileID] = resolve;
         });
     }
 
-    openTZXFile(data) {
+    openTZXFile(data, opts) {
+        opts = opts || {};
+        this.tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
         const fileID = this.nextFileOpenID++;
         this.worker.postMessage({
             message: 'openTZXFile',
             id: fileID,
             data,
+            quiet: !!opts.quiet,
         })
         return new Promise((resolve, reject) => {
             this.fileOpenPromiseResolutions[fileID] = resolve;
         });
     }
 
-    getFileOpener(filename) {
+    /* How to open a file, going by its name; `displayName` is the name to
+     * show and keep for it, the last part of `filename` if not given. */
+    getFileOpener(filename, displayName) {
         const cleanName = filename.toLowerCase();
+        const name = displayName || baseName(filename);
         if (cleanName.endsWith('.z80')) {
             return arrayBuffer => {
                 const z80file = parseZ80File(arrayBuffer);
@@ -445,7 +552,7 @@ class Emulator extends EventEmitter {
                 if (!TAPFile.isValid(arrayBuffer)) {
                     alert('Invalid TAP file');
                 } else {
-                    return this.openTAPFile(arrayBuffer);
+                    return this.openTAPFile(arrayBuffer, { name });
                 }
             };
         } else if (cleanName.endsWith('.tzx')) {
@@ -453,7 +560,7 @@ class Emulator extends EventEmitter {
                 if (!TZXFile.isValid(arrayBuffer)) {
                     alert('Invalid TZX file');
                 } else {
-                    return this.openTZXFile(arrayBuffer);
+                    return this.openTZXFile(arrayBuffer, { name });
                 }
             };
         } else if (cleanName.endsWith('.mdr')) {
@@ -476,6 +583,15 @@ class Emulator extends EventEmitter {
         } else if (cleanName.endsWith('.zip')) {
             return async arrayBuffer => {
                 const zip = await JSZip.loadAsync(arrayBuffer);
+                // A saved session is restored as a whole by whoever handles
+                // sessions, not opened as a game.
+                if (await isSessionFile(zip)) {
+                    if (this.listenerCount('sessionFileOpened') === 0) {
+                        throw name + ' is a saved session, which can only be restored where the emulator has its toolbar.';
+                    }
+                    this.emit('sessionFileOpened', { name, zip });
+                    return { mediaType: 'session' };
+                }
                 const openers = [];
                 zip.forEach((path, file) => {
                     if (path.startsWith('__MACOSX/')) return;
@@ -527,10 +643,11 @@ class Emulator extends EventEmitter {
         if (opener) {
             const buf = await file.arrayBuffer();
             return opener(buf).then((res) => {
+                if (res && res.error) throw res.error;
                 // A microdrive cartridge tracks its own label, not the
                 // loaded-game name (it's not "the game", and inserting one
                 // shouldn't invalidate pokes applied to what's running).
-                if (res.mediaType !== 'microdrive') this.setLoadedGame(file.name);
+                if (res.mediaType !== 'microdrive' && res.mediaType !== 'session') this.setLoadedGame(file.name);
                 return res;
             }).catch(err => {alert(err);});
         } else {
@@ -540,17 +657,16 @@ class Emulator extends EventEmitter {
 
     async openUrl(url, opts) {
         opts = opts || {};
-        const opener = this.getFileOpener(url.toString());
+        const opener = this.getFileOpener(url.toString(), urlFileName(url.toString()));
         if (opener) {
             const response = await fetch(url);
             const buf = await response.arrayBuffer();
             return opener(buf).then((res) => {
+                if (res && res.error) throw res.error;
                 // Internal loads (e.g. tape-loader snapshots) must not
                 // masquerade as the loaded game.
-                if (opts.trackName !== false && res.mediaType !== 'microdrive') {
-                    const basename = decodeURIComponent(
-                        url.toString().split('/').pop().split('?')[0]);
-                    this.setLoadedGame(basename);
+                if (opts.trackName !== false && res.mediaType !== 'microdrive' && res.mediaType !== 'session') {
+                    this.setLoadedGame(urlFileName(url.toString()));
                 }
                 return res;
             });
@@ -604,10 +720,12 @@ class Emulator extends EventEmitter {
         if (!loaders) return;
         return this.openUrl(new URL(loaders[this.tapeAutoLoadMode], scriptUrl), {trackName: false});
     }
-    seekTape(blockIndex) {
+    /* `quiet` (restoring a session) moves the tape without starting a load. */
+    seekTape(blockIndex, quiet) {
         this.worker.postMessage({
             message: 'seekTape',
             index: blockIndex,
+            quiet: !!quiet,
         });
     }
     ejectTape() {
@@ -815,24 +933,21 @@ window.JSSpeccy = (container, opts) => {
         updateTapeTrapsCheckbox();
 
         const machineMenu = ui.menuBar.addMenu('Machine');
-        // Which 48K ROM is active: 'standard' (roms/48.rom) or 'gw03' (the
-        // "Gosh Wonderful" alternate 48K ROM). Both run as a 48K machine; they
-        // differ only in the ROM loaded into page 10, so switching swaps that
-        // page and reboots.
-        let rom48Variant = 'standard';
-        const boot48 = (variant, romFile) => {
-            rom48Variant = variant;
-            emu.loadRom(romFile, 10).then(() => {
+        // The 48K machine runs the standard ROM or the "Gosh Wonderful" gw03
+        // alternate (Emulator.rom48Variant); they differ only in the ROM in
+        // page 10, so choosing one swaps that page and reboots.
+        const boot48 = (variant) => {
+            emu.setRom48Variant(variant).then(() => {
                 emu.setMachine(48);
                 emu.reset();
                 emu.focus();
             });
         };
         const machine48Item = machineMenu.addItem('Spectrum 48K', () => {
-            boot48('standard', 'roms/48.rom');
+            boot48('standard');
         });
         const machine48gwItem = machineMenu.addItem('Spectrum 48K gw03', () => {
-            boot48('gw03', 'roms/gw03.rom');
+            boot48('gw03');
         });
         const machine128Item = machineMenu.addItem('Spectrum 128K', () => {
             emu.setMachine(128);
@@ -954,7 +1069,7 @@ window.JSSpeccy = (container, opts) => {
             machine128Item.unsetBullet();
             machinePentagonItem.unsetBullet();
             if (type == 48) {
-                if (rom48Variant === 'gw03') machine48gwItem.setBullet();
+                if (emu.rom48Variant === 'gw03') machine48gwItem.setBullet();
                 else machine48Item.setBullet();
             } else if (type == 128) {
                 machine128Item.setBullet();
@@ -963,9 +1078,15 @@ window.JSSpeccy = (container, opts) => {
             }
         });
 
+        // Saving and restoring the whole session; defined further down, once
+        // the docks and the keyboard exist.
+        const sessions = {};
         if (!opts.sandbox) {
-            ui.toolbar.addButton(openIcon, {label: 'Open file'}, () => {
-                openFileDialog();
+            ui.toolbar.addButton(sessionSaveIcon, {label: 'Save session to PC'}, () => {
+                sessions.save();
+            });
+            ui.toolbar.addButton(sessionRestoreIcon, {label: 'Restore a saved session'}, () => {
+                sessions.chooseAndRestore();
             });
         }
         ui.toolbar.addButton(resetIcon, {label: 'Reset'}, () => {
@@ -1079,8 +1200,9 @@ window.JSSpeccy = (container, opts) => {
          * toolbar button between the fullscreen and Microdrive buttons
          * connects or disconnects it without resetting the machine (see
          * runtime/printer-ui.js). Hidden in fullscreen, like the dock. */
+        let printer = null;
         if (!opts.sandbox) {
-            const printer = createPrinter(ui, emu);
+            printer = createPrinter(ui, emu);
             const printerButton = ui.toolbar.addButton(
                 printerIcon,
                 {label: 'Connect Printer', align: 'right'},
@@ -1104,8 +1226,9 @@ window.JSSpeccy = (container, opts) => {
          * its drive either way - see runtime/microdrive-ui.js). The dock is
          * shown while connected; in fullscreen it is hidden but stays
          * connected, same as the keyboard. */
+        let microdriveDock = null;
         if (!opts.sandbox) {
-            const microdriveDock = createMicrodriveDock(ui, emu);
+            microdriveDock = createMicrodriveDock(ui, emu);
             const microdriveButton = ui.toolbar.addButton(
                 microdriveIcon,
                 {label: 'Connect Microdrives', align: 'right'},
@@ -1152,13 +1275,174 @@ window.JSSpeccy = (container, opts) => {
                 if (keyboardWanted) keyboard.show();   // restore on leaving fullscreen
             }
         });
+
+        /* Saving and restoring the whole session as one file (see
+         * runtime/session.js). Saving captures everything at the moment of
+         * the click, then asks where to put the file. Restoring - from the
+         * toolbar, File -> Open, or a session file dropped on the Spectrum -
+         * asks first, then replaces the machine, tape, printout and
+         * settings, and adds the session's cartridges to the box. */
+        if (!opts.sandbox) {
+            let sessionBusy = false;
+            const showKeyboard = (shown) => {
+                keyboardWanted = shown;
+                if (keyboardWanted && !ui.isFullscreen) { keyboard.show(); } else { keyboard.hide(); }
+                keyboardButton.setLabel(keyboardWanted ? 'Hide keyboard' : 'Show keyboard');
+            };
+
+            // Save and restore take turns; a second one while one is under
+            // way is turned away, saying so.
+            const beginSession = () => {
+                if (!emu.isReady) return false;
+                if (sessionBusy) {
+                    alert('A session is already being saved or restored.');
+                    return false;
+                }
+                sessionBusy = true;
+                return true;
+            };
+            const localStamp = () => {
+                const d = new Date();
+                const two = (n) => String(n).padStart(2, '0');
+                return `${d.getFullYear()}${two(d.getMonth() + 1)}${two(d.getDate())}-${two(d.getHours())}${two(d.getMinutes())}`;
+            };
+
+            sessions.save = async () => {
+                if (!beginSession()) return;
+                try {
+                    const fileName = `spectrum-session-${localStamp()}.zip`;
+                    // The snapshot is asked for at the click; everything else
+                    // is read the moment it arrives, before anything else can
+                    // happen, so it all matches. Meanwhile the Save As
+                    // dialog opens, straight from the click as it must.
+                    const captured = emu.getSnapshot().then((snapshot) => {
+                        if (!snapshot) throw new Error('the emulator could not take a snapshot');
+                        return {
+                            snapshot,
+                            settings: {
+                                machine: emu.machineType,
+                                rom48: emu.rom48Variant,
+                                joystickType: emu.joystickType,
+                                joystickDevice: emu.joystickDevice,
+                                tapeTraps: emu.tapeTrapsEnabled,
+                                autoLoadTapes: emu.autoLoadTapes,
+                                tapeAutoLoadMode: emu.tapeAutoLoadMode,
+                                keyboardShown: keyboardWanted,
+                                zoom: ui.zoom,
+                            },
+                            tape: emu.tapeFile ? { name: emu.tapeFile.name, data: emu.tapeFile.data, block: emu.tapeBlockIndex } : null,
+                            printer: printer.sessionSave(),
+                            microdrives: microdriveDock.sessionSave(snapshot.drives),
+                            gameName: emu.loadedGameName,
+                            power: emu.isInitiallyPaused ? 'off' : (emu.isRunning ? 'running' : 'paused'),
+                        };
+                    });
+                    captured.catch(() => {});  // reported below, unless the user cancelled
+                    const target = await chooseSaveTarget(fileName);
+                    if (target === false) return;
+                    const parts = await captured;
+                    parts.microdrives = await parts.microdrives;
+                    parts.printer.picture = await printer.sessionPicture(parts.printer.rows);
+                    const blob = await buildSessionFile(parts);
+                    await writeSaveTarget(target, blob, fileName);
+                } catch (e) {
+                    alert('Could not save the session: ' + ((e && e.message) || e));
+                } finally {
+                    sessionBusy = false;
+                    emu.focus();
+                }
+            };
+
+            /* The machine is paused for the whole restore, so the old program
+             * can't act on the new tape, printout or cartridges. The snapshot
+             * goes in first, with the Interface 1 connected or not as saved
+             * so that its paging applies; the peripherals follow. The machine
+             * is then left as it was when the session was saved: switched
+             * off, paused showing its screen, or running. */
+            sessions.restore = async (zip) => {
+                if (!beginSession()) return;
+                let pausedHere = false;
+                let restored = false;
+                let power = 'running';
+                try {
+                    const session = await readSessionFile(zip);
+                    if (!(await confirmRestore(ui, session))) return;
+                    pausedHere = emu.isRunning;
+                    emu.pause();
+
+                    const settings = session.settings;
+                    if (settings.joystickType) emu.setJoystickType(settings.joystickType);
+                    if ('joystickDevice' in settings) emu.setJoystickDevice(settings.joystickDevice);
+                    if ('tapeTraps' in settings) emu.setTapeTraps(settings.tapeTraps);
+                    if ('autoLoadTapes' in settings) emu.setAutoLoadTapes(settings.autoLoadTapes);
+                    if (settings.tapeAutoLoadMode) emu.tapeAutoLoadMode = settings.tapeAutoLoadMode;
+                    if ('keyboardShown' in settings) showKeyboard(settings.keyboardShown);
+                    if (settings.zoom && !ui.isFullscreen) ui.setZoom(settings.zoom);
+                    await emu.setRom48Variant(settings.rom48);
+
+                    emu.setInterface1(session.microdrives.connected);
+                    const loaded = await emu.loadSnapshot(session.snapshot);
+                    if (loaded && loaded.error) throw new Error(loaded.error);
+
+                    await microdriveDock.sessionRestore(session.microdrives);
+                    printer.sessionRestore(session.printer);
+                    if (session.tape) {
+                        const tapeOpts = { name: session.tape.name, quiet: true };
+                        const opened = await (session.tape.isTZX
+                            ? emu.openTZXFile(session.tape.data, tapeOpts)
+                            : emu.openTAPFile(session.tape.data, tapeOpts));
+                        if (opened && opened.error) throw new Error(opened.error);
+                        emu.seekTape(session.tape.block, true);
+                    } else if (emu.tapeFile || emu.tapeTotalMs) {
+                        emu.ejectTape();
+                    }
+                    emu.setLoadedGame(session.gameName);
+                    restored = true;
+                    power = session.power;
+                    if (power === 'off') {
+                        emu.powerOff();
+                    } else if (power === 'paused') {
+                        emu.powerOnPaused();
+                        await emu.showScreen();
+                    }
+                } catch (e) {
+                    alert('Could not restore the session: ' + ((e && e.message) || e));
+                } finally {
+                    // Restored, it runs if it was saved running; otherwise it
+                    // carries on as it was before the restore.
+                    const run = restored ? (power === 'running') : pausedHere;
+                    if (run && !emu.isRunning) emu.start();
+                    sessionBusy = false;
+                    emu.focus();
+                }
+            };
+
+            sessions.chooseAndRestore = () => {
+                fileDialog({ accept: '.zip' }).then(async (files) => {
+                    const file = files && files[0];
+                    if (!file) return;
+                    let zip = null;
+                    try {
+                        zip = await JSZip.loadAsync(await file.arrayBuffer());
+                    } catch (e) { /* not a ZIP */ }
+                    if (!zip || !(await isSessionFile(zip))) {
+                        alert(file.name + ' is not a saved session.');
+                        return;
+                    }
+                    await sessions.restore(zip);
+                });
+            };
+
+            emu.on('sessionFileOpened', ({ zip }) => sessions.restore(zip));
+        }
     }
 
     const openFileDialog = () => {
         fileDialog().then(files => {
             const file = files[0];
-            emu.openFile(file).then(() => {
-                if (emu.isInitiallyPaused) emu.start();
+            emu.openFile(file).then((res) => {
+                // a session starts the machine itself, once restored
+                if (emu.isInitiallyPaused && !(res && res.mediaType === 'session')) emu.start();
                 emu.focus();
             }).catch((err) => {alert(err);});
         });

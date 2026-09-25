@@ -283,8 +283,9 @@ export function parseSZXFile(data) {
                 };
                 snapshot.tstates = file.getUint32(offset + 29, true);
                 snapshot.halted = !!(file.getUint8(offset + 34) & 0x02);
+                snapshot.eilast = !!(file.getUint8(offset + 34) & 0x01);
                 // currently ignored:
-                // chHoldIntReqCycles, eilast, memptr
+                // chHoldIntReqCycles, memptr
 
                 break;
             case 'SPCR':
@@ -294,6 +295,18 @@ export function parseSZXFile(data) {
                 };
                 // currently ignored:
                 // ch1ffd, chEff7, chFe
+                break;
+            case 'AY\0\0':
+                snapshot.ay = {
+                    selected: file.getUint8(offset + 1),
+                    registers: Array.from(new Uint8Array(data, offset + 2, 16)),
+                };
+                break;
+            case 'IF1\0':
+                snapshot.interface1Paged = !!(file.getUint16(offset, true) & 0x0004);
+                break;
+            case 'B128':
+                snapshot.betadiskPaged = !!(file.getUint32(offset, true) & 0x0004);
                 break;
             case 'RAMP':
                 const isCompressed = file.getUint16(offset + 0, true) & 0x0001;
@@ -318,4 +331,95 @@ export function parseSZXFile(data) {
     return snapshot;
 
 
+}
+
+/* Writes a snapshot, in the structure the parsers above produce, as an SZX
+ * file (the zx-state format, version 1.4): the Z80 registers, the ULA and
+ * paging state, the AY chip on a 128K or Pentagon, the Interface 1 and
+ * whether its ROM is paged in, the Pentagon's Beta 128 disk interface and
+ * whether TR-DOS is paged in, a connected ZX Printer, and every RAM page the
+ * machine has, deflated. Returns an ArrayBuffer. */
+export function writeSZXFile(snapshot) {
+    const MACHINE_IDS = { 48: 1, 128: 2, 5: 7 };
+    if (!MACHINE_IDS[snapshot.model]) throw new Error('This machine can not be saved as a snapshot.');
+    const chunks = [];
+    const block = (id, length, fill) => {
+        const bytes = new Uint8Array(8 + length);
+        const view = new DataView(bytes.buffer);
+        for (let i = 0; i < 4; i++) bytes[i] = id.charCodeAt(i);
+        view.setUint32(4, length, true);
+        fill(view, bytes, 8);
+        chunks.push(bytes);
+    };
+
+    const header = new Uint8Array([0x5a, 0x58, 0x53, 0x54, 1, 4, MACHINE_IDS[snapshot.model], 0]);
+    chunks.push(header);
+
+    block('CRTR', 36, (view, bytes, o) => {
+        const creator = 'JSSpeccy';
+        for (let i = 0; i < creator.length; i++) bytes[o + i] = creator.charCodeAt(i);
+        view.setUint16(o + 32, 3, true);
+        view.setUint16(o + 34, 0, true);
+    });
+
+    const r = snapshot.registers;
+    block('Z80R', 37, (view, bytes, o) => {
+        ['AF', 'BC', 'DE', 'HL', 'AF_', 'BC_', 'DE_', 'HL_', 'IX', 'IY', 'SP', 'PC'].forEach((name, i) => {
+            view.setUint16(o + (i * 2), r[name], true);
+        });
+        view.setUint16(o + 24, r.IR, false);  // I then R
+        bytes[o + 26] = r.iff1 ? 1 : 0;
+        bytes[o + 27] = r.iff2 ? 1 : 0;
+        bytes[o + 28] = r.im;
+        view.setUint32(o + 29, snapshot.tstates, true);
+        bytes[o + 33] = 0;  // chHoldIntReqCycles
+        bytes[o + 34] = (snapshot.halted ? 0x02 : 0x00) | (snapshot.eilast ? 0x01 : 0x00);
+        view.setUint16(o + 35, 0, true);  // MEMPTR
+    });
+
+    block('SPCR', 8, (view, bytes, o) => {
+        bytes[o + 0] = snapshot.ulaState.borderColour;
+        bytes[o + 1] = snapshot.ulaState.pagingFlags;
+        bytes[o + 3] = snapshot.ulaState.borderColour;  // last write to port 0xfe
+    });
+
+    if (snapshot.ay && snapshot.model !== 48) {
+        block('AY\0\0', 18, (view, bytes, o) => {
+            bytes[o + 0] = 0;
+            bytes[o + 1] = snapshot.ay.selected;
+            for (let i = 0; i < 16; i++) bytes[o + 2 + i] = snapshot.ay.registers[i] || 0;
+        });
+    }
+
+    if (snapshot.interface1Connected) {
+        // enabled, and paged in; two Microdrives; the standard ROM (no ROM data)
+        block('IF1\0', 40, (view, bytes, o) => {
+            view.setUint16(o, 0x0001 | (snapshot.interface1Paged ? 0x0004 : 0), true);
+            bytes[o + 2] = 2;
+        });
+    }
+    if (snapshot.model === 5) {
+        // connected, and paged in; no disk drives
+        block('B128', 10, (view, bytes, o) => {
+            view.setUint32(o, 0x0001 | (snapshot.betadiskPaged ? 0x0004 : 0), true);
+        });
+    }
+    if (snapshot.zxPrinter) {
+        block('ZXPR', 2, (view, bytes, o) => view.setUint16(o, 0x0001, true));
+    }
+
+    for (const page of Object.keys(snapshot.memoryPages).map(Number).sort((a, b) => a - b)) {
+        const packed = pako.deflate(snapshot.memoryPages[page]);
+        block('RAMP', 3 + packed.length, (view, bytes, o) => {
+            view.setUint16(o, 1, true);  // compressed
+            bytes[o + 2] = page;
+            bytes.set(packed, o + 3);
+        });
+    }
+
+    const total = chunks.reduce((n, c) => n + c.length, 0);
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const c of chunks) { out.set(c, at); at += c.length; }
+    return out.buffer;
 }

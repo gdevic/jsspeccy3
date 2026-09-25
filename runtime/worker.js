@@ -232,6 +232,7 @@ const serviceMicrodrives = () => {
  * on any rows printed since the last call, with the paper left and whether
  * the motor is running, and posts again whenever the motor starts or stops. */
 let printerEnabled = false;
+let interface1Enabled = false;
 let printerLastMotor = false;
 const servicePrinter = () => {
     if (!printerEnabled) return;
@@ -259,13 +260,81 @@ const loadSnapshot = (snapshot) => {
     core.setIFF2(snapshot.registers.iff2);
     core.setIM(snapshot.registers.im);
     core.setHalted(!!snapshot.halted);
+    // Straight after EI an interrupt must wait for one more instruction.
+    core.setInterruptible(!snapshot.eilast);
 
     core.writePort(0x00fe, snapshot.ulaState.borderColour);
     if (snapshot.model != 48) {
         core.writePort(0x7ffd, snapshot.ulaState.pagingFlags);
     }
+    if (snapshot.ay) {
+        for (let reg = 0; reg < 14; reg++) {
+            core.writePort(0xfffd, reg);
+            core.writePort(0xbffd, snapshot.ay.registers[reg] || 0);
+        }
+        core.writePort(0xfffd, snapshot.ay.selected);
+    }
+    // A saved session also records the Interface 1 paging and the printer
+    // mechanism, which snapshot files don't carry.
+    if ('interface1Paged' in snapshot) core.setInterface1Paged(!!snapshot.interface1Paged);
+    if ('betadiskPaged' in snapshot) core.setBetadiskPaged(!!snapshot.betadiskPaged);
+    if (snapshot.printer) core.setPrinterMechanism(snapshot.printer.mechanism, snapshot.printer.phase);
 
     core.setTStates(snapshot.tstates);
+};
+
+/* The whole machine as it stands between two frames, in the structure the
+ * snapshot parsers produce, plus what a saved session keeps beside it: the
+ * Interface 1 paging, the printer mechanism, and the live image of every
+ * cartridge in a drive (it may hold writes not yet flushed). */
+const takeSnapshot = () => {
+    const model = core.getMachineType();
+    const registers = {};
+    ['AF', 'BC', 'DE', 'HL', 'AF_', 'BC_', 'DE_', 'HL_', 'IX', 'IY', 'SP', 'IR'].forEach((r, i) => {
+        registers[r] = registerPairs[i];
+    });
+    registers.PC = core.getPC();
+    registers.iff1 = !!core.getIFF1();
+    registers.iff2 = !!core.getIFF2();
+    registers.im = core.getIM();
+
+    const memoryPages = {};
+    const pages = (model == 48) ? [5, 2, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
+    for (const page of pages) {
+        const start = core.MACHINE_MEMORY + page * 0x4000;
+        memoryPages[page] = memoryData.slice(start, start + 0x4000);
+    }
+
+    const ayRegisters = [];
+    for (let reg = 0; reg < 16; reg++) ayRegisters.push(core.getAYRegister(reg));
+
+    const drives = [];
+    for (let d = 0; d < 8; d++) {
+        if (!mdrBlocks[d]) continue;
+        const dataLen = mdrBlocks[d] * core.MICRODRIVE_BLOCK_LEN;
+        const offset = core.MICRODRIVE_DATA + d * core.MICRODRIVE_DRIVE_BYTES;
+        const image = new Uint8Array(dataLen + 1);
+        image.set(memoryData.subarray(offset, offset + dataLen));
+        image[dataLen] = core.getMicrodriveWriteProtect(d) ? 1 : 0;
+        drives.push({ drive: d, token: mdrTokens[d], data: image });
+    }
+
+    return {
+        model,
+        registers,
+        memoryPages,
+        tstates: core.getTStates(),
+        halted: !!core.getHalted(),
+        eilast: !core.getInterruptible(),
+        ulaState: { borderColour: core.getBorderColour(), pagingFlags: core.getPagingValue() },
+        ay: { selected: core.getSelectedAYRegister(), registers: ayRegisters },
+        interface1Connected: interface1Enabled,
+        interface1Paged: !!core.getInterface1Paged(),
+        betadiskPaged: !!core.getBetadiskPaged(),
+        zxPrinter: printerEnabled,
+        printer: { mechanism: core.getPrinterMechanism(), phase: core.getPrinterPhase() },
+        drives,
+    };
 };
 
 const trapTapeLoad = () => {
@@ -455,6 +524,31 @@ onmessage = (e) => {
         case 'loadMemory':
             loadMemoryPage(e.data.page, e.data.data);
             break;
+        case 'renderScreen': {
+            // The screen as memory holds it, the CPU not run.
+            core.renderStaticFrame();
+            const frameBuffer = e.data.frameBuffer;
+            new Uint8Array(frameBuffer).set(workerFrameData);
+            postMessage({ message: 'screenRendered', frameBuffer }, [frameBuffer]);
+            break;
+        }
+        case 'barrier':
+            // answered after everything posted before it
+            postMessage({ message: 'barrier', id: e.data.id });
+            break;
+        case 'getSnapshot': {
+            let snapshot = null;
+            try {
+                snapshot = takeSnapshot();
+            } catch (err) {
+                postMessage({ message: 'snapshot', id: e.data.id, snapshot: null, error: String(err) });
+                break;
+            }
+            const transfers = Object.values(snapshot.memoryPages).map(p => p.buffer)
+                .concat(snapshot.drives.map(d => d.data.buffer));
+            postMessage({ message: 'snapshot', id: e.data.id, snapshot }, transfers);
+            break;
+        }
         case 'applyPokes': {
             /* Apply a list of {bank, address, value} pokes (.POK semantics:
              * bank bit 3 set = poke through the current paging, like a
@@ -481,7 +575,12 @@ onmessage = (e) => {
             break;
         }
         case 'loadSnapshot':
-            loadSnapshot(e.data.snapshot);
+            try {
+                loadSnapshot(e.data.snapshot);
+            } catch (err) {
+                postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'snapshot', error: String(err) });
+                break;
+            }
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
@@ -489,7 +588,12 @@ onmessage = (e) => {
             });
             break;
         case 'openTAPFile':
-            tape = new TAPFile(e.data.data);
+            try {
+                tape = new TAPFile(e.data.data);
+            } catch (err) {
+                postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'tape', error: String(err) });
+                break;
+            }
             resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
@@ -497,11 +601,17 @@ onmessage = (e) => {
                 message: 'fileOpened',
                 id: e.data.id,
                 mediaType: 'tape',
+                quiet: !!e.data.quiet,
             });
             postTapeInfo();
             break;
         case 'openTZXFile':
-            tape = new TZXFile(e.data.data);
+            try {
+                tape = new TZXFile(e.data.data);
+            } catch (err) {
+                postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'tape', error: String(err) });
+                break;
+            }
             resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
@@ -509,6 +619,7 @@ onmessage = (e) => {
                 message: 'fileOpened',
                 id: e.data.id,
                 mediaType: 'tape',
+                quiet: !!e.data.quiet,
             });
             postTapeInfo();
             break;
@@ -525,6 +636,7 @@ onmessage = (e) => {
                 postMessage({
                     message: 'tapeSeeked',
                     loadInFlight: framesSinceTapeTrap < TRAP_IDLE_FRAMES || tapeIsPlaying,
+                    quiet: !!e.data.quiet,
                 });
             }
             break;
@@ -559,7 +671,8 @@ onmessage = (e) => {
             if (!e.data.enabled) {
                 for (let d = 0; d < 8; d++) flushMicrodrive(d);
             }
-            core.setInterface1Enabled(!!e.data.enabled);
+            interface1Enabled = !!e.data.enabled;
+            core.setInterface1Enabled(interface1Enabled);
             break;
         case 'setPrinter':
             printerEnabled = !!e.data.enabled;

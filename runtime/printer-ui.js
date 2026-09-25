@@ -903,5 +903,39 @@ export function createPrinter(ui, emu) {
         element,
         toggle() { setConnected(!state.connected); },
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
+
+        // For a saved session: the connection, the roll, the printout and how
+        // far it is scrolled back, as they are now; sessionPicture draws the
+        // rows as a PNG, later.
+        sessionSave() {
+            return {
+                connected: state.connected,
+                paper: state.paper,
+                saved: printoutSaved,
+                rows: printout.slice(),
+                scroll: pullTarget,
+            };
+        },
+        sessionPicture(rows) {
+            return rows.length ? printoutBlob(rows) : Promise.resolve(null);
+        },
+        sessionRestore(session) {
+            releaseFeed();
+            closePanel();
+            printout = session.rows.map(row => row.some(b => b) ? row : BLANK_ROW);
+            // Scrolled back as it was, folded over the printer; the limits are
+            // those of the display as it is now.
+            const maxPull = FOLD_ROWS + Math.max(0, printout.length - visibleRows);
+            const scroll = Math.min(maxPull, Math.max(0, session.scroll || 0));
+            pull = pullTarget = (scroll > 0) ? Math.max(FOLD_ROWS, scroll) : 0;
+            printoutSaved = !!session.saved;
+            state.paper = Math.max(0, Math.min(ROLL_ROWS, session.paper));
+            emu.setPrinterPaper(state.paper);
+            art.setRoll(state.paper);
+            layoutPaper();
+            persist(true);
+            refreshPanel();
+            if (!!session.connected !== state.connected) setConnected(!!session.connected);
+        },
     };
 }

@@ -136,6 +136,31 @@ export async function create({ label, colour, data }) {
     }
 }
 
+/* Stores a cartridge under its own id, replacing any with that id: how a
+ * restored session brings its cartridges back. Returns the id, or null if
+ * storage isn't available. */
+export async function put({ id, label, colour, data, created, modified }) {
+    const now = Date.now();
+    const record = {
+        id: id || genId(),
+        label: label || '',
+        colour: colour || CARTRIDGE_COLOURS[0],
+        data: data instanceof ArrayBuffer ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+        created: created || now,
+        modified: modified || now,
+        exported: null,
+    };
+    try {
+        const store = await tx('readwrite');
+        await reqToPromise(store.put(record));
+        requestPersistence();
+        return record.id;
+    } catch (e) {
+        console.warn('Could not store cartridge', record.id, e);
+        return null;
+    }
+}
+
 /* Merges the given fields into an existing record (e.g. after a worker
  * flush: {data, modified}; after a rename: {label}). */
 export async function update(id, fields) {
