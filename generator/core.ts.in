@@ -122,6 +122,15 @@ export const MICRODRIVE_MAX_BLOCKS:u32 = 254;
 // 15 (header half) or 528 (record half)
 #alloc mdrMaxBytes[8]: u32
 
+/* ZX Printer: the dots of the pass in progress (one bit per dot, leftmost in
+bit 7), and finished passes - one pixel row of paper each - waiting for the
+worker to collect them. */
+#alloc zxpRow[32]: u8
+#alloc zxpRows[2048]: u8
+export const PRINTER_ROWS:usize = (&zxpRows);
+export const PRINTER_ROW_BYTES:u32 = 32;
+export const PRINTER_ROW_CAPACITY:u32 = 64;
+
 let requestedSamplesPerFrame:u32 = 0;
 let samplesPerFrame:u32 = 0;
 let ayCyclesPerSample:f64 = 0.0;
@@ -149,6 +158,24 @@ let if1Enabled:bool = false;
 let if1ROMActive:bool = false;
 let if1SavedROMPage:u8 = 0;
 let if1CommsClk:bool = false;
+
+// ZX Printer (see the port handlers further down for the model)
+let zxpEnabled:bool = false;
+let zxpMotorOn:bool = false;
+let zxpSlow:bool = false;
+let zxpStylus:bool = false;
+let zxpFeeding:bool = false;  // the feed button is held
+let zxpPaperLatch:bool = false;
+let zxpPixelLatch:bool = false;
+let zxpPhase:u32 = 0;  // stylus position along its pass, ZXP_UNITS_PER_DOT per dot
+let zxpLastT:u32 = 0;  // the t the printer was last brought up to
+let zxpDot:bool = false;  // whether the dot under the stylus gets burned
+let zxpDotSet:bool = false;  // the computer has written during the dot under the stylus
+let zxpPaperRows:u32 = 0;  // paper left on the roll, in pixel rows
+let zxpRowsOut:u32 = 0;  // finished rows waiting at PRINTER_ROWS
+let zxpBuzzPhase:f32 = 0.0;  // position in the motor buzz's cycle, 0 to 1
+let zxpBuzzLevel:f32 = 0.0;  // buzz volume, easing towards full while the motor runs
+let zxpBuzzSeed:u32 = 1;
 
 // Loader detection: custom (turbo, Speedlock etc.) loaders bypass the ROM routine the tape trap catches
 let tapeInserted:bool = false;
@@ -376,6 +403,15 @@ export function reset():void {
         mdrSyncCounter[m] = 15;
         mdrMaxBytes[m] = 15;
     }
+
+    // ZX Printer: power-on state is motor stopped, full speed, stylus off.
+    // The paper and whatever has been printed stay where they are.
+    zxpMotorOn = false;
+    zxpSlow = false;
+    zxpStylus = false;
+    zxpPaperLatch = false;
+    zxpPixelLatch = false;
+    zxpLastT = 0;
 }
 setMachineType(48);
 
@@ -424,6 +460,7 @@ export function getIM():u8 {
 }
 export function setTStates(val:u32):void {
     t = val;
+    zxpLastT = val;
 }
 export function getTStates():u32 {
     return t;
@@ -730,6 +767,164 @@ function mdrPortCtrOut(val:u8):void {
     microdrivesRestart();
 }
 
+/* ---- ZX Printer ----
+Modelled on Sinclair's own description (the ZX Printer instructions'
+technical appendix). Two styli on a belt take turns crossing the paper, each
+on it for about 32ms and off it for about 16ms at full speed, while the paper
+feeds continuously, so each pass is one pixel row of paper. An encoder gives
+256 pulses across the 92mm print width, which has 4mm of paper either side.
+
+Position along a pass (zxpPhase) counts ZXP_UNITS_PER_DOT units per dot, two
+units per T-state at full speed and one at slow speed, so a dot takes 440
+T-states at full speed and the 256 dots take 32ms. A pass is
+ZXP_DOTS_PER_PASS dots long: the stylus meets the paper edge at dot
+ZXP_PAPER_EDGE, prints dots ZXP_FIRST_DOT up to ZXP_END_DOT, and spends the
+rest of the pass off the paper.
+
+It answers any port with A2 low. Write: bit 7 powers the stylus, bit 2 stops
+the motor, bit 1 selects slow speed. Read: bit 7 is the paper latch (the
+stylus has met the paper edge, or the stylus is powered), bit 6 is 0 (a
+printer is present), bit 0 is the encoder latch (the stylus has reached the
+next dot); every write clears both latches. With no paper there is no edge to
+meet and the encoder stays gated off, so the ROM's COPY-LINE waits for paper
+until BREAK is pressed.
+
+A dot takes the stylus level of the first write made while the stylus is over
+it, since the ROM writes each dot just after its encoder pulse, or with no
+write there the level carried in from the dot before. Stopping the motor lets
+the stylus coast off the paper, finishing the row it was on. */
+const ZXP_UNITS_PER_DOT:u32 = 880;
+const ZXP_DOTS_PER_PASS:u32 = 384;
+const ZXP_PAPER_EDGE:u32 = 53;
+const ZXP_FIRST_DOT:u32 = 64;
+const ZXP_END_DOT:u32 = 320;
+
+function zxpFinishRow():void {
+    if (zxpPaperRows == 0) return;
+    zxpPaperRows--;
+    if (zxpRowsOut < PRINTER_ROW_CAPACITY) {
+        const base:u32 = zxpRowsOut * PRINTER_ROW_BYTES;
+        for (let i:u32 = 0; i < PRINTER_ROW_BYTES; i++) {
+            zxpRows[base + i] = zxpRow[i];
+        }
+        zxpRowsOut++;
+    }
+    for (let i:u32 = 0; i < PRINTER_ROW_BYTES; i++) {
+        zxpRow[i] = 0;
+    }
+}
+
+/* The stylus moves on to the start of `dot`, leaving the one before it. */
+function zxpEnterDot(dot:u32):void {
+    const prev:u32 = (dot == 0) ? (ZXP_DOTS_PER_PASS - 1) : (dot - 1);
+    if (zxpDot && prev >= ZXP_FIRST_DOT && prev < ZXP_END_DOT) {
+        const k:u32 = prev - ZXP_FIRST_DOT;
+        const bit:u8 = u8(u32(0x80) >> (k & 7));
+        zxpRow[k >> 3] |= bit;
+    }
+    if (dot == ZXP_END_DOT) zxpFinishRow();
+    zxpDot = false;
+    zxpDotSet = false;
+    if (zxpPaperRows == 0) return;
+    if (dot == ZXP_PAPER_EDGE) zxpPaperLatch = true;
+    if (dot >= ZXP_FIRST_DOT && dot < ZXP_END_DOT) {
+        zxpPixelLatch = true;
+        zxpDot = zxpStylus && !zxpFeeding;
+    }
+}
+
+function zxpMove(units:u32):void {
+    const passUnits:u32 = ZXP_UNITS_PER_DOT * ZXP_DOTS_PER_PASS;
+    let phase:u32 = zxpPhase;
+    while (units > 0) {
+        const toNext:u32 = ZXP_UNITS_PER_DOT - (phase % ZXP_UNITS_PER_DOT);
+        if (units < toNext) {
+            phase += units;
+            break;
+        }
+        units -= toNext;
+        phase += toNext;
+        if (phase >= passUnits) phase = 0;
+        zxpEnterDot(phase / ZXP_UNITS_PER_DOT);
+    }
+    zxpPhase = phase;
+}
+
+/* Brings the printer up to the current t. */
+function zxpUpdate():void {
+    if (t <= zxpLastT) {
+        zxpLastT = t;
+        return;
+    }
+    let elapsed:u32 = t - zxpLastT;
+    zxpLastT = t;
+    if (!zxpMotorOn && !zxpFeeding) return;
+    if (elapsed > (frameCycleCount << 1)) elapsed = frameCycleCount << 1;
+    zxpMove((zxpSlow && !zxpFeeding) ? elapsed : (elapsed << 1));
+}
+
+/* Runs the stylus on to the end of the print width if it is over the paper. */
+function zxpCoast():void {
+    const dot:u32 = zxpPhase / ZXP_UNITS_PER_DOT;
+    if (dot >= ZXP_PAPER_EDGE && dot < ZXP_END_DOT) {
+        zxpMove((ZXP_END_DOT * ZXP_UNITS_PER_DOT) - zxpPhase);
+    }
+}
+
+function zxpRead():u8 {
+    zxpUpdate();
+    let result:u8 = 0x3e;
+    if (zxpPaperLatch || zxpStylus) result |= 0x80;
+    if (zxpPixelLatch) result |= 0x01;
+    return result;
+}
+
+function zxpWrite(val:u8):void {
+    zxpUpdate();
+    const stylus:bool = bool(val & 0x80);
+    if (!zxpDotSet) {
+        const dot:u32 = zxpPhase / ZXP_UNITS_PER_DOT;
+        if (zxpPaperRows > 0 && dot >= ZXP_FIRST_DOT && dot < ZXP_END_DOT) {
+            zxpDot = stylus && !zxpFeeding;
+            zxpDotSet = true;
+        }
+    }
+    const stop:bool = bool(val & 0x04);
+    const slow:bool = bool(val & 0x02);
+    if (stop == zxpMotorOn || slow != zxpSlow) updateAudioBuffer(t);  // the motor buzz changes here
+    zxpStylus = stylus;
+    zxpSlow = slow;
+    zxpPaperLatch = false;
+    zxpPixelLatch = false;
+    if (stop && zxpMotorOn && !zxpFeeding) zxpCoast();
+    zxpMotorOn = !stop;
+}
+
+/* One sample of the motor's buzz: a hum at a pitch that follows the motor
+speed, roughened with a little noise, fading in and out as the motor starts
+and stops. Quiet, as it is heard over the Spectrum's own sound. */
+const ZXP_BUZZ_VOLUME:f32 = 0.05;
+const ZXP_BUZZ_HZ:f32 = 150.0;
+
+function zxpBuzzSample():f32 {
+    const running:bool = zxpEnabled && (zxpMotorOn || zxpFeeding);
+    const target:f32 = running ? ZXP_BUZZ_VOLUME : 0.0;
+    zxpBuzzLevel += (target - zxpBuzzLevel) * 0.004;
+    if (!running && zxpBuzzLevel < 0.0005) {
+        zxpBuzzLevel = 0.0;
+        return 0.0;
+    }
+    const hz:f32 = (zxpSlow && !zxpFeeding) ? (ZXP_BUZZ_HZ / 2.0) : ZXP_BUZZ_HZ;
+    zxpBuzzPhase += hz / (f32(samplesPerFrame) * 50.0);
+    if (zxpBuzzPhase >= 1.0) zxpBuzzPhase -= 1.0;
+    zxpBuzzSeed = (zxpBuzzSeed * 1664525) + 1013904223;
+    const noise:f32 = (f32(zxpBuzzSeed >> 16) / 65536.0) - 0.5;
+    // a narrow pulse on a falling ramp, both centred on zero
+    const pulse:f32 = (zxpBuzzPhase < 0.18) ? 0.82 : -0.18;
+    const ramp:f32 = (0.5 - zxpBuzzPhase) * 0.5;
+    return zxpBuzzLevel * (pulse + ramp + (noise * 0.6));
+}
+
 export function readPort(addr:u16):u8 {
     /* apply pre-read contention */
     const page:u8 = memoryPageReadMap[addr >> 14];
@@ -755,6 +950,9 @@ export function readPort(addr:u16):u8 {
             updateTapePulses(t);
             result |= tapeLevel;
             if (tapeInserted) detectLoader();
+        } else if (zxpEnabled && !(addr & 0x0004)) {
+            /* ZX Printer (an even port with A2 low is left to the ULA) */
+            result = zxpRead();
         } else if (if1Enabled && (addr & 0x0018) != 0x0018) {
             /* Interface 1: 0xe7 = microdrive data, 0xef = microdrive
             control/status, 0xf7 = RS232/SinclairNet (unimplemented - reads
@@ -857,6 +1055,9 @@ export function writePort(addr:u16, val:u8):void {
         updateAudioBuffer(t);
         writeAYRegister(selectedAYRegister, val);
     }
+    // The ZX Printer decodes only A2, so it sees every write with A2 low
+    // alongside whatever else answers that address.
+    if (zxpEnabled && !(addr & 0x0004)) zxpWrite(val);
 
     /* apply post-write contention */
     if (addr & 0x0001) {
@@ -998,8 +1199,10 @@ function updateAudioBufferInner(targetTime:u32):void {
         const levelB:f32 = ayVolumeLevels[finalVolumeB];
         const levelC:f32 = ayVolumeLevels[finalVolumeC];
 
-        audioBufferLeft[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.86603 + levelB * 0.5 + levelC * 0.70711;
-        audioBufferRight[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.5 + levelB * 0.86603 + levelC * 0.70711;
+        const printerBuzz:f32 = zxpBuzzSample();
+
+        audioBufferLeft[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.86603 + levelB * 0.5 + levelC * 0.70711 + printerBuzz;
+        audioBufferRight[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.5 + levelB * 0.86603 + levelC * 0.70711 + printerBuzz;
         audioBufferPointer = (audioBufferPointer + 1) & 0x03ff;
         microslicesSinceLastSample -= frameCycleCount;
     }
@@ -1061,6 +1264,52 @@ export function setInterface1Enabled(enabled:bool):void {
         }
         if1CommsClk = false;
     }
+}
+
+/* Connects or disconnects the ZX Printer. Disconnecting stops its motor;
+the paper, and the stylus position on it, stay as they are. */
+export function setPrinterEnabled(enabled:bool):void {
+    zxpUpdate();
+    zxpEnabled = enabled;
+    if (!enabled) {
+        zxpMotorOn = false;
+        zxpFeeding = false;
+        zxpStylus = false;
+        zxpPaperLatch = false;
+        zxpPixelLatch = false;
+    }
+}
+
+/* The feed button: while held, the motor runs at full speed with the
+stylus held off, so paper feeds out blank whatever the computer is doing.
+On release the computer's own motor, speed and stylus settings take over
+again, so a print in progress carries on; with its motor stopped, the
+stylus coasts off the paper. */
+export function setPrinterFeed(on:bool):void {
+    zxpUpdate();
+    if (on == zxpFeeding) return;
+    zxpFeeding = on;
+    if (!on && !zxpMotorOn) zxpCoast();
+}
+
+// Paper on the roll, in pixel rows; 0 is out of paper.
+export function setPrinterPaper(rows:u32):void {
+    zxpPaperRows = rows;
+}
+export function getPrinterPaper():u32 {
+    return zxpPaperRows;
+}
+
+export function getPrinterMotor():bool {
+    return zxpEnabled && (zxpMotorOn || zxpFeeding);
+}
+
+// Finished rows waiting at PRINTER_ROWS, PRINTER_ROW_BYTES each, oldest first.
+export function getPrinterRowCount():u32 {
+    return zxpRowsOut;
+}
+export function clearPrinterRows():void {
+    zxpRowsOut = 0;
 }
 
 function mdrIsBlank(m:i32, byteOffset:u32, len:u32):bool {
@@ -1216,6 +1465,7 @@ export function resumeFrame():i16 {
 
     updateFramebuffer();
     updateAudioBuffer(t);
+    zxpUpdate();
 
     if (tapePulseWriteIndex > tapePulseReadIndex) {
         // copy excess from tape pulse buffer to start of buffer
@@ -1239,6 +1489,7 @@ export function resumeFrame():i16 {
     }
 
     t -= frameCycleCount;
+    zxpLastT = t;
     lastAudioT -= frameCycleCount;
     if (lastEarReadT > -100000) lastEarReadT -= i32(frameCycleCount);
     audioBufferPointer -= samplesPerFrame;

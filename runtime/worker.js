@@ -228,6 +228,22 @@ const serviceMicrodrives = () => {
     }
 };
 
+/* Called once per emulated frame while the ZX Printer is connected: passes
+ * on any rows printed since the last call, with the paper left and whether
+ * the motor is running, and posts again whenever the motor starts or stops. */
+let printerEnabled = false;
+let printerLastMotor = false;
+const servicePrinter = () => {
+    if (!printerEnabled) return;
+    const count = core.getPrinterRowCount();
+    const motor = !!core.getPrinterMotor();
+    if (!count && motor === printerLastMotor) return;
+    printerLastMotor = motor;
+    const rows = memoryData.slice(core.PRINTER_ROWS, core.PRINTER_ROWS + count * core.PRINTER_ROW_BYTES);
+    core.clearPrinterRows();
+    postMessage({ message: 'printerOutput', rows, paper: core.getPrinterPaper(), motor }, [rows.buffer]);
+};
+
 const loadSnapshot = (snapshot) => {
     core.setMachineType(snapshot.model);
     for (let page in snapshot.memoryPages) {
@@ -367,6 +383,7 @@ const runEmulatedFrame = () => {
     }
     serviceLoaderDetection();
     serviceMicrodrives();
+    servicePrinter();
 };
 
 onmessage = (e) => {
@@ -543,6 +560,24 @@ onmessage = (e) => {
                 for (let d = 0; d < 8; d++) flushMicrodrive(d);
             }
             core.setInterface1Enabled(!!e.data.enabled);
+            break;
+        case 'setPrinter':
+            printerEnabled = !!e.data.enabled;
+            core.setPrinterEnabled(printerEnabled);
+            if (!printerEnabled && printerLastMotor) {
+                printerLastMotor = false;
+                postMessage({ message: 'printerOutput', rows: new Uint8Array(0), paper: core.getPrinterPaper(), motor: false });
+            }
+            break;
+        case 'setPrinterPaper':
+            // Confirmed straight back, so the page's paper count ends on
+            // this value even if a report of the old roll was already on
+            // its way.
+            core.setPrinterPaper(e.data.rows);
+            postMessage({ message: 'printerOutput', rows: new Uint8Array(0), paper: core.getPrinterPaper(), motor: printerLastMotor });
+            break;
+        case 'setPrinterFeed':
+            core.setPrinterFeed(!!e.data.on);
             break;
         case 'insertMicrodrive':
             insertMicrodrive(e.data.drive, e.data.data, e.data.token);

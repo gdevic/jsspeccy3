@@ -14,6 +14,7 @@ A ZX Spectrum emulator for the browser
 * Detects custom tape loaders (Speedlock and other turbo loaders) and plays the tape for them automatically, fast-forwarded when instant loading is on
 * Loads any of the above files from inside a ZIP file
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
+* ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
 * Opens games straight from the PlayZX online catalog (~10,800 titles)
 * 100% / 200% / 300% and fullscreen display modes
 
@@ -31,11 +32,19 @@ The **File → PlayZX open…** menu item browses the PlayZX catalog of ZX Spect
 
 ## ZX Interface 1 and Microdrives
 
-The toolbar button between the keyboard and fullscreen buttons connects a ZX Interface 1 (edition 2 ROM) with two ZX Microdrives, or disconnects it, without resetting the machine. The drives stand to the left of the Spectrum, joined to it by a ribbon, and a drive's red light shows while its motor runs. The Interface 1 pages its shadow ROM in at the same addresses as the real one (the error restart at 0x0008 and CLOSE # at 0x1708), so its extended BASIC works as documented, for example `FORMAT "m";1;"name"`, `SAVE *"m";1;"name"`, `LOAD *"m";1;"name"`, `VERIFY *"m";1;"name"`, `CAT 1`, `ERASE "m";1;"name"` and `OPEN #` streams to a Microdrive file. Use a 48K machine or 48 BASIC. The RS232 and ZX Net ports are not emulated.
+The toolbar button between the keyboard and printer buttons connects a ZX Interface 1 (edition 2 ROM) with two ZX Microdrives, or disconnects it, without resetting the machine. The drives stand to the left of the Spectrum, joined to it by a ribbon, and a drive's red light shows while its motor runs. The Interface 1 pages its shadow ROM in at the same addresses as the real one (the error restart at 0x0008 and CLOSE # at 0x1708), so its extended BASIC works as documented, for example `FORMAT "m";1;"name"`, `SAVE *"m";1;"name"`, `LOAD *"m";1;"name"`, `VERIFY *"m";1;"name"`, `CAT 1`, `ERASE "m";1;"name"` and `OPEN #` streams to a Microdrive file. Use a 48K machine or 48 BASIC. The RS232 and ZX Net ports are not emulated.
 
 Clicking a drive opens a panel above it for using a cartridge. An empty drive offers the cartridges in the box, a new blank cartridge, or an `.mdr` file from the PC. A loaded drive shows the tape loop with each sector's use, a CAT-style list of its files (clicking one gives the `LOAD *` command to type), a write-protect toggle, a Format button for a blank cartridge, and Eject. The cartridge's label shows its name, handwritten. Dropping an `.mdr` file onto a drive inserts it there; opening one through the File menu or the `openUrl` option puts it in the first free drive and connects the Microdrives.
 
 **File → Microdrive cartridges…** opens the cartridge box, where cartridges are kept. Every cartridge lives in the browser's storage (IndexedDB) and survives a reload, as does which drive holds it. The box creates cartridges (blank, or already formatted with a name), imports `.mdr` files, imports or saves the whole box as a ZIP file, and for each cartridge shows its files, free space and drive, and can rename it, change its colour, save it to the PC as an `.mdr` file, duplicate it or delete it. A cartridge's name is the one FORMAT wrote on the tape, the same name CAT shows; renaming rewrites it in every sector header and leaves the files alone, which a real Microdrive could only do by reformatting.
+
+## ZX Printer
+
+The toolbar button between the Microdrive and fullscreen buttons connects a ZX Printer, or disconnects it, without resetting the machine. The printer stands to the right of the Spectrum, joined to it by its cable, and the printout rises out of it up to the top of the screen as it prints. `LPRINT`, `LLIST` and `COPY` work as on the real printer, from 48 BASIC or a program's own printer routine. A red light shows while the motor runs, and the motor buzzes quietly.
+
+The printer is emulated at the hardware level, after Sinclair's own description of it: two styli on a belt take turns across the paper, each on it for about 32ms and off it for about 16ms at full speed, an encoder gives 256 pulses across the 92mm print width of the 100mm paper, and the paper feeds one dot's height for every pass. It answers the port with address line A2 low, reporting the paper edge and each dot position to the program, which switches the stylus, the motor and its slow speed. A full-screen `COPY` takes about 8½ seconds.
+
+The printer measures its paper: a roll holds about 20m, and the panel shows how much is left. The roll, with its printout, stays with the browser session: it survives a reload, and a new session starts with a fresh roll, so save a printout to keep it. When the roll runs out, printing waits for paper just as on the real printer, where the ROM finds no paper edge; load a new roll to carry on, or press BREAK. Clicking the printer opens its panel, to load a new roll, tear the printout off, or save it to the PC as a PNG. The FEED button on top of the printer's right tower feeds blank paper while it is held down.
 
 ## Contributions
 
@@ -76,7 +85,7 @@ The available configuration options are:
 * `machine`: specifies the machine to emulate. Can be `48` (for a 48K Spectrum), `128` (for a 128K Spectrum), or `5` (for a Pentagon 128).
 * `openUrl`: specifies a URL, or an array of URLs, to a file (or files) to load on startup, in any supported snapshot, tape or archive format. Standard browser security restrictions apply for loading remote files: if the URL being loaded is not on the same domain as the calling page, it must serve [CORS HTTP headers](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) to be loadable.
 * `zoom`: specifies the size of the emulator window; 1 for 100% size (one Spectrum pixel per screen pixel), 2 for 200% size and so on.
-* `sandbox`: if true, all UI options for opening a new file are disabled, and the Microdrives are not offered - useful if you're showcasing a specific bit of Spectrum software on your page.
+* `sandbox`: if true, all UI options for opening a new file are disabled, and the Microdrives and printer are not offered - useful if you're showcasing a specific bit of Spectrum software on your page.
 * `tapeTrapsEnabled`: if true (the default), the emulator will recognise when the tape loading routine in the ROM is called, and load tape files instantly instead. Custom loaders that bypass the ROM routine cannot be trapped; the emulator recognises them sampling the tape, plays the tape for them, and runs the machine faster than real time until the loader stops. With this option off, a detected loader still starts the tape, but loading runs at normal speed.
 * `keyboardEnabled`: True by default; if false, the emulator will not respond to keypresses.
 * `uiEnabled`: True by default; if false, the menu bar and toolbar will not be shown.

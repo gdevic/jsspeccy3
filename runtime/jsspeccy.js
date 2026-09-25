@@ -14,6 +14,7 @@ import { openPlayZXDialog } from './playzx.js';
 import { isPlayZXAvailable } from './playzx-session.js';
 import { validateMDRFile } from './mdr.js';
 import { createMicrodriveDock } from './microdrive-ui.js';
+import { createPrinter } from './printer-ui.js';
 
 import openIcon from './icons/open.svg';
 import resetIcon from './icons/reset.svg';
@@ -26,6 +27,7 @@ import tapePauseIcon from './icons/tape_pause.svg';
 import ejectIcon from './icons/eject.svg';
 import keyboardIcon from './icons/keyboard.svg';
 import microdriveIcon from './icons/microdrive.svg';
+import printerIcon from './icons/printer.svg';
 
 import { createKeyboardOverlay } from './keyboard-overlay.js';
 
@@ -92,6 +94,13 @@ class Emulator extends EventEmitter {
         this.microdriveMotors = 0;
         this.microdriveHeads = [0, 0, 0, 0, 0, 0, 0, 0];
         this.microdriveTokens = [null, null, null, null, null, null, null, null];
+
+        /* ZX Printer support. printerPaper is the paper left on the roll, in
+         * pixel rows, as last reported by the worker; printerMotor is whether
+         * the printer's motor is running. */
+        this.printerEnabled = false;
+        this.printerPaper = 0;
+        this.printerMotor = false;
 
         this.onReadyHandlers = [];
 
@@ -198,6 +207,13 @@ class Emulator extends EventEmitter {
                     this.microdriveMotors = e.data.motors;
                     this.microdriveHeads = e.data.heads;
                     this.emit('microdriveStatus');
+                    break;
+                case 'printerOutput':
+                    // e.data.rows holds the pixel rows printed since the last
+                    // message, 32 bytes each, oldest first.
+                    this.printerPaper = e.data.paper;
+                    this.printerMotor = e.data.motor;
+                    this.emit('printerOutput', e.data.rows);
                     break;
                 case 'microdriveData':
                     // A drive went idle (or hit the periodic force-flush) with
@@ -646,6 +662,24 @@ class Emulator extends EventEmitter {
         this.worker.postMessage({ message: 'renameMicrodrive', drive, name });
     }
 
+    /* Connects (or disconnects) the ZX Printer. Nothing is reset: the paper
+     * and what is printed on it stay as they are. */
+    setPrinter(enabled) {
+        this.printerEnabled = enabled;
+        this.worker.postMessage({ message: 'setPrinter', enabled });
+        if (!enabled) this.printerMotor = false;
+        this.emit('setPrinter', enabled);
+    }
+    /* Loads the printer with `rows` pixel rows of paper (0 = no paper). */
+    setPrinterPaper(rows) {
+        this.printerPaper = rows;
+        this.worker.postMessage({ message: 'setPrinterPaper', rows });
+    }
+    /* Presses (true) or releases (false) the printer's feed button. */
+    setPrinterFeed(on) {
+        this.worker.postMessage({ message: 'setPrinterFeed', on });
+    }
+
     /* Calls back once loadRoms() has resolved and any openUrl/autoStart from
      * the constructor's opts has run - immediately if that's already
      * happened. The public JSSpeccy(...) return value's onReady delegates
@@ -1006,9 +1040,32 @@ window.JSSpeccy = (container, opts) => {
             }
         )
 
+        /* ZX Printer: stands to the right of the Spectrum, joined to it by
+         * its cable, with the printout rising to the top of the screen. The
+         * toolbar button between the fullscreen and Microdrive buttons
+         * connects or disconnects it without resetting the machine (see
+         * runtime/printer-ui.js). Hidden in fullscreen, like the dock. */
+        if (!opts.sandbox) {
+            const printer = createPrinter(ui, emu);
+            const printerButton = ui.toolbar.addButton(
+                printerIcon,
+                {label: 'Connect Printer', align: 'right'},
+                () => {
+                    printer.toggle();
+                    emu.focus();
+                }
+            );
+            emu.on('setPrinter', (enabled) => {
+                printerButton.setLabel(enabled ? 'Disconnect Printer' : 'Connect Printer');
+            });
+            ui.on('setZoom', (factor) => {
+                printer.setFullscreen(factor === 'fullscreen');
+            });
+        }
+
         /* Microdrive dock: two drives standing to the left of the Spectrum,
          * joined to it by a ribbon. The toolbar button between the keyboard
-         * and fullscreen buttons connects the Interface 1 with its drives, or
+         * and printer buttons connects the Interface 1 with its drives, or
          * disconnects it, without resetting the machine (a cartridge stays in
          * its drive either way - see runtime/microdrive-ui.js). The dock is
          * shown while connected; in fullscreen it is hidden but stays

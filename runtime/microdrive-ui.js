@@ -93,7 +93,7 @@ const RAINBOW_SLOPE = 0.33;
  * red LED and the cartridge slot. An inserted cartridge shows as its label
  * end pushed into the slot, standing slightly proud of the front face. */
 const DRIVE_W = 66, DRIVE_H = 72;
-const DOCK_SCALE = 1.2; // drawn size relative to the display, before the zoom factor
+export const DOCK_SCALE = 1.2; // drawn size relative to the display, before the zoom factor
 const TOP_Y = 1, STEP_Y = 25, FRONT_Y = 57, BOTTOM_Y = 70;
 
 let driveArtId = 0;
@@ -226,7 +226,7 @@ function buildDriveIcon(driveIndex) {
  * toolbar strip. */
 const RIBBON_W = 26;
 const RIBBON_Y0 = 11, RIBBON_Y1 = 7, RIBBON_THICK = 9;
-const RIBBON_PLUG_Y = RIBBON_Y1 + (RIBBON_THICK / 2);
+export const RIBBON_PLUG_Y = RIBBON_Y1 + (RIBBON_THICK / 2);
 
 function buildRibbon() {
     const W = RIBBON_W, H = DRIVE_H;
