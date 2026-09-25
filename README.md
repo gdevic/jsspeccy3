@@ -16,7 +16,8 @@ A ZX Spectrum emulator for the browser
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
 * Opens games straight from the PlayZX online catalog (~10,800 titles)
-* 100% / 200% / 300% and fullscreen display modes
+* 100% / 200% / 300% and fullscreen display modes, with a compact menu bar and toolbar at 100%
+* A switched-off TV screen until the machine is started, which then powers on like a picture tube
 
 ## Implementation notes
 
@@ -70,6 +71,8 @@ replacing `/path/to/jsspeccy.js` with (yes!) the path to jsspeccy.js. At the poi
 ```
 
 If you're suitably confident with JavaScript, you can put the call to `JSSpeccy` anywhere else that runs on page load, or in response to any user action.
+
+The emulator sets its own width from the zoom level, so the containing element can simply fit it (for example `width: fit-content; margin: auto`). When connected, the Microdrives stand outside it to the left and the ZX Printer to the right, so leave room on either side of it.
 
 You can also pass configuration options as a second argument to `JSSpeccy`:
 
