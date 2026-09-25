@@ -15,10 +15,21 @@ export class MenuBar {
         container.appendChild(this.elem);
         this.currentMouseenterEvent = null;
         this.currentMouseoutEvent = null;
+        this.menus = [];
+        this.compact = false;
     }
 
     addMenu(title) {
-        return new Menu(this.elem, title);
+        const menu = new Menu(this.elem, title);
+        menu.setCompact(this.compact);
+        this.menus.push(menu);
+        return menu;
+    }
+
+    /* Smaller menu titles, so that they fit one row on a narrow display. */
+    setCompact(compact) {
+        this.compact = compact;
+        for (const menu of this.menus) menu.setCompact(compact);
     }
 
     enterFullscreen() {
@@ -64,6 +75,7 @@ export class Menu {
         button.style.margin = '2px';
         button.innerText = title;
         elem.appendChild(button);
+        this.button = button;
 
         this.list = document.createElement('ul');
         this.list.style.position = 'absolute';
@@ -90,6 +102,12 @@ export class Menu {
 
     isOpen() {
         return this.list.style.display == 'block';
+    }
+
+    setCompact(compact) {
+        Object.assign(this.button.style, compact
+            ? { margin: '1px', padding: '1px 4px', fontSize: '11px' }
+            : { margin: '2px', padding: '', fontSize: '' });
     }
 
     open() {
@@ -148,24 +166,39 @@ export class Toolbar {
         container.appendChild(this.elem);
         this.currentMouseenterEvent = null;
         this.currentMouseoutEvent = null;
+        this.buttons = [];
+        this.textButtons = [];
+        this.compact = false;
     }
     addButton(icon, opts, onClick) {
         opts = opts || {};
         const button = new ToolbarButton(icon, opts, onClick);
         if (opts.align == 'right') button.elem.style.float = 'right';
+        button.setCompact(this.compact);
+        this.buttons.push(button);
         this.elem.appendChild(button.elem);
         return button;
+    }
+    /* Smaller buttons, so that they fit one row on a narrow display. */
+    setCompact(compact) {
+        this.compact = compact;
+        for (const button of this.buttons) button.setCompact(compact);
+        for (const button of this.textButtons) Toolbar.styleTextButton(button, compact);
+    }
+    static styleTextButton(button, compact) {
+        Object.assign(button.style, compact
+            ? { margin: '1px', padding: '0 3px', fontSize: '10px', height: '22px' }
+            : { margin: '2px', padding: '', fontSize: '12px', height: '26px' });
     }
     addTextButton(text, opts, onClick) {
         /* A toolbar button that shows text (used for the cassette counter) rather
          * than an SVG icon. Returns a handle with setText/setLabel/enable/disable. */
         opts = opts || {};
         const button = document.createElement('button');
-        button.style.margin = '2px';
         button.style.fontFamily = 'monospace';
-        button.style.fontSize = '12px';
-        button.style.height = '26px';
         button.style.verticalAlign = 'middle';
+        Toolbar.styleTextButton(button, this.compact);
+        this.textButtons.push(button);
         button.innerText = text;
         if (opts.label) button.title = opts.label;
         if (opts.align == 'right') button.style.float = 'right';
@@ -214,15 +247,21 @@ export class Toolbar {
 class ToolbarButton {
     constructor(icon, opts, onClick) {
         this.elem = document.createElement('button');
-        this.elem.style.margin = '2px';
+        this.compact = false;
+        this.setCompact(false);
         this.setIcon(icon);
         if (opts.label) this.setLabel(opts.label);
         this.elem.addEventListener('click', onClick);
     }
     setIcon(icon) {
         this.elem.innerHTML = icon;
-        this.elem.firstChild.style.height = '20px';
+        this.elem.firstChild.style.height = this.compact ? '16px' : '20px';
         this.elem.firstChild.style.verticalAlign = 'middle';
+    }
+    setCompact(compact) {
+        this.compact = compact;
+        Object.assign(this.elem.style, compact ? { margin: '1px', padding: '1px 2px' } : { margin: '2px', padding: '' });
+        if (this.elem.firstChild) this.elem.firstChild.style.height = compact ? '16px' : '20px';
     }
     setLabel(label) {
         this.elem.title = label;
@@ -360,6 +399,7 @@ export class UIController extends EventEmitter {
                 this.isFullscreen = true;
                 this.canvas.style.width = '100%';
                 this.canvas.style.height = '100%';
+                this.setCompactUI(false);
 
                 if (this.uiEnabled) {
                     document.addEventListener('mousemove', fullscreenMouseMove);
@@ -446,12 +486,21 @@ export class UIController extends EventEmitter {
         this.canvas.style.width = '' + displayWidth + 'px';
         this.canvas.style.height = '' + displayHeight + 'px';
         this.appContainer.style.width = '' + displayWidth + 'px';
+        this.setCompactUI(displayWidth < 480);
         this.centerStartButton();
         this.emit('setZoom', factor);
     }
 
     /* Keeps the start button centred on the display, and the switched-off
      * TV covering it. */
+    /* On a narrow display (100% zoom) the menu bar and toolbar use smaller
+     * buttons, so each stays on a single row. */
+    setCompactUI(compact) {
+        if (!this.uiEnabled) return;
+        this.menuBar.setCompact(compact);
+        this.toolbar.setCompact(compact);
+    }
+
     centerStartButton() {
         const canvasHeight = this.canvas.offsetHeight;
         if (canvasHeight) {
