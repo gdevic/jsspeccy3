@@ -1,3 +1,8 @@
+import fs from 'fs';
+import webpack from 'webpack';
+
+const { version } = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url)));
+
 export default [
     {
         output: {
@@ -13,7 +18,12 @@ export default [
                     loader: 'svg-inline-loader',
                 }
             ],
-        }
+        },
+        plugins: [
+            new webpack.DefinePlugin({
+                __JSSPECCY_VERSION__: JSON.stringify(version),
+            }),
+        ],
     },
     {
         output: {

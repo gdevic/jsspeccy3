@@ -1575,3 +1575,6 @@ window.JSSpeccy = (container, opts) => {
         exit: () => {exit();},
     };
 };
+
+// Injected by webpack from package.json
+window.JSSpeccy.version = __JSSPECCY_VERSION__;

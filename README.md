@@ -131,6 +131,8 @@ For additional JavaScript hackery, the return value of the JSSpeccy function cal
 * `emu.onReady(callback)` - call the given callback once the emulator is fully initialised
 * `emu.exit()` - immediately stop the emulator and remove it from the document
 
+The emulator's version is available, without starting it, as the string `JSSpeccy.version` (e.g. `"3.2.3"`). The bundled `index.html` shows it in the browser tab title.
+
 ## Troubleshooting
 
 If the emulator does not start, open the browser's developer console (on Chrome: View -> Developer -> JavaScript Console; on Firefox: Tools -> Browser Tools -> Browser Console) and check for any error messages.
