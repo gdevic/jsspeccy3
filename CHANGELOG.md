@@ -1,3 +1,21 @@
+3.2.3 (2026-09-25)
+------------------
+
+* Add ZX Interface 1 and Microdrive emulation: the Interface 1 shadow ROM and extended BASIC, two Microdrives in a dock beside the Spectrum, a drive panel for inserting, formatting, write-protecting and ejecting cartridges, and a cartridge box that keeps cartridges in the browser between visits and imports and exports them as .mdr files
+* Add ZX Printer emulation with a printer beside the Spectrum: LPRINT, LLIST and COPY print onto a roll of silver paper (COPY bit-exact on the 48K, 128K and Pentagon), which scrolls with the mouse wheel or by dragging, folds over the printer, and can be torn off or saved as a PNG
+* Add saving and restoring the whole session as one file: the running machine, the machine and ROM chosen, the tape and where it is parked, the Microdrive cartridges, the printout, the settings and whether the machine was off, paused or running, stored as a ZIP holding a standard SZX snapshot alongside the other parts
+* Add writing SZX snapshots, which also carry the AY, Interface 1, Beta 128 and ZX Printer state
+* Add detection of custom tape loaders (Speedlock and other turbo loaders): the tape starts by itself when such a loader begins reading it, runs fast-forwarded when instant loading is on, and stops again once the loader goes idle, so a multi-load game finds the tape where the last load left it
+* Add a switched-off TV screen shown until the machine is first started, which then powers on like a picture tube
+* Add a display size slider from 100% to 400% that catches on the whole and half sizes, and remember the chosen size, fullscreen included, between visits
+* Add the Microdrive motor whirr and the printer buzz to the emulator's sound
+* Add `JSSpeccy.version`, and show the version in the browser tab title
+* Make audio play from an AudioWorklet on the browser's audio thread with a cap on latency, so a busy page can no longer starve it
+* Make the menu bar and toolbar compact below 200% zoom so they stay on one row
+* Fix snapshot loads taking the first interrupt one instruction late, by restoring the EI-last flag
+* Fix the CPU register state left behind by the instant tape-load trap
+
+
 3.2.2 (2026-09-16)
 ------------------
 
