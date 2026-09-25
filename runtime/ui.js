@@ -86,6 +86,7 @@ export class Menu {
         this.list.style.padding = '0';
         this.list.style.border = '1px solid #888';
         this.list.style.display = 'none';
+        this.list.style.zIndex = '10';
         elem.appendChild(this.list);
 
         button.addEventListener('click', () => {
@@ -325,7 +326,7 @@ export class UIController extends EventEmitter {
          * picture tube's power-on (see powerOn). */
         this.screenOff = document.createElement('div');
         Object.assign(this.screenOff.style, {
-            position: 'absolute', pointerEvents: 'none', overflow: 'hidden',
+            position: 'absolute', zIndex: '1', pointerEvents: 'none', overflow: 'hidden',
             background: [
                 'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 28%, rgba(255,255,255,0) 42%)',
                 'repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0px, rgba(0,0,0,0.22) 1px, rgba(0,0,0,0) 1px, rgba(0,0,0,0) 3px)',
@@ -333,14 +334,16 @@ export class UIController extends EventEmitter {
             ].join(', '),
             boxShadow: 'inset 0 0 50px rgba(0,0,0,0.85)',
         });
-        // first in the container, so the menus' drop-down lists and the start
-        // button are drawn over it
-        this.appContainer.insertBefore(this.screenOff, this.appContainer.firstChild);
+        // Stacked above the display, which the power-on's brightness filter
+        // would otherwise draw on top of it, and below the menus' drop-down
+        // lists and the start button.
+        this.appContainer.appendChild(this.screenOff);
 
         this.startButton = document.createElement('button');
         this.startButton.innerHTML = playIcon;
         this.appContainer.appendChild(this.startButton);
         this.startButton.style.position = 'absolute';
+        this.startButton.style.zIndex = '2';
         this.startButton.style.top = '50%';
         this.startButton.style.left = '50%';
         this.startButton.style.width = '96px';
@@ -371,9 +374,13 @@ export class UIController extends EventEmitter {
 
         /* The menu bar, toolbar and on-screen keyboard are built and toggled after
          * this point, each time changing where the canvas sits inside the
-         * container, so re-centre the overlay whenever the container resizes. */
+         * container, so re-centre the overlays whenever the container resizes,
+         * or the menu bar does: its filling in moves the canvas down without
+         * always resizing the container. */
         if (window.ResizeObserver) {
-            new ResizeObserver(() => {this.centerStartButton();}).observe(this.appContainer);
+            const observer = new ResizeObserver(() => {this.centerStartButton();});
+            observer.observe(this.appContainer);
+            if (this.menuBar) observer.observe(this.menuBar.elem);
         }
 
         /* variables for tracking zoom / fullscreen state */
