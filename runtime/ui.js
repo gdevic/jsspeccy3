@@ -280,6 +280,24 @@ export class UIController extends EventEmitter {
             this.toolbar = new Toolbar(this.appContainer);
         }
 
+        /* Until the machine first starts there is no picture, so the display
+         * shows a switched-off TV: dark glass, darker towards the corners,
+         * with a faint reflection and scanlines. Starting it plays the
+         * picture tube's power-on (see powerOn). */
+        this.screenOff = document.createElement('div');
+        Object.assign(this.screenOff.style, {
+            position: 'absolute', pointerEvents: 'none', overflow: 'hidden',
+            background: [
+                'linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.03) 28%, rgba(255,255,255,0) 42%)',
+                'repeating-linear-gradient(0deg, rgba(0,0,0,0.22) 0px, rgba(0,0,0,0.22) 1px, rgba(0,0,0,0) 1px, rgba(0,0,0,0) 3px)',
+                'radial-gradient(ellipse at 50% 45%, #2e3531 0%, #1d2320 55%, #0b0d0c 100%)',
+            ].join(', '),
+            boxShadow: 'inset 0 0 50px rgba(0,0,0,0.85)',
+        });
+        // first in the container, so the menus' drop-down lists and the start
+        // button are drawn over it
+        this.appContainer.insertBefore(this.screenOff, this.appContainer.firstChild);
+
         this.startButton = document.createElement('button');
         this.startButton.innerHTML = playIcon;
         this.appContainer.appendChild(this.startButton);
@@ -306,6 +324,7 @@ export class UIController extends EventEmitter {
         });
         emulator.on('start', () => {
             this.startButton.style.display = 'none';
+            this.powerOn();
         });
         emulator.on('pause', () => {
             this.startButton.style.display = 'block';
@@ -431,6 +450,8 @@ export class UIController extends EventEmitter {
         this.emit('setZoom', factor);
     }
 
+    /* Keeps the start button centred on the display, and the switched-off
+     * TV covering it. */
     centerStartButton() {
         const canvasHeight = this.canvas.offsetHeight;
         if (canvasHeight) {
@@ -438,6 +459,68 @@ export class UIController extends EventEmitter {
         } else {
             this.startButton.style.top = '50%';   // not laid out yet; best guess
         }
+        if (this.screenOff) {
+            Object.assign(this.screenOff.style, {
+                left: this.canvas.offsetLeft + 'px', top: this.canvas.offsetTop + 'px',
+                width: this.canvas.offsetWidth + 'px', height: canvasHeight + 'px',
+            });
+        }
+    }
+
+    /* The picture tube warming up, the first time the machine starts: a bright
+     * line flashes across the middle of the black screen, then opens out top
+     * and bottom into the picture, which settles from over-bright. Skipped for
+     * anyone who asks for reduced motion. */
+    powerOn() {
+        const screen = this.screenOff;
+        if (!screen) return;
+        this.screenOff = null;
+        const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (reduceMotion || !screen.animate) {
+            screen.remove();
+            return;
+        }
+        Object.assign(screen.style, { background: 'none', boxShadow: 'none' });
+        const DURATION = 420;
+        const LINE_END = 0.35;  // share of DURATION the line takes to reach full width
+
+        const shutter = (edge) => {
+            const half = document.createElement('div');
+            Object.assign(half.style, { position: 'absolute', left: '0', right: '0', height: '50%', background: '#000' });
+            half.style[edge] = '0';
+            screen.appendChild(half);
+            half.animate(
+                [{ height: '50%' }, { height: '50%', offset: LINE_END }, { height: '0%' }],
+                { duration: DURATION, easing: 'ease-in', fill: 'forwards' }
+            );
+        };
+        shutter('top');
+        shutter('bottom');
+
+        const line = document.createElement('div');
+        Object.assign(line.style, {
+            position: 'absolute', left: '0', right: '0', top: '50%', height: '2px', marginTop: '-1px',
+            background: '#fff',
+            boxShadow: '0 0 6px 2px rgba(210,235,255,0.9), 0 0 18px 6px rgba(160,200,255,0.5)',
+        });
+        screen.appendChild(line);
+        line.animate(
+            [
+                { transform: 'scaleX(0)', opacity: 1 },
+                { transform: 'scaleX(1)', opacity: 1, offset: LINE_END },
+                { transform: 'scaleX(1) scaleY(6)', opacity: 0 },
+            ],
+            { duration: DURATION, easing: 'ease-out', fill: 'forwards' }
+        ).onfinish = () => screen.remove();
+
+        this.canvas.animate(
+            [
+                { filter: 'brightness(2.2) contrast(0.7)' },
+                { filter: 'brightness(2.2) contrast(0.7)', offset: 0.25 },
+                { filter: 'none' },
+            ],
+            { duration: DURATION + 300, easing: 'ease-out' }
+        );
     }
 
     enterFullscreen() {
