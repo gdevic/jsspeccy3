@@ -158,6 +158,12 @@ let if1Enabled:bool = false;
 let if1ROMActive:bool = false;
 let if1SavedROMPage:u8 = 0;
 let if1CommsClk:bool = false;
+let mdrWhirrPhase:f32 = 0.0;  // position in the drive motor's hum, 0 to 1
+let mdrWhirrLevel:f32 = 0.0;  // whirr volume, easing towards its target as a motor starts and stops
+let mdrWhirrHiss:f32 = 0.0;  // low-passed noise: the tape running past the head
+let mdrWhirrClick:f32 = 0.0;  // the click of a motor starting, dying away
+let mdrWhirrRunning:bool = false;
+let mdrWhirrSeed:u32 = 7;
 
 // ZX Printer (see the port handlers further down for the model)
 let zxpEnabled:bool = false;
@@ -758,6 +764,7 @@ in (0 = select, motor on). This is the entire motor-select mechanism; a
 drive runs iff it currently holds the shifted-in 0. */
 function mdrPortCtrOut(val:u8):void {
     if (!(val & 0x02) && if1CommsClk) {
+        updateAudioBuffer(t);  // a motor may start or stop here, and with it the whirr
         for (let m:i32 = 7; m > 0; m--) {
             mdrMotorOn[m] = mdrMotorOn[m - 1];
         }
@@ -891,7 +898,7 @@ function zxpWrite(val:u8):void {
     }
     const stop:bool = bool(val & 0x04);
     const slow:bool = bool(val & 0x02);
-    if (stop == zxpMotorOn || slow != zxpSlow) updateAudioBuffer(t);  // the motor buzz changes here
+    if (stop == zxpMotorOn) updateAudioBuffer(t);  // the motor starts or stops here, and with it the buzz
     zxpStylus = stylus;
     zxpSlow = slow;
     zxpPaperLatch = false;
@@ -900,22 +907,66 @@ function zxpWrite(val:u8):void {
     zxpMotorOn = !stop;
 }
 
-/* One sample of the motor's buzz: a hum at a pitch that follows the motor
-speed, roughened with a little noise, fading in and out as the motor starts
-and stops. Quiet, as it is heard over the Spectrum's own sound. */
+/* One sample of the Microdrives' whirr: a soft low hum from the motor with
+the hiss of the tape loop running past the head over it, a click as a motor
+starts, and a spin-up and spin-down as the volume eases in and out. A drive
+turning a cartridge is louder than an empty one. Quieter than the printer:
+a real drive was barely heard over the room. */
+const MDR_WHIRR_VOLUME:f32 = 0.045;
+const MDR_WHIRR_HZ:f32 = 85.0;
+
+function mdrWhirrSample():f32 {
+    let target:f32 = 0.0;
+    if (if1Enabled) {
+        for (let m:i32 = 0; m < 8; m++) {
+            if (mdrMotorOn[m]) {
+                const loudness:f32 = mdrInserted[m] ? MDR_WHIRR_VOLUME : (MDR_WHIRR_VOLUME * 0.5);
+                if (loudness > target) target = loudness;
+            }
+        }
+    }
+    const running:bool = target > 0.0;
+    if (running && !mdrWhirrRunning) mdrWhirrClick = 1.0;
+    mdrWhirrRunning = running;
+    mdrWhirrLevel += (target - mdrWhirrLevel) * 0.0004;
+    if (!running && mdrWhirrLevel < 0.0002 && mdrWhirrClick < 0.001) {
+        mdrWhirrLevel = 0.0;
+        mdrWhirrClick = 0.0;
+        return 0.0;
+    }
+    mdrWhirrPhase += MDR_WHIRR_HZ / (f32(samplesPerFrame) * 50.0);
+    if (mdrWhirrPhase >= 1.0) mdrWhirrPhase -= 1.0;
+    // a triangle wave, softer than a pulse, for the motor
+    const hum:f32 = (mdrWhirrPhase < 0.5) ? ((mdrWhirrPhase * 4.0) - 1.0) : (3.0 - (mdrWhirrPhase * 4.0));
+    mdrWhirrSeed = (mdrWhirrSeed * 1664525) + 1013904223;
+    const noise:f32 = (f32(mdrWhirrSeed >> 16) / 65536.0) - 0.5;
+    mdrWhirrHiss += (noise - mdrWhirrHiss) * 0.12;
+    mdrWhirrClick *= 0.995;
+    return (mdrWhirrLevel * ((hum * 0.45) + (mdrWhirrHiss * 2.5))) + (mdrWhirrClick * noise * 0.06);
+}
+
+/* One sample of the motor's buzz: a hum at one steady pitch, roughened with
+a little noise. Quiet, as it is heard over the Spectrum's own sound. It
+starts quickly but dies away slowly, so the short stops between printed
+lines don't chop it. */
 const ZXP_BUZZ_VOLUME:f32 = 0.05;
 const ZXP_BUZZ_HZ:f32 = 150.0;
+const ZXP_BUZZ_ATTACK_S:f32 = 0.02;
+const ZXP_BUZZ_RELEASE_S:f32 = 0.15;
 
 function zxpBuzzSample():f32 {
     const running:bool = zxpEnabled && (zxpMotorOn || zxpFeeding);
-    const target:f32 = running ? ZXP_BUZZ_VOLUME : 0.0;
-    zxpBuzzLevel += (target - zxpBuzzLevel) * 0.004;
-    if (!running && zxpBuzzLevel < 0.0005) {
-        zxpBuzzLevel = 0.0;
-        return 0.0;
+    const sampleRate:f32 = f32(samplesPerFrame) * 50.0;
+    if (running) {
+        zxpBuzzLevel += (ZXP_BUZZ_VOLUME - zxpBuzzLevel) / (ZXP_BUZZ_ATTACK_S * sampleRate);
+    } else {
+        zxpBuzzLevel -= zxpBuzzLevel / (ZXP_BUZZ_RELEASE_S * sampleRate);
+        if (zxpBuzzLevel < 0.0005) {
+            zxpBuzzLevel = 0.0;
+            return 0.0;
+        }
     }
-    const hz:f32 = (zxpSlow && !zxpFeeding) ? (ZXP_BUZZ_HZ / 2.0) : ZXP_BUZZ_HZ;
-    zxpBuzzPhase += hz / (f32(samplesPerFrame) * 50.0);
+    zxpBuzzPhase += ZXP_BUZZ_HZ / sampleRate;
     if (zxpBuzzPhase >= 1.0) zxpBuzzPhase -= 1.0;
     zxpBuzzSeed = (zxpBuzzSeed * 1664525) + 1013904223;
     const noise:f32 = (f32(zxpBuzzSeed >> 16) / 65536.0) - 0.5;
@@ -1199,10 +1250,10 @@ function updateAudioBufferInner(targetTime:u32):void {
         const levelB:f32 = ayVolumeLevels[finalVolumeB];
         const levelC:f32 = ayVolumeLevels[finalVolumeC];
 
-        const printerBuzz:f32 = zxpBuzzSample();
+        const peripherals:f32 = zxpBuzzSample() + mdrWhirrSample();
 
-        audioBufferLeft[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.86603 + levelB * 0.5 + levelC * 0.70711 + printerBuzz;
-        audioBufferRight[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.5 + levelB * 0.86603 + levelC * 0.70711 + printerBuzz;
+        audioBufferLeft[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.86603 + levelB * 0.5 + levelC * 0.70711 + peripherals;
+        audioBufferRight[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.5 + levelB * 0.86603 + levelC * 0.70711 + peripherals;
         audioBufferPointer = (audioBufferPointer + 1) & 0x03ff;
         microslicesSinceLastSample -= frameCycleCount;
     }
