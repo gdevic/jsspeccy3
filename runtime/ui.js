@@ -156,6 +156,75 @@ export class Menu {
             },
         }
     }
+
+    /* A slider row. Dragging it reports each new value through onInput, in
+     * steps of opts.step, and the thumb catches on any of opts.marks it
+     * comes within opts.snap of; onChange follows when it is let go. While
+     * the pointer holds it, the list stays put on screen, even when what it
+     * changes moves the page under it. */
+    addSlider(opts) {
+        const li = document.createElement('li');
+        Object.assign(li.style, { display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 6px' });
+        const input = document.createElement('input');
+        Object.assign(input, { type: 'range', min: opts.min, max: opts.max, step: 'any' });
+        Object.assign(input.style, { flex: '1', minWidth: '0', margin: '0' });
+        // the marks, drawn as ticks under the track
+        const ticks = document.createElement('datalist');
+        ticks.id = 'jsspeccy-slider-marks-' + (Menu.sliderCount = (Menu.sliderCount || 0) + 1);
+        for (const mark of opts.marks) {
+            const option = document.createElement('option');
+            option.value = mark;
+            ticks.appendChild(option);
+        }
+        input.setAttribute('list', ticks.id);
+        const label = document.createElement('span');
+        Object.assign(label.style, { width: '38px', textAlign: 'right', fontSize: '12px' });
+        li.append(input, ticks, label);
+        this.list.appendChild(li);
+
+        const perUnit = Math.round(1 / opts.step);
+        const snapped = (raw) => {
+            const mark = opts.marks.reduce((a, b) => (Math.abs(b - raw) < Math.abs(a - raw) ? b : a));
+            if (Math.abs(mark - raw) <= opts.snap) return mark;
+            return Math.round(raw * perUnit) / perUnit;
+        };
+        let value = null;
+        const show = (v) => {
+            value = v;
+            input.value = v;
+            label.textContent = opts.format(v);
+        };
+
+        const unpin = () => {
+            Object.assign(this.list.style, { position: 'absolute', left: '', top: '' });
+            window.removeEventListener('pointerup', unpin);
+            window.removeEventListener('pointercancel', unpin);
+        };
+        input.addEventListener('pointerdown', () => {
+            const rect = this.list.getBoundingClientRect();
+            Object.assign(this.list.style, { position: 'fixed', left: rect.left + 'px', top: rect.top + 'px' });
+            window.addEventListener('pointerup', unpin);
+            window.addEventListener('pointercancel', unpin);
+        });
+        input.addEventListener('input', () => {
+            const v = snapped(+input.value);
+            input.value = v;
+            if (v === value) return;
+            show(v);
+            opts.onInput(v);
+        });
+        input.addEventListener('change', () => opts.onChange(value));
+        // a range is clicked when let go, which would close the list
+        li.addEventListener('click', (e) => e.stopPropagation());
+
+        return {
+            setValue: show,
+            setEnabled: (enabled) => {
+                input.disabled = !enabled;
+                li.style.opacity = enabled ? '' : '0.5';
+            },
+        };
+    }
 }
 
 export class Toolbar {
@@ -488,15 +557,15 @@ export class UIController extends EventEmitter {
         this.canvas.style.width = '' + displayWidth + 'px';
         this.canvas.style.height = '' + displayHeight + 'px';
         this.appContainer.style.width = '' + displayWidth + 'px';
-        this.setCompactUI(displayWidth < 480);
+        this.setCompactUI(displayWidth < 640);
         this.centerStartButton();
         this.emit('setZoom', factor);
     }
 
     /* Keeps the start button centred on the display, and the switched-off
      * TV covering it. */
-    /* On a narrow display (100% zoom) the menu bar and toolbar use smaller
-     * buttons, so each stays on a single row. */
+    /* On a narrow display (below 200% zoom) the menu bar and toolbar use
+     * smaller buttons, so each stays on a single row. */
     setCompactUI(compact) {
         if (!this.uiEnabled) return;
         this.menuBar.setCompact(compact);

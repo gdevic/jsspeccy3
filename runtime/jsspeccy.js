@@ -816,12 +816,21 @@ class Emulator extends EventEmitter {
     }
 }
 
-/* The display size - 100%, 200%, 300% or fullscreen - is remembered in
+/* The display size - any windowed size, or fullscreen - is remembered in
  * localStorage and restored on the next visit. A browser lets a page go
  * fullscreen only in response to the user, so a remembered fullscreen comes
  * back on the first press of the start button; until then the display has
  * the size it had under fullscreen. */
 const DISPLAY_KEY = 'jsspeccy-display';
+
+/* The Display menu's slider sets the windowed size from ZOOM_MIN to
+ * ZOOM_MAX in ZOOM_STEP steps, its thumb catching on ZOOM_MARKS within
+ * ZOOM_SNAP. */
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 4;
+const ZOOM_STEP = 0.1;
+const ZOOM_MARKS = [1, 1.5, 2, 2.5, 3, 3.5, 4];
+const ZOOM_SNAP = 0.06;
 
 function loadDisplay() {
     try {
@@ -1034,29 +1043,26 @@ window.JSSpeccy = (container, opts) => {
 
         const displayMenu = ui.menuBar.addMenu('Display');
 
-        const zoomItemsBySize = {
-            1: displayMenu.addItem('100%', () => {ui.setZoom(1); emu.focus();}),
-            2: displayMenu.addItem('200%', () => {ui.setZoom(2); emu.focus();}),
-            3: displayMenu.addItem('300%', () => {ui.setZoom(3); emu.focus();}),
-        }
+        /* The windowed size follows the slider as it is dragged. In
+         * fullscreen the slider shows the size underneath, and is disabled
+         * rather than leave fullscreen part way through a drag. */
+        displayMenu.list.style.width = '190px';
+        const zoomSlider = displayMenu.addSlider({
+            min: ZOOM_MIN, max: ZOOM_MAX, step: ZOOM_STEP, marks: ZOOM_MARKS, snap: ZOOM_SNAP,
+            format: (z) => Math.round(z * 100) + '%',
+            onInput: (z) => ui.setZoom(z),
+            onChange: () => emu.focus(),
+        });
         const fullscreenItem = displayMenu.addItem('Fullscreen', () => {
             ui.enterFullscreen();
         })
         const setZoomCheckbox = (factor) => {
+            zoomSlider.setValue(ui.zoom);
+            zoomSlider.setEnabled(factor != 'fullscreen');
             if (factor == 'fullscreen') {
                 fullscreenItem.setBullet();
-                for (let i in zoomItemsBySize) {
-                    zoomItemsBySize[i].unsetBullet();
-                }
             } else {
                 fullscreenItem.unsetBullet();
-                for (let i in zoomItemsBySize) {
-                    if (parseInt(i) == factor) {
-                        zoomItemsBySize[i].setBullet();
-                    } else {
-                        zoomItemsBySize[i].unsetBullet();
-                    }
-                }
             }
         }
 
@@ -1377,7 +1383,7 @@ window.JSSpeccy = (container, opts) => {
                     if ('autoLoadTapes' in settings) emu.setAutoLoadTapes(settings.autoLoadTapes);
                     if (settings.tapeAutoLoadMode) emu.tapeAutoLoadMode = settings.tapeAutoLoadMode;
                     if ('keyboardShown' in settings) showKeyboard(settings.keyboardShown);
-                    if (settings.zoom && !ui.isFullscreen) ui.setZoom(settings.zoom);
+                    if (settings.zoom && !ui.isFullscreen) ui.setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, settings.zoom)));
                     await emu.setRom48Variant(settings.rom48);
 
                     emu.setInterface1(session.microdrives.connected);
