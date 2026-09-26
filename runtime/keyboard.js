@@ -142,12 +142,18 @@ export class BaseKeyboardHandler {
         this.keypressHandler = (evt) => {
             if (!evt.metaKey) evt.preventDefault();
         };
+
+        // A key let go while the page is out of focus (switched to another tab
+        // or application) sends its keyup elsewhere, so every key is released
+        // as focus leaves rather than staying held on the Spectrum.
+        this.blurHandler = () => this.releaseAllKeys();
     }
 
     start() {
         this.rootElement.addEventListener('keydown', this.keydownHandler);
         this.rootElement.addEventListener('keyup', this.keyupHandler);
         this.rootElement.addEventListener('keypress', this.keypressHandler);
+        window.addEventListener('blur', this.blurHandler);
         this.eventsAreBound = true;
     }
 
@@ -155,7 +161,16 @@ export class BaseKeyboardHandler {
         this.rootElement.removeEventListener('keydown', this.keydownHandler);
         this.rootElement.removeEventListener('keyup', this.keyupHandler);
         this.rootElement.removeEventListener('keypress', this.keypressHandler);
+        window.removeEventListener('blur', this.blurHandler);
+        // With the listeners gone no keyup arrives, so nothing may stay held
+        if (this.eventsAreBound) this.releaseAllKeys();
         this.eventsAreBound = false;
+    }
+
+    releaseAllKeys() {
+        for (let row = 0; row < 8; row++) {
+            this.worker.postMessage({ message: 'keyUp', row, mask: 0x1f });
+        }
     }
 
     setRootElement(newRootElement) {
@@ -252,6 +267,13 @@ export class StandardKeyboardHandler extends BaseKeyboardHandler {
         } else if (speccyKey.isSymbol) {
             this.symbolIsShifted = false;
         }
+    }
+
+    releaseAllKeys() {
+        super.releaseAllKeys();
+        this.symbolIsShifted = false;
+        this.capsIsShifted = false;
+        this.seenKeyCodes = {};
     }
 }
 

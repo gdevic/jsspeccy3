@@ -68,6 +68,12 @@ These days, releasing open source code tends to come with an unspoken social con
 
 This is a personal project, created for my own enjoyment, and my act of publishing the code does not come with any commitment to provide technical support or assistance. I'm always happy to hear of other people getting similar enjoyment from hacking on the code, and pull requests are welcome, but I can't promise to review them or shepherd them into an "official" release on any sort of timescale. Managing external contributions is often the point at which a "fun" project stops being fun. If there's a feature you need in the project - feel free to fork.
 
+## Building
+
+Building from source needs Node.js 26 or later (`.nvmrc` names the version for nvm). Install the dependencies with `npm ci`, then run `npm run build` for a build with the debug WebAssembly core, or `npm run build:release` for the optimized one; either writes the complete site into `dist/`. The scripts run from any shell, cmd and PowerShell on Windows included. `npm run watch` runs a full build, then rebuilds the affected parts whenever a source file changes (the `watch` section of `package.json` says which files trigger which step), and `npm test` builds and then runs the Fuse Z80 test suite against the core, printing only the tests whose results differ from the expected ones.
+
+To try a build, serve `dist/` over HTTP, for example with `python -m http.server --directory dist`, and open the page in a browser. Opening `index.html` straight from disk does not work, because browsers do not load the worker and WebAssembly files into a page opened from a `file://` URL.
+
 ## Embedding
 
 JSSpeccy 3 is designed with embedding in mind. To include it in your own site, download [a release archive](https://github.com/gasman/jsspeccy3/releases) and copy the contents of the `jsspeccy` folder somewhere web-accessible. Be sure to keep the .js and .wasm files and the subdirectories in the same place relative to jsspeccy.js.
