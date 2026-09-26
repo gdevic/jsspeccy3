@@ -1383,7 +1383,6 @@ window.JSSpeccy = (container, opts) => {
                     if ('autoLoadTapes' in settings) emu.setAutoLoadTapes(settings.autoLoadTapes);
                     if (settings.tapeAutoLoadMode) emu.tapeAutoLoadMode = settings.tapeAutoLoadMode;
                     if ('keyboardShown' in settings) showKeyboard(settings.keyboardShown);
-                    if (settings.zoom && !ui.isFullscreen) ui.setZoom(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, settings.zoom)));
                     await emu.setRom48Variant(settings.rom48);
 
                     emu.setInterface1(session.microdrives.connected);
