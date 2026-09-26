@@ -11,8 +11,8 @@
     "build:wasm:release": "asc build/core.ts --target release",
     "build:js": "node tools/build-js.js",
     "build:static": "node tools/copy-static.js",
-    "build": "npm run build:core && npm run build:wasm:debug && npm run build:js && npm run build:static",
-    "build:release": "npm run build:core && npm run build:wasm:release && npm run build:js && npm run build:static",
+    "build": "npm run build:core && npm run build:wasm:release && npm run build:js && npm run build:static",
+    "build:debug": "npm run build:core && npm run build:wasm:debug && npm run build:js && npm run build:static",
     "watch": "node tools/watch.js"
   },
   "watch": {
@@ -26,7 +26,7 @@
         "in"
       ]
     },
-    "build:wasm:debug": {
+    "build:wasm:release": {
       "patterns": [
         "build/core.ts"
       ],
