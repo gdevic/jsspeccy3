@@ -960,7 +960,12 @@ const loadSnapshot = (snapshot) => {
     // mechanism, which snapshot files don't carry.
     if ('interface1Paged' in snapshot) core.setInterface1Paged(!!snapshot.interface1Paged);
     if ('betadiskPaged' in snapshot) core.setBetadiskPaged(!!snapshot.betadiskPaged);
-    if (snapshot.printer) core.setPrinterMechanism(snapshot.printer.mechanism, snapshot.printer.phase);
+    if (snapshot.printer) {
+        core.setPrinterMechanism(snapshot.printer.mechanism, snapshot.printer.phase);
+        // the dots already burned on the row under the stylus
+        const row = snapshot.printer.row;
+        if (Array.isArray(row) && (row.length === 32)) memoryData.set(row.map(b => b & 0xff), core.PRINTER_ROW);
+    }
 
     core.setTStates(snapshot.tstates);
 };
@@ -1017,7 +1022,11 @@ const takeSnapshot = () => {
         interface1Paged: !!core.getInterface1Paged(),
         betadiskPaged: !!core.getBetadiskPaged(),
         zxPrinter: printerEnabled,
-        printer: { mechanism: core.getPrinterMechanism(), phase: core.getPrinterPhase() },
+        printer: {
+            mechanism: core.getPrinterMechanism(),
+            phase: core.getPrinterPhase(),
+            row: Array.from(memoryData.subarray(core.PRINTER_ROW, core.PRINTER_ROW + 32)),
+        },
         drives,
         tapePositionMs: tapePositionMs(),
         // the cassette in the tape recorder, as it is now: it may hold recordings not posted back yet

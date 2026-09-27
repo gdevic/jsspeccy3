@@ -88,7 +88,7 @@ ayVolumeLevels = [0.0, 0.0022915, 0.0034105, 0.004842, 0.007057, 0.010307, 0.014
 #alloc logEntries[2048]: u16
 export const LOG_ENTRIES:usize = (&logEntries);
 
-#alloc ayRegisters[14]: u8
+#alloc ayRegisters[16]: u8
 
 /* ZX Interface 1 / Microdrive state.
 Cartridge bytes hold only the persisted .MDR block layout (libspectrum's
@@ -136,6 +136,7 @@ worker to collect them. */
 #alloc zxpRow[32]: u8
 #alloc zxpRows[2048]: u8
 export const PRINTER_ROWS:usize = (&zxpRows);
+export const PRINTER_ROW:usize = (&zxpRow);
 export const PRINTER_ROW_BYTES:u32 = 32;
 export const PRINTER_ROW_CAPACITY:u32 = 64;
 
@@ -430,7 +431,7 @@ export function reset():void {
         memoryPageWriteMap = [11, 5, 2, 0];
         pagingLocked = 0;
     }
-    for (let i:u8 = 0; i < 14; i++) {
+    for (let i:u8 = 0; i < 16; i++) {
         writeAYRegister(i, 0);
     }
     screenPageIndex = 5;
@@ -443,6 +444,9 @@ export function reset():void {
     halted = false;
     opcodePrefix = 0;
     framebufferIndex = 0;
+
+    // The Pentagon's TR-DOS ROM is paged out, as the page map above has it.
+    betadiskROMActive = false;
 
     // Interface 1: unpage the shadow ROM (the ROM page map is fresh above)
     // and reset the drives to their FUSE-equivalent power-on state - motors
@@ -1623,7 +1627,9 @@ export function setBetadiskPaged(paged:bool):void {
 
 /* The printer mechanism: bit 0 motor running, bit 1 slow, bit 2 stylus
 powered, bit 3 paper latch, bit 4 encoder latch; and where the stylus is
-along its pass. */
+along its pass. Setting it starts the row under the stylus blank; the dots
+already burned on it are written at PRINTER_ROW afterwards, where they are
+known. */
 export function getPrinterMechanism():u32 {
     return (zxpMotorOn ? 1 : 0) | (zxpSlow ? 2 : 0) | (zxpStylus ? 4 : 0) | (zxpPaperLatch ? 8 : 0) | (zxpPixelLatch ? 16 : 0);
 }
@@ -1640,6 +1646,9 @@ export function setPrinterMechanism(bits:u32, phase:u32):void {
     zxpDot = false;
     zxpDotSet = false;
     zxpLastT = t;
+    for (let i:u32 = 0; i < 32; i++) {
+        zxpRow[i] = 0;
+    }
 }
 
 /* Connects or disconnects the ZX Printer. Disconnecting stops its motor;
@@ -1717,7 +1726,7 @@ export function insertMicrodrive(drive:i32, blocks:u32, writeProtect:bool):void 
     mdrSyncCounter[drive] = 15;
     mdrMaxBytes[drive] = 15;
     mdrLast[drive] = 0xff;
-    mdrMotorOn[drive] = 0;
+    // the motor keeps running while the Interface 1 selects the drive, cartridge or none
 
     const base:u32 = u32(drive) << 9;
     for (let b:u32 = 0; b < MICRODRIVE_MAX_BLOCKS; b++) {
@@ -1738,7 +1747,6 @@ export function ejectMicrodrive(drive:i32):void {
     if (drive < 0 || drive > 7) return;
     mdrInserted[drive] = 0;
     mdrModified[drive] = 0;
-    mdrMotorOn[drive] = 0;
     mdrHeadPos[drive] = 0;
     mdrBlocks[drive] = 0;
 }
@@ -2103,16 +2111,34 @@ let volumeA:u8 = 0x00;
 let volumeB:u8 = 0x00;
 let volumeC:u8 = 0x00;
 
+/* As the chip reads back, after FUSE: the bits a register doesn't have read
+as 0; R14, port A, reads its input lines, all high but bit 6, held low as
+FUSE has it so the 128's serial output is never held up, ANDed with the
+register in output mode; R15, the port B that an AY-3-8912 lacks, reads
+0xFF in input mode. */
 function readAYRegister(reg:u8):u8 {
-    if (reg < 14) {
-        return ayRegisters[reg];
-    } else {
-        return 0x00;
+    switch (reg) {
+        case 1:
+        case 3:
+        case 5:
+        case 13:
+            return ayRegisters[reg] & 0x0f;
+        case 6:
+        case 8:
+        case 9:
+        case 10:
+            return ayRegisters[reg] & 0x1f;
+        case 14:
+            return (ayRegisters[7] & 0x40) ? (0xbf & ayRegisters[14]) : 0xbf;
+        case 15:
+            return (ayRegisters[7] & 0x80) ? ayRegisters[15] : 0xff;
+        default:
+            return (reg < 16) ? ayRegisters[reg] : 0x00;
     }
 }
 
 function writeAYRegister(reg:u8, val:u8):void {
-    if (reg < 14) {
+    if (reg < 16) {
         ayRegisters[reg] = val;
     }
 

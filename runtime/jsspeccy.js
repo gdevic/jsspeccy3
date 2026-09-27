@@ -594,6 +594,8 @@ class Emulator extends EventEmitter {
 
     loadSnapshot(snapshot) {
         if (!this.isReady) return this.coreReady.then(() => this.loadSnapshot(snapshot));
+        // A snapshot taken inside the Interface 1's ROM needs it connected to carry on.
+        if (snapshot.interface1Paged && !this.interface1Enabled) this.setInterface1(true);
         const fileID = this.nextFileOpenID++;
         this.worker.postMessage({
             message: 'loadSnapshot',

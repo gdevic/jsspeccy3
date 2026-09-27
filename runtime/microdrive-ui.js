@@ -498,6 +498,13 @@ function createController(emu) {
         persistDockState();
         notify();
     }
+    // The emulator connects the Interface 1 itself for a snapshot taken inside its ROM.
+    emu.on('setInterface1', (connected) => {
+        if (connected === state.connected) return;
+        state.connected = connected;
+        persistDockState();
+        notify();
+    });
 
     async function init() {
         const saved = store.getDockState();

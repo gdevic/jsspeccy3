@@ -135,7 +135,7 @@ export async function buildSessionFile(parts) {
             name: MACHINE_NAMES[snapshot.model] || 'Spectrum',
             rom48: parts.settings.rom48,
             snapshot: 'machine.szx',
-            // the printer's mechanism is not something SZX carries
+            // the printer's mechanism, and the row under its stylus, are not something SZX carries
             printerMechanism: snapshot.printer,
             // 'off' (never started), 'paused' or 'running'
             power: parts.power,
