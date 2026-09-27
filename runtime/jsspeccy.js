@@ -144,7 +144,7 @@ class Emulator extends EventEmitter {
 
         /* Pokes (cheats) support: name of the most recently loaded game (used
          * to look up its pokes), and the currently applied trainers, keyed by
-         * trainer id -> {pokes, originals} so they can be undone. */
+         * trainer id -> {pokes, originals, locations} so they can be undone. */
         this.loadedGameName = null;
         this.activePokes = new Map();
         this.nextPokesID = 0;
@@ -267,7 +267,7 @@ class Emulator extends EventEmitter {
                     delete this.snapshotResolutions[e.data.id];
                     break;
                 case 'pokesApplied':
-                    this.pokesPromiseResolutions[e.data.id](e.data.originals);
+                    this.pokesPromiseResolutions[e.data.id]({ originals: e.data.originals, locations: e.data.locations });
                     delete this.pokesPromiseResolutions[e.data.id];
                     break;
                 case 'playingTape':
@@ -756,8 +756,10 @@ class Emulator extends EventEmitter {
         this.emit('setLoadedGame', this.loadedGameName);
     }
 
-    /* Apply an array of {bank, address, value} pokes in the worker; resolves
-     * with the array of overwritten byte values (for undo). */
+    /* Apply an array of {bank, address, value} pokes in the worker, or of
+     * {location, value} to put bytes back; resolves with {originals,
+     * locations}: the overwritten byte values and where in memory each was
+     * (for undo). */
     applyPokes(pokes) {
         const id = this.nextPokesID++;
         this.worker.postMessage({

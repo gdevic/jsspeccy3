@@ -66,7 +66,8 @@ export function parseZ80File(data) {
     const file = new DataView(data);
 
     const iReg = file.getUint8(10);
-    const byte12 = file.getUint8(12);
+    // the format says a byte 12 of 255 is to be read as 1
+    const byte12 = (file.getUint8(12) === 0xff) ? 0x01 : file.getUint8(12);
     const rReg = (file.getUint8(11) & 0x7f) | ((byte12 & 0x01) << 7);
     const byte29 = file.getUint8(29);
 
@@ -100,10 +101,11 @@ export function parseZ80File(data) {
         snapshot.model = 48;
         const memory = extractMemoryBlock(data, 30, byte12 & 0x20, 0xc000);
 
-        /* construct byte arrays of length 0x4000 at the appropriate offsets into the data stream */
-        snapshot.memoryPages[5] = new Uint8Array(memory.buffer, 0, 0x4000);
-        snapshot.memoryPages[2] = new Uint8Array(memory.buffer, 0x4000, 0x4000);
-        snapshot.memoryPages[0] = new Uint8Array(memory.buffer, 0x8000, 0x4000);
+        /* construct byte arrays of length 0x4000 at the appropriate offsets
+         * into the memory, which for an uncompressed file is a view into it */
+        snapshot.memoryPages[5] = memory.subarray(0, 0x4000);
+        snapshot.memoryPages[2] = memory.subarray(0x4000, 0x8000);
+        snapshot.memoryPages[0] = memory.subarray(0x8000, 0xc000);
 
         snapshot.tstates = 0;
     } else {
@@ -120,6 +122,10 @@ export function parseZ80File(data) {
         const is48K = (machine.model == 48);
         if (!is48K) {
             snapshot.ulaState.pagingFlags = file.getUint8(35);
+            // the sound chip: the register last selected, then R0-R15
+            const registers = [];
+            for (let reg = 0; reg < 16; reg++) registers.push(file.getUint8(39 + reg));
+            snapshot.ay = { selected: file.getUint8(38) & 0x0f, registers };
         }
         if (machine.interface1) snapshot.interface1Paged = (file.getUint8(36) == 0xff);
         // Only a version 3 header (54 or 55 bytes) holds the T-state counter.
@@ -234,8 +240,10 @@ export function parseSNAFile(data) {
                 snapshot.ulaState.pagingFlags = sna.getUint8(49181);
             }
             else {
-                /* peek memory at SP to get proper value of PC */
+                /* peek memory at SP to get proper value of PC, which must be
+                 * in the RAM the file holds */
                 let sp = sna.getUint16(23, true);
+                if ((sp < 0x4000) || (sp > 0xfffe)) throw "The SNA snapshot's stacked PC is outside RAM (SP " + sp.toString(16) + ")";
                 const l = sna.getUint8(sp - 16384 + 27);
                 sp = (sp + 1) & 0xffff;
                 const h = sna.getUint8(sp - 16384 + 27);

@@ -1312,27 +1312,37 @@ onmessage = (e) => {
             break;
         }
         case 'applyPokes': {
-            /* Apply a list of {bank, address, value} pokes (.POK semantics:
-             * bank bit 3 set = poke through the current paging, like a
-             * Multiface would; bank 0-7 = that 128K RAM page directly).
-             * Replies with the bytes that were overwritten so the UI can
-             * undo the pokes later. */
+            /* Apply a list of {bank, address, value} pokes (.POK semantics,
+             * as FUSE takes them: bank 0-7 is that 128K RAM page, for an
+             * address from 0xC000 on a machine that pages its RAM; otherwise,
+             * and with bank bit 3 set, the poke goes through the current
+             * paging, as a Multiface's would). A poke given as {location,
+             * value} goes straight to that byte, as undoing one does.
+             * Replies with the bytes that were overwritten and where each
+             * was, so the UI can put them back later, whatever is paged in
+             * by then. */
+            const writeMap = new Uint8Array(core.memory.buffer, core.MEMORY_PAGE_WRITE_MAP, 4);
+            const pagesRAM = core.getMachineType() !== 48;
+            const locationOf = (p) => {
+                if (Number.isInteger(p.location)) return p.location;
+                const address = p.address & 0xffff;
+                const byBank = !(p.bank & 0x08) && pagesRAM && (address >= 0xc000);
+                const page = byBank ? (p.bank & 0x07) : writeMap[address >> 14];
+                return core.MACHINE_MEMORY + (page * 0x4000) + (address & 0x3fff);
+            };
             const originals = [];
+            const locations = [];
             for (const p of e.data.pokes) {
-                if (p.bank & 0x08) {
-                    originals.push(core.peek(p.address));
-                    core.poke(p.address, p.value);
-                } else {
-                    const offset = core.MACHINE_MEMORY
-                        + ((p.bank & 0x07) * 0x4000) + (p.address & 0x3fff);
-                    originals.push(memoryData[offset]);
-                    memoryData[offset] = p.value;
-                }
+                const location = locationOf(p);
+                locations.push(location);
+                originals.push(memoryData[location]);
+                memoryData[location] = p.value;
             }
             postMessage({
                 message: 'pokesApplied',
                 id: e.data.id,
                 originals,
+                locations,
             });
             break;
         }

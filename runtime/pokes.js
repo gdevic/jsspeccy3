@@ -152,9 +152,6 @@ export function openPokesDialog(ui, emu) {
 
     /* ----- apply / undo a trainer ----- */
 
-    // The byte a poke goes to: through the current paging, or in one RAM bank.
-    const pokeLocation = (p) => ((p.bank & 0x08) ? 'paged' : 'bank' + (p.bank & 0x07)) + ':' + p.address;
-
     async function applyTrainer(game, trainerIndex, userValue) {
         const trainer = game.trainers[trainerIndex];
         const pokes = trainer.pokes.map(p => ({
@@ -162,8 +159,8 @@ export function openPokesDialog(ui, emu) {
             address: p.address,
             value: p.value === 256 ? userValue : p.value,
         }));
-        const originals = await emu.applyPokes(pokes);
-        emu.activePokes.set(trainerKey(game, trainerIndex), { pokes, originals });
+        const { originals, locations } = await emu.applyPokes(pokes);
+        emu.activePokes.set(trainerKey(game, trainerIndex), { pokes, originals, locations });
         setStatus('');
         renderApplied();
     }
@@ -172,7 +169,9 @@ export function openPokesDialog(ui, emu) {
      * before its first poke to it. Where a trainer ticked later poked the same
      * byte, that one keeps the byte, and takes over what to put back when it
      * is unticked in turn. emu.activePokes holds the trainers in the order
-     * they were ticked. */
+     * they were ticked. Bytes are told apart, and put back, by where in
+     * memory each poke went, so a bank paged out since is still the one
+     * restored. */
     async function undoTrainer(game, trainerIndex) {
         const key = trainerKey(game, trainerIndex);
         const active = emu.activePokes.get(key);
@@ -181,13 +180,13 @@ export function openPokesDialog(ui, emu) {
         const later = entries.slice(entries.findIndex(([k]) => k === key) + 1).map(([, a]) => a);
         const restore = [];
         active.pokes.forEach((p, i) => {
-            const location = pokeLocation(p);
-            if (active.pokes.findIndex(q => pokeLocation(q) === location) !== i) return;  // not its first poke to the byte
-            const above = later.find(a => a.pokes.some(q => pokeLocation(q) === location));
+            const location = active.locations[i];
+            if (active.locations.indexOf(location) !== i) return;  // not its first poke to the byte
+            const above = later.find(a => a.locations.includes(location));
             if (above) {
-                above.originals[above.pokes.findIndex(q => pokeLocation(q) === location)] = active.originals[i];
+                above.originals[above.locations.indexOf(location)] = active.originals[i];
             } else {
-                restore.push({ bank: p.bank, address: p.address, value: active.originals[i] });
+                restore.push({ location, address: p.address, value: active.originals[i] });
             }
         });
         if (restore.length) await emu.applyPokes(restore);
