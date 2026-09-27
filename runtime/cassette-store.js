@@ -54,6 +54,23 @@ function tx(storeMode) {
     return openDB().then(db => db.transaction(STORE, storeMode).objectStore(STORE));
 }
 
+/* Runs `fn(store)` in a read-write transaction and resolves with its
+ * result once the transaction has committed. A write can still fail at the
+ * commit (a full disk is reported only then), so this rejects if the
+ * transaction aborts, rather than report a write that never landed. */
+async function write(fn) {
+    const db = await openDB();
+    const transaction = db.transaction(STORE, 'readwrite');
+    const committed = new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(transaction.error || new Error('The write was abandoned'));
+    });
+    committed.catch(() => {});  // reported by the await below
+    const result = await fn(transaction.objectStore(STORE));
+    await committed;
+    return result;
+}
+
 function reqToPromise(request) {
     return new Promise((resolve, reject) => {
         request.onsuccess = () => resolve(request.result);
@@ -127,8 +144,7 @@ function makeRecord({ id, label, colour, data, positionMs, writeProtect, created
 export async function create(fields) {
     const record = makeRecord({ ...fields, id: null, created: null, modified: null });
     try {
-        const store = await tx('readwrite');
-        await reqToPromise(store.put(record));
+        await write(store => reqToPromise(store.put(record)));
         requestPersistence();
         return record.id;
     } catch (e) {
@@ -143,8 +159,7 @@ export async function create(fields) {
 export async function put(fields) {
     const record = makeRecord(fields);
     try {
-        const store = await tx('readwrite');
-        await reqToPromise(store.put(record));
+        await write(store => reqToPromise(store.put(record)));
         requestPersistence();
         return record.id;
     } catch (e) {
@@ -156,25 +171,35 @@ export async function put(fields) {
 /* Merges the given fields into an existing record (e.g. after recording:
  * {data, positionMs, modified}; after a rename: {label}). */
 export async function update(id, fields) {
-    if (!id) return false;
+    return (await updateIfUnchanged(id, fields)) === 'written';
+}
+
+/* As update(), but only if the record's `modified` is still
+ * `expectedModified` (when given): another tab of the emulator may have
+ * written the cassette since this one last read or wrote it. Returns
+ * 'written', 'changed' (left alone, since it was changed elsewhere) or
+ * 'failed' (not there, or storage failed). */
+export async function updateIfUnchanged(id, fields, expectedModified) {
+    if (!id) return 'failed';
     try {
-        const store = await tx('readwrite');
-        const existing = await reqToPromise(store.get(id));
-        if (!existing) return false;
-        const merged = { ...existing, ...fields, id };
-        if (fields.data) merged.data = toBuffer(fields.data);
-        await reqToPromise(store.put(merged));
-        return true;
+        return await write(async (store) => {
+            const existing = await reqToPromise(store.get(id));
+            if (!existing) return 'failed';
+            if ((expectedModified !== undefined) && ((existing.modified || 0) !== expectedModified)) return 'changed';
+            const merged = { ...existing, ...fields, id };
+            if (fields.data) merged.data = toBuffer(fields.data);
+            await reqToPromise(store.put(merged));
+            return 'written';
+        });
     } catch (e) {
         console.warn('Could not update cassette', id, e);
-        return false;
+        return 'failed';
     }
 }
 
 export async function remove(id) {
     try {
-        const store = await tx('readwrite');
-        await reqToPromise(store.delete(id));
+        await write(store => reqToPromise(store.delete(id)));
         return true;
     } catch (e) {
         console.warn('Could not delete cassette', id, e);

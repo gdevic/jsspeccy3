@@ -80,9 +80,10 @@ export function validateMDRFile(data) {
 
 /* Splits a .mdr buffer into its whole-block byte count and write-protect
  * flag (the optional trailing byte); assumes validateMDRFile() already
- * passed. */
+ * passed. Given a Uint8Array, the blocks are a view onto its bytes, so
+ * writing to them writes to the image. */
 export function splitMDRFile(data) {
-    const bytes = new Uint8Array(data);
+    const bytes = (data instanceof Uint8Array) ? data : new Uint8Array(data);
     const remainder = bytes.length % BLOCK_LEN;
     const writeProtect = remainder === 1 ? !!bytes[bytes.length - 1] : false;
     const blocks = Math.floor(bytes.length / BLOCK_LEN);

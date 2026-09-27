@@ -961,6 +961,16 @@ class Emulator extends EventEmitter {
     setMicrodriveWriteProtect(drive, value) {
         this.worker.postMessage({ message: 'setMicrodriveWriteProtect', drive, value });
     }
+    /* The cartridge in drive 0-7 is kept under `token` from now on, where it
+     * was kept under `from`: its later flushes carry the new token. */
+    setMicrodriveToken(drive, from, token) {
+        if (this.microdriveTokens[drive] === from) this.microdriveTokens[drive] = token;
+        this.worker.postMessage({ message: 'setMicrodriveToken', drive, from, token });
+    }
+    /* The same for the cassette put in the recorder by insert `seq`. */
+    setCassetteToken(seq, token) {
+        this.worker.postMessage({ message: 'setCassetteToken', seq, token });
+    }
     /* Renames the cartridge in drive 0-7 in place, files untouched; the
      * renamed image comes back in a 'microdriveData' event. */
     renameMicrodrive(drive, name) {

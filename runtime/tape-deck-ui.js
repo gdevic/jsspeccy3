@@ -474,7 +474,13 @@ function createController(emu) {
     let currentSeq = null;
     const inserting = new Set();  // inserts not yet answered
 
+    /* The `modified` each stored cassette had when this tab last read or
+     * wrote it, by id: recordings are written over the stored copy only if
+     * no other tab of the emulator has written it since. */
+    const known = new Map();
+
     async function insertRecord(record) {
+        if (record.id && (record.modified !== undefined)) known.set(record.id, record.modified);
         const previous = { cassette: state.cassette, seq: currentSeq };
         const seq = ++insertSeq;
         currentSeq = seq;
@@ -634,18 +640,44 @@ function createController(emu) {
      * lands on the right record; one that couldn't be stored is matched by
      * its insert. */
     const isCurrent = (seq) => (seq !== null) && (seq === currentSeq);
+    let writes = Promise.resolve();  // recordings are kept one at a time, in the order they came
     emu.on('cassetteData', ({ token, seq, data, positionMs, writeProtect }) => {
         if (token) {
-            store.update(token, { data, positionMs, writeProtect, modified: Date.now() }).then(notify);
+            writes = writes.then(() => keepRecording(token, seq, data, positionMs, writeProtect)).then(notify, err => console.warn(err));
         } else if (isCurrent(seq) && state.cassette && !state.cassette.id) {
             state.cassette.data = new Uint8Array(data);
             state.cassette.positionMs = positionMs;
         }
     });
 
+    /* Stores a cassette's bytes over it in the box, unless another tab has
+     * recorded on it since this one read it: then these bytes join the box
+     * as a cassette of their own, and the recorder, if it still holds this
+     * one, carries on with that, so neither tab's recordings are lost. */
+    async function keepRecording(token, seq, data, positionMs, writeProtect) {
+        const modified = Date.now();
+        const result = await store.updateIfUnchanged(token, { data, positionMs, writeProtect, modified }, known.get(token));
+        if (result === 'written') known.set(token, modified);
+        if (result !== 'changed') return;
+        const original = await store.get(token);
+        const label = ((original && original.label) || 'Cassette') + ' (copy)';
+        const id = await store.create({ label, colour: original && original.colour, data, positionMs, writeProtect });
+        if (!id) return;
+        const record = await store.get(id);
+        if (record) known.set(id, record.modified);
+        if (isCurrent(seq) && state.cassette && (state.cassette.id === token)) {
+            state.cassette.id = id;
+            state.cassette.label = label;
+            emu.setCassetteToken(seq, id);
+            persist();
+        }
+        alert(`The cassette ${(original && original.label) ? '"' + original.label + '" ' : ''}was also recorded on in another tab of the emulator, so what was recorded on it here is kept as a separate cassette in the box, "${label}".`);
+    }
+
     emu.on('cassetteEjected', ({ token, seq, positionMs, reason }) => {
         if (token) {
-            store.update(token, { positionMs }).then(notify);
+            // after the recording the worker sent ahead of it
+            writes = writes.then(() => store.update(token, { positionMs })).then(notify, err => console.warn(err));
         } else if (isCurrent(seq) && state.cassette && !state.cassette.id) {
             state.cassette.positionMs = positionMs;
         }

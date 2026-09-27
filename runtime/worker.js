@@ -1524,6 +1524,14 @@ onmessage = (e) => {
             break;
         case 'setMicrodriveWriteProtect':
             core.setMicrodriveWriteProtect(e.data.drive, !!e.data.value);
+            // The flag travels in the image, which goes back at once to be kept.
+            if (mdrBlocks[e.data.drive]) flushMicrodrive(e.data.drive, true);
+            break;
+        case 'setMicrodriveToken':
+            if (mdrTokens[e.data.drive] === e.data.from) mdrTokens[e.data.drive] = e.data.token;
+            break;
+        case 'setCassetteToken':
+            if (tape && tape.isCassette && (cassetteSeq === e.data.seq)) cassetteToken = e.data.token;
             break;
         case 'renameMicrodrive':
             // Renames the live copy, so nothing written since the last flush

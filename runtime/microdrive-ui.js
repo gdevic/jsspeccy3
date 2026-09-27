@@ -342,8 +342,14 @@ function createController(emu) {
         });
     }
 
+    /* The `modified` each stored cartridge had when this tab last read or
+     * wrote it, by id: a flush overwrites the stored copy only if no other
+     * tab of the emulator has written it since. */
+    const known = new Map();
+
     async function insertRecord(drive, id, record) {
         if (state.drives[drive]) await flushIfDirty(drive); // shouldn't normally be dirty (the core flushes on eject/swap), but don't risk it
+        if (id && (record.modified !== undefined)) known.set(id, record.modified);
         emu.insertMicrodrive(drive, record.data, id);
         state.drives[drive] = { id, colour: record.colour, data: new Uint8Array(record.data) };
         reparse(drive);
@@ -402,13 +408,20 @@ function createController(emu) {
         if (drive >= 0) await eject(drive);
         await store.remove(id);
     }
+    /* The worker sends the image back with the new flag, which keeps it in
+     * the box; until then the copy here shows it, with the flag's byte added
+     * to an image that came without one. */
     function setWriteProtect(drive, value) {
         emu.setMicrodriveWriteProtect(drive, value);
-        // The core is authoritative for this while inserted; our cached copy
-        // is only updated on the next flush/re-parse, so just re-derive the
-        // in-memory record's flag for the card's immediate feedback.
         const d = state.drives[drive];
-        if (d && d.data.length % mdr.BLOCK_LEN === 1) d.data[d.data.length - 1] = value ? 1 : 0;
+        if (d) {
+            const blockBytes = mdr.splitMDRFile(d.data).data;
+            const data = new Uint8Array(blockBytes.length + 1);
+            data.set(blockBytes);
+            data[blockBytes.length] = value ? 1 : 0;
+            d.data = data;
+            reparse(drive);
+        }
         notify();
     }
 
@@ -418,24 +431,58 @@ function createController(emu) {
         const blocks = mdr.splitMDRFile(d.data).blocks;
         const formatted = mdr.quickFormat(blocks, name);
         await insertRecord(drive, d.id, { label: name, colour: d.colour, data: formatted.buffer });
-        if (d.id) await store.update(d.id, { data: formatted.buffer, label: state.drives[drive].label, modified: Date.now() });
+        const id = d.id;
+        if (!id) return;
+        const label = state.drives[drive].label;
+        // in turn with the flushes, which compare against the stamp it leaves
+        writes = writes.then(async () => {
+            const modified = Date.now();
+            if (await store.update(id, { data: formatted.buffer, label, modified })) known.set(id, modified);
+        }).catch(err => console.warn(err));
+        await writes;
     }
 
     /* A flush can arrive after its cartridge has left the drive (swapping
      * flushes the old one first), so it's matched by token: only the
-     * cartridge it belongs to is updated. */
+     * cartridge it belongs to is updated. The stored copies are written one
+     * at a time, in the order the flushes came. */
+    let writes = Promise.resolve();
     function onFlush(drive, token, dataBuffer) {
         const d = state.drives[drive];
-        if (!d || token !== d.id) {
-            if (token) store.update(token, { data: dataBuffer, label: mdr.cartridgeName(dataBuffer) || '', modified: Date.now() });
-            return;
+        if (d && token === d.id) {
+            d.data = new Uint8Array(dataBuffer);
+            reparse(drive);
+            notify();
         }
-        d.data = new Uint8Array(dataBuffer);
-        reparse(drive);
-        if (d.id) store.update(d.id, { data: dataBuffer, label: d.label, modified: Date.now() });
-        notify();
+        if (token) writes = writes.then(() => keepFlushed(token, dataBuffer)).catch(err => console.warn(err));
     }
     emu.on('microdriveData', onFlush);
+
+    /* Stores a flushed image over its cartridge in the box, unless another
+     * tab has saved that cartridge since this one read it: then this image
+     * joins the box as a cartridge of its own, and a drive holding it
+     * carries on with that one, so neither tab's work is lost. */
+    async function keepFlushed(token, dataBuffer) {
+        const label = mdr.cartridgeName(dataBuffer) || '';
+        const modified = Date.now();
+        const result = await store.updateIfUnchanged(token, { data: dataBuffer, label, modified }, known.get(token));
+        if (result === 'written') known.set(token, modified);
+        if (result !== 'changed') return;
+        const drive = driveOf(token);
+        const colour = (drive >= 0) ? state.drives[drive].colour : undefined;
+        const id = await store.create({ label, colour, data: dataBuffer });
+        if (!id) return;
+        const record = await store.get(id);
+        if (record) known.set(id, record.modified);
+        const now = driveOf(token);
+        if (now >= 0) {
+            state.drives[now].id = id;
+            emu.setMicrodriveToken(now, token, id);
+            persistDockState();
+            notify();
+        }
+        alert(`The cartridge ${label ? '"' + label + '" ' : ''}was also saved to in another tab of the emulator, so what was saved to it here is kept as a separate cartridge in the box.`);
+    }
 
     async function setConnected(connected) {
         state.connected = connected;
@@ -1110,9 +1157,13 @@ export function createMicrodriveDock(ui, emu) {
          * couldn't store is still saved, under a made-up id. */
         async sessionSave(liveDrives) {
             const connected = controller.state.connected;
-            const driveIds = controller.state.drives.map((d, i) => d ? (d.id || `unsaved-${i}`) : null);
+            // Two drives never share an id in the session, so neither's image stands in for the other's.
+            const driveIds = [];
+            controller.state.drives.forEach((d, i) => {
+                driveIds.push(!d ? null : ((d.id && !driveIds.includes(d.id)) ? d.id : `unsaved-${i}`));
+            });
             const driveColours = controller.state.drives.map(d => d ? d.colour : undefined);
-            const live = new Map(liveDrives.map(d => [d.token || `unsaved-${d.drive}`, d.data]));
+            const live = new Map(liveDrives.map(d => [driveIds[d.drive] || `unsaved-${d.drive}`, d.data]));
             const cartridges = [];
             for (const meta of await store.list()) {
                 const record = await store.get(meta.id);
@@ -1130,7 +1181,7 @@ export function createMicrodriveDock(ui, emu) {
                 cartridges.push({ id: meta.id, label: mdr.cartridgeName(data) || '', colour: record.colour, created: record.created, modified, data });
             }
             for (const [id, data] of live) {
-                const drive = liveDrives.find(d => (d.token || `unsaved-${d.drive}`) === id).drive;
+                const drive = liveDrives.find(d => (driveIds[d.drive] || `unsaved-${d.drive}`) === id).drive;
                 cartridges.push({ id, label: mdr.cartridgeName(data) || '', colour: driveColours[drive], modified: Date.now(), data });
             }
             return { connected, drives: driveIds, cartridges };
@@ -1157,17 +1208,28 @@ export function createMicrodriveDock(ui, emu) {
             }
             const ids = new Map();       // session id -> id in the box
             const unstored = new Map();  // session id -> cartridge, where storage failed
+            // A cartridge in the box stands for one of the session's at most,
+            // so two with the same bytes (two blanks) stay two.
+            const claimed = new Set();
+            const free = (r) => !claimed.has(r.id);
             for (const c of session.cartridges) {
                 const sameId = c.id ? box.find(r => r.id === c.id) : null;
-                const identical = (sameId && sameBytes(sameId.data, c.data)) ? sameId : box.find(r => sameBytes(r.data, c.data));
+                const identical = (sameId && free(sameId) && sameBytes(sameId.data, c.data))
+                    ? sameId : box.find(r => free(r) && sameBytes(r.data, c.data));
                 if (identical) {
                     ids.set(c.id, identical.id);
+                    claimed.add(identical.id);
                     continue;
                 }
-                const keepBoth = sameId && (sameId.modified || 0) > (c.modified || 0);
+                const keepBoth = sameId && (!free(sameId) || ((sameId.modified || 0) > (c.modified || 0)));
                 const ownId = (c.id && !c.id.startsWith('unsaved-') && !keepBoth) ? c.id : null;
                 const id = await store.put({ ...c, id: ownId });
-                if (id) ids.set(c.id, id); else unstored.set(c.id, c);
+                if (id) {
+                    ids.set(c.id, id);
+                    claimed.add(id);
+                } else {
+                    unstored.set(c.id, c);
+                }
             }
             for (let d = 0; d < DRIVE_COUNT; d++) {
                 const key = session.drives[d];
