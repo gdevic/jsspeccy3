@@ -21,6 +21,7 @@
 import JSZip from 'jszip';
 import * as mdr from './mdr.js';
 import * as store from './microdrive-store.js';
+import { boxCopyMovedOn } from './session.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -350,8 +351,8 @@ function createController(emu) {
     async function insertRecord(drive, id, record) {
         if (state.drives[drive]) await flushIfDirty(drive); // shouldn't normally be dirty (the core flushes on eject/swap), but don't risk it
         if (id && (record.modified !== undefined)) known.set(id, record.modified);
-        emu.insertMicrodrive(drive, record.data, id);
-        state.drives[drive] = { id, colour: record.colour, data: new Uint8Array(record.data) };
+        const seq = emu.insertMicrodrive(drive, record.data, id);
+        state.drives[drive] = { id, seq, colour: record.colour, data: new Uint8Array(record.data) };
         reparse(drive);
         if (id && record.label !== state.drives[drive].label) store.update(id, { label: state.drives[drive].label });
         persistDockState();
@@ -425,9 +426,12 @@ function createController(emu) {
         notify();
     }
 
+    /* The format replaces what the cartridge held, so what the drive saved
+     * before it, still on its way from the worker, is dropped. */
     async function quickFormat(drive, name) {
         const d = state.drives[drive];
         if (!d) return;
+        superseded.add(d.seq);
         const blocks = mdr.splitMDRFile(d.data).blocks;
         const formatted = mdr.quickFormat(blocks, name);
         await insertRecord(drive, d.id, { label: name, colour: d.colour, data: formatted.buffer });
@@ -443,13 +447,17 @@ function createController(emu) {
     }
 
     /* A flush can arrive after its cartridge has left the drive (swapping
-     * flushes the old one first), so it's matched by token: only the
-     * cartridge it belongs to is updated. The stored copies are written one
-     * at a time, in the order the flushes came. */
+     * flushes the old one first), so the drive shows it only if it comes
+     * from the insert the drive holds now, and it is stored by token, the
+     * cartridge's id in the box, unless a format has replaced it since. The
+     * stored copies are written one at a time, in the order the flushes
+     * came. */
     let writes = Promise.resolve();
-    function onFlush(drive, token, dataBuffer) {
+    const superseded = new Set();  // inserts whose later flushes are dropped
+    function onFlush(drive, token, dataBuffer, seq) {
+        if (superseded.has(seq)) return;
         const d = state.drives[drive];
-        if (d && token === d.id) {
+        if (d && (seq === d.seq)) {
             d.data = new Uint8Array(dataBuffer);
             reparse(drive);
             notify();
@@ -614,8 +622,10 @@ function buildDrivePanel(emu, controller, driveIndex) {
 
     const loadedFooter = el('div', footerStyle);
     const ejectBtn = mkBtn(ejectIcon, 'Eject');
+    // the cartridge as the drive last saved it, which is the only copy of one the box couldn't keep
+    const savePcBtn = mkBtn(null, 'Save to PC');
     const tapeInfo = el('div', { flex: '1', textAlign: 'right', color: '#999', fontSize: '11px' });
-    loadedFooter.append(ejectBtn, tapeInfo);
+    loadedFooter.append(ejectBtn, savePcBtn, tapeInfo);
 
     loaded.append(body, blankNotice, cmdRow, loadedFooter);
 
@@ -636,6 +646,10 @@ function buildDrivePanel(emu, controller, driveIndex) {
     let onClose = () => {};
     closeBtn.addEventListener('click', () => onClose());
     ejectBtn.addEventListener('click', () => controller.eject(driveIndex));
+    savePcBtn.addEventListener('click', () => {
+        const d = controller.state.drives[driveIndex];
+        if (d) downloadBytes(d.data, (d.label || 'cartridge').replace(/[^\w-]+/g, '_') + '.mdr', savePcBtn);
+    });
     wpBtn.addEventListener('click', () => {
         const d = controller.state.drives[driveIndex];
         if (d) controller.setWriteProtect(driveIndex, !mdr.splitMDRFile(d.data).writeProtect);
@@ -1178,7 +1192,7 @@ export function createMicrodriveDock(ui, emu) {
                     }
                     live.delete(meta.id);
                 }
-                cartridges.push({ id: meta.id, label: mdr.cartridgeName(data) || '', colour: record.colour, created: record.created, modified, data });
+                cartridges.push({ id: meta.id, label: mdr.cartridgeName(data) || '', colour: record.colour, created: record.created, modified, boxModified: record.modified, data });
             }
             for (const [id, data] of live) {
                 const drive = liveDrives.find(d => (driveIds[d.drive] || `unsaved-${d.drive}`) === id).drive;
@@ -1189,7 +1203,8 @@ export function createMicrodriveDock(ui, emu) {
 
         /* Restores a saved session's Microdrives. Its cartridges join the
          * box: one the box already holds unchanged is left as it is; one the
-         * box holds newer work on is added beside it rather than over it;
+         * box holds other work on since the session was saved is added
+         * beside it rather than over it (boxCopyMovedOn);
          * any other is stored under its own id. The drives and the
          * connection are then set as they were. Without storage, the
          * session's cartridges still go into the drives. */
@@ -1221,7 +1236,7 @@ export function createMicrodriveDock(ui, emu) {
                     claimed.add(identical.id);
                     continue;
                 }
-                const keepBoth = sameId && (!free(sameId) || ((sameId.modified || 0) > (c.modified || 0)));
+                const keepBoth = sameId && (!free(sameId) || boxCopyMovedOn(sameId, c));
                 const ownId = (c.id && !c.id.startsWith('unsaved-') && !keepBoth) ? c.id : null;
                 const id = await store.put({ ...c, id: ownId });
                 if (id) {

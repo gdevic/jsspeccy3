@@ -93,6 +93,7 @@ const WIND_BRAKE_S = 0.25;
  * insertMicrodrive, needed to know how many bytes of the drive's (always
  * full-size) slot in MICRODRIVE_DATA are actually its cartridge. */
 let mdrTokens = [null, null, null, null, null, null, null, null];
+let mdrSeqs = [null, null, null, null, null, null, null, null];  // the page's number for each drive's insert
 let mdrBlocks = [0, 0, 0, 0, 0, 0, 0, 0];
 let mdrFramesSinceFlush = [0, 0, 0, 0, 0, 0, 0, 0];
 let mdrLastMotors = 0;
@@ -810,8 +811,9 @@ const loadMemoryPage = (page, data) => {
  * bytes, optionally with one trailing write-protect byte); a shorter
  * cartridge than the slot last held is fine, the slot is blanked first.
  * Flushes whatever cartridge was already in the drive first, so swapping
- * doesn't silently drop an unsaved change. */
-const insertMicrodrive = (drive, data, token) => {
+ * doesn't silently drop an unsaved change. `seq` is the page's number for
+ * this insert, which the cartridge's flushes carry. */
+const insertMicrodrive = (drive, data, token, seq) => {
     flushMicrodrive(drive);
     const bytes = new Uint8Array(data);
     const blockLen = core.MICRODRIVE_BLOCK_LEN;
@@ -827,6 +829,7 @@ const insertMicrodrive = (drive, data, token) => {
     memoryData.set(bytes.subarray(0, blocks * blockLen), offset);
     core.insertMicrodrive(drive, blocks, writeProtect);
     mdrTokens[drive] = token;
+    mdrSeqs[drive] = seq ?? null;
     mdrBlocks[drive] = blocks;
     mdrFramesSinceFlush[drive] = 0;
 };
@@ -835,16 +838,17 @@ const ejectMicrodrive = (drive) => {
     flushMicrodrive(drive);
     core.ejectMicrodrive(drive);
     mdrTokens[drive] = null;
+    mdrSeqs[drive] = null;
     mdrBlocks[drive] = 0;
 };
 
 /* Reads drive `drive`'s current bytes out of MICRODRIVE_DATA (if it's
- * inserted, dirty and has somewhere to go, or unconditionally for any
- * inserted cartridge when `force` is set) and posts them back as a .mdr
- * image. Returns whether anything was sent. */
+ * inserted and dirty, or unconditionally for any inserted cartridge when
+ * `force` is set) and posts them back as a .mdr image, also for a cartridge
+ * with no token, so the page still sees what was saved on it. Returns
+ * whether anything was sent. */
 const flushMicrodrive = (drive, force) => {
     if (!mdrBlocks[drive]) return false;
-    if (!force && mdrTokens[drive] == null) return false;
     if (!force && !(core.getMicrodriveModified() & (1 << drive))) return false;
     const blockLen = core.MICRODRIVE_BLOCK_LEN;
     const dataLen = mdrBlocks[drive] * blockLen;
@@ -858,6 +862,7 @@ const flushMicrodrive = (drive, force) => {
         message: 'microdriveData',
         drive,
         token: mdrTokens[drive],
+        seq: mdrSeqs[drive],
         data: image.buffer,
     }, [image.buffer]);
     return true;
@@ -1531,7 +1536,7 @@ onmessage = (e) => {
             core.setPrinterFeed(!!e.data.on);
             break;
         case 'insertMicrodrive':
-            insertMicrodrive(e.data.drive, e.data.data, e.data.token);
+            insertMicrodrive(e.data.drive, e.data.data, e.data.token, e.data.seq);
             break;
         case 'ejectMicrodrive':
             ejectMicrodrive(e.data.drive);

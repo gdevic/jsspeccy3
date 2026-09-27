@@ -162,6 +162,7 @@ class Emulator extends EventEmitter {
         this.microdriveMotors = 0;
         this.microdriveHeads = [0, 0, 0, 0, 0, 0, 0, 0];
         this.microdriveTokens = [null, null, null, null, null, null, null, null];
+        this.microdriveInsertSeq = 0;
 
         /* ZX Printer support. printerPaper is the paper left on the roll, in
          * pixel rows, as last reported by the worker; printerMotor is whether
@@ -355,8 +356,9 @@ class Emulator extends EventEmitter {
                     // A drive went idle (or hit the periodic force-flush) with
                     // unsaved changes; e.data.data is a full .mdr image
                     // (ArrayBuffer). Whoever's tracking cartridges listens for
-                    // this to persist it against e.data.token.
-                    this.emit('microdriveData', e.data.drive, e.data.token, e.data.data);
+                    // this to persist it against e.data.token; e.data.seq is
+                    // the insert it came from (see insertMicrodrive).
+                    this.emit('microdriveData', e.data.drive, e.data.token, e.data.data, e.data.seq);
                     break;
                 default:
                     console.log('message received by host:', e.data);
@@ -946,15 +948,20 @@ class Emulator extends EventEmitter {
      * 0-7. `token` is an opaque id the caller can use to recognise this
      * cartridge again in a later 'microdriveData' event (e.g. a storage
      * record id) - pass null if that doesn't matter. Whatever was already in
-     * the drive is flushed (if it had unsaved changes) before being replaced. */
+     * the drive is flushed (if it had unsaved changes) before being replaced.
+     * Returns this insert's number, which its 'microdriveData' events carry,
+     * so they are told apart from those of an earlier insert even of the
+     * same cartridge, and matched when `token` is null. */
     insertMicrodrive(drive, data, token) {
         this.microdriveTokens[drive] = token ?? null;
+        const seq = ++this.microdriveInsertSeq;
         // Accept an ArrayBuffer or a typed array; either way, transfer a
         // fresh standalone copy so the caller keeps whatever it passed in.
         const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
         const buf = bytes.slice(0).buffer;
-        this.worker.postMessage({ message: 'insertMicrodrive', drive, data: buf, token }, [buf]);
+        this.worker.postMessage({ message: 'insertMicrodrive', drive, data: buf, token, seq }, [buf]);
         this.emit('insertMicrodrive', drive, token);
+        return seq;
     }
     ejectMicrodrive(drive) {
         this.microdriveTokens[drive] = null;

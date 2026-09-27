@@ -75,10 +75,13 @@ export async function isSessionFile(zip) {
  *   tape         {name, data, block, positionMs} or null
  *   tapeRecorder {connected, parked, cassette: id of the one in the recorder
  *                 or null, cassettes: [{id, label, colour, writeProtect,
- *                 positionMs, created, modified, data}]}
+ *                 positionMs, created, modified, boxModified, data}]}
  *                (`parked` when the cassette waits in a disconnected recorder)
  *   microdrives  {connected, drives: [id or null], cartridges: [{id, label,
- *                 colour, created, modified, data}]}
+ *                 colour, created, modified, boxModified, data}]}
+ *                (`boxModified` is the box copy's `modified` the session's
+ *                copy was taken from, where the box held one; see
+ *                boxCopyMovedOn)
  *   printer      {connected, paper, saved, rows: [Uint8Array], scroll, picture: Blob or null}
  *   gameName     the loaded game's name, for the Pokes dialog
  *   power        'off' (never started), 'paused' or 'running'
@@ -105,7 +108,7 @@ export async function buildSessionFile(parts) {
             zip.file(file, relabel(c.data, c.label));
             return {
                 id: c.id, label: c.label, colour: c.colour, writeProtect: !!c.writeProtect,
-                positionMs: c.positionMs, created: c.created, modified: c.modified, file,
+                positionMs: c.positionMs, created: c.created, modified: c.modified, boxModified: c.boxModified, file,
             };
         });
         tapeRecorder = { connected: !!recorder.connected, parked: !!recorder.parked, cassette: recorder.cassette || null, cassettes };
@@ -114,7 +117,7 @@ export async function buildSessionFile(parts) {
     const cartridges = parts.microdrives.cartridges.map((c, i) => {
         const file = `microdrive/${String(i + 1).padStart(2, '0')}-${safeName(c.label, 'blank')}.mdr`;
         zip.file(file, c.data);
-        return { id: c.id, label: c.label, colour: c.colour, created: c.created, modified: c.modified, file };
+        return { id: c.id, label: c.label, colour: c.colour, created: c.created, modified: c.modified, boxModified: c.boxModified, file };
     });
 
     const rows = parts.printer.rows;
@@ -181,6 +184,16 @@ function tapeReads(data, isTZX) {
     }
 }
 
+/* Whether the box's copy `boxRecord` of a session's cassette or cartridge
+ * `saved`, whose bytes differ, holds work the session doesn't have, so both
+ * are kept rather than the session's written over it: true unless the box's
+ * copy is still the one the session was saved from. A session that doesn't
+ * say which that was keeps both when the box's copy is the newer. */
+export function boxCopyMovedOn(boxRecord, saved) {
+    if (saved.boxModified !== undefined) return boxRecord.modified !== saved.boxModified;
+    return (boxRecord.modified || 0) > (saved.modified || 0);
+}
+
 /* Reads a session from an opened ZIP back into the parts buildSessionFile
  * takes, with the snapshot ready for Emulator.loadSnapshot(). Everything is
  * checked here, before anything is changed, so a damaged session is turned
@@ -237,6 +250,7 @@ export async function readSessionFile(zip) {
                 positionMs: Number.isFinite(c.positionMs) ? Math.max(0, Math.min(c.positionMs, CASSETTE_MS)) : 0,
                 created: Number.isFinite(c.created) ? c.created : undefined,
                 modified: Number.isFinite(c.modified) ? c.modified : undefined,
+                boxModified: Number.isFinite(c.boxModified) ? c.boxModified : undefined,
                 // in the form the recorder writes, as the cassette box keeps it: a TAP
                 // becomes a cassette, and the label is kept beside it, not in it
                 data: writeCassetteTZX({ blocks }),
@@ -258,6 +272,7 @@ export async function readSessionFile(zip) {
             colour: typeof c.colour === 'string' ? c.colour : undefined,
             created: Number.isFinite(c.created) ? c.created : undefined,
             modified: Number.isFinite(c.modified) ? c.modified : undefined,
+            boxModified: Number.isFinite(c.boxModified) ? c.boxModified : undefined,
             data,
         });
     }
@@ -333,7 +348,7 @@ export function confirmRestore(ui, session) {
         }
         const note = document.createElement('div');
         Object.assign(note.style, { color: '#999', fontSize: '11px', marginTop: '8px' });
-        note.textContent = 'This replaces the running machine, the tape, the printout and the settings. Its cartridges and cassettes join your boxes: none are deleted, and where a box holds newer work on one of them, both are kept.';
+        note.textContent = 'This replaces the running machine, the tape, the printout and the settings. Its cartridges and cassettes join your boxes: none are deleted, and where a box holds work on one of them that the session doesn’t have, both are kept.';
         body.appendChild(note);
 
         const footer = document.createElement('div');

@@ -22,6 +22,7 @@
 import JSZip from 'jszip';
 import * as cassette from './cassette.js';
 import * as store from './cassette-store.js';
+import { boxCopyMovedOn } from './session.js';
 import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W } from './microdrive-ui.js';
 
 import ejectIcon from './icons/eject.svg';
@@ -473,6 +474,7 @@ function createController(emu) {
     let insertSeq = 0;
     let currentSeq = null;
     const inserting = new Set();  // inserts not yet answered
+    let insertsSettled = Promise.resolve();  // resolves once every insert so far is answered
 
     /* The `modified` each stored cassette had when this tab last read or
      * wrote it, by id: recordings are written over the stored copy only if
@@ -492,7 +494,9 @@ function createController(emu) {
         }
         persist();
         notify();
-        const opened = await emu.insertCassette(record.data, { token: record.id || null, seq, positionMs: record.positionMs || 0, writeProtect: record.writeProtect });
+        const opening = emu.insertCassette(record.data, { token: record.id || null, seq, positionMs: record.positionMs || 0, writeProtect: record.writeProtect });
+        insertsSettled = Promise.all([insertsSettled, opening]).catch(() => {});
+        const opened = await opening;
         inserting.delete(seq);
         if (opened && opened.error) {
             alert('Could not put the cassette in: ' + opened.error);
@@ -517,7 +521,14 @@ function createController(emu) {
 
     async function applyConnected(connected, opts) {
         if (!connected) {
-            if (emu.tapeKind === 'cassette') emu.ejectTape('parked');
+            // A cassette still on its way in is in the recorder once it lands, so it comes out too.
+            await insertsSettled;
+            if (emu.tapeKind === 'cassette') {
+                emu.ejectTape('parked');
+                // What the eject sends back is kept before the box is read again, by a reconnect.
+                await emu.barrier();
+                await writes;
+            }
             state.connected = false;
             emu.setTapeDeck(false);
             persist();
@@ -534,6 +545,7 @@ function createController(emu) {
         if (slotFree() && state.cassette) {
             // The cassette waiting in the recorder is back in reach.
             const waiting = state.cassette;
+            await writes;
             const record = waiting.id ? await store.get(waiting.id) : (waiting.data ? { ...waiting } : null);
             if (!state.connected || (state.cassette !== waiting) || !slotFree()) return;  // things moved on meanwhile
             if (record) {
@@ -1775,7 +1787,7 @@ export function createTapeDeck(ui, emu) {
                 }
                 cassettes.push({
                     id: meta.id, label: record.label, colour: record.colour, writeProtect: !!writeProtect,
-                    positionMs: positionMs || 0, created: record.created, modified, data,
+                    positionMs: positionMs || 0, created: record.created, modified, boxModified: record.modified, data,
                 });
             }
             const unstored = live && !liveSaved ? live : ((!live && c && !c.id && c.data) ? c : null);
@@ -1791,8 +1803,9 @@ export function createTapeDeck(ui, emu) {
 
         /* Restores a saved session's tape recorder. Its cassettes join the
          * box: one the box holds unchanged is left as it is; one the box
-         * holds newer work on is added beside it rather than over it; any
-         * other is stored under its own id. The cassette that was in the
+         * holds other work on since the session was saved is added beside it
+         * rather than over it (boxCopyMovedOn); any other is stored under its
+         * own id. The cassette that was in the
          * recorder then goes back in at the place it was left, connected or
          * not as it was. A blank cassette is told from another by its label
          * as well, since every blank one holds the same bytes. */
@@ -1815,7 +1828,7 @@ export function createTapeDeck(ui, emu) {
                     ids.set(c.id, identical.id);
                     continue;
                 }
-                const keepBoth = sameId && ((sameId.modified || 0) > (c.modified || 0));
+                const keepBoth = sameId && boxCopyMovedOn(sameId, c);
                 const ownId = (c.id && !c.id.startsWith('unsaved-') && !keepBoth) ? c.id : null;
                 const id = await store.put({ ...c, id: ownId });
                 if (id) ids.set(c.id, id); else unstored.set(c.id, c);
@@ -1845,6 +1858,16 @@ export function createTapeDeck(ui, emu) {
             }
             controller.persist();
             controller.notify();
+            // Without storage only the cassette in the recorder can be kept, and only while it is in.
+            const recorderUnstored = !!(inRecorder && unstored.has(inRecorder.id));
+            const dropped = unstored.size - (recorderUnstored ? 1 : 0);
+            if (dropped) {
+                alert(`This browser isn’t letting the emulator keep cassettes, so ${dropped} of the session’s cassettes ${dropped === 1 ? 'was' : 'were'} left out`
+                    + (recorderUnstored ? ', and the one in the recorder lasts only until it is ejected or the page is reloaded.' : '.')
+                    + ' Restore the session where the browser allows site storage to keep them all.');
+            } else if (recorderUnstored) {
+                controller.warnUnstored();
+            }
         },
     };
 }
