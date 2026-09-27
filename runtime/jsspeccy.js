@@ -191,6 +191,16 @@ class Emulator extends EventEmitter {
                         this.isExecutingFrame = false;
                     }
                     break;
+                case 'frameFailed':
+                    // The machine stops where it failed; starting it again retries the frame.
+                    if ('audioBufferLeft' in e.data) {
+                        this.audioHandler.frameFailed(e.data.audioBufferLeft, e.data.audioBufferRight);
+                    }
+                    this.displayHandler.frameFailed(e.data.frameBuffer);
+                    this.isExecutingFrame = false;
+                    this.pause();
+                    alert('The emulator stopped because of an error: ' + e.data.error);
+                    break;
                 case 'fileOpened':
                     if (this.tapeOpenIDs.delete(e.data.id) && !e.data.error) {
                         // what the tape slot holds now, ahead of the tapeInfo that follows
@@ -460,7 +470,8 @@ class Emulator extends EventEmitter {
             // benchmarkRenderCount++;
         }
         if (this.isRunning) {
-            if (time > this.nextFrameTime && !this.isExecutingFrame) {
+            // A machine started before the worker has its core and ROMs waits for them.
+            if (time > this.nextFrameTime && !this.isExecutingFrame && this.isReady) {
                 this.runFrame();
                 this.nextFrameTime += this.msPerFrame;
             }

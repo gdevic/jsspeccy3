@@ -136,6 +136,13 @@ export class DisplayHandler {
         this.lockedBuffer = null;
     }
 
+    /* A frame the worker could not run: its buffer comes back unfilled, and
+     * is not shown. */
+    frameFailed(frameBuffer) {
+        this.frameBuffers[this.lockedBuffer] = frameBuffer;
+        this.lockedBuffer = null;
+    }
+
     getNextFrameBufferIndex() {
         for (let i = 0; i < 3; i++) {
             if (i !== this.bufferBeingShown && i !== this.bufferAwaitingShow) {

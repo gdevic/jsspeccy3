@@ -264,11 +264,12 @@ export class TAPFile {
                 if (!this.wrap) return false;
                 this.nextBlockIndex = 0;
             }
-            const block = this.blocks[this.nextBlockIndex];
-            this.nextBlockIndex = this.wrap ? ((this.nextBlockIndex + 1) % this.blocks.length) : (this.nextBlockIndex + 1);
+            const index = this.nextBlockIndex;
+            const block = this.blocks[index];
+            this.nextBlockIndex = this.wrap ? ((index + 1) % this.blocks.length) : (index + 1);
 
             // a short leader tone for a data block, a long one for a header
-            generator.addSegment(new ToneSegment(2168, this.takePilotPulses(2168, pilotPulses(block))));
+            this.queuePilot(generator, index, 2168, pilotPulses(block));
             generator.addSegment(new PulseSequenceSegment([667, 735]));
             generator.addSegment(new DataSegment(block, 855, 1710, 8));
             generator.addSegment(new PauseSegment(1000));
@@ -319,6 +320,22 @@ export class TAPFile {
         const skipped = length ? Math.floor(this.pilotSkipTstates / length) : 0;
         this.pilotSkipTstates = 0;
         return skipped ? Math.max(1, count - skipped) : count;
+    }
+
+    /* Queues the pilot tone of block `index`, remembered for catchPlayingBlock. */
+    queuePilot(generator, index, length, count) {
+        this.pilot = new ToneSegment(length, this.takePilotPulses(length, count));
+        this.pilotBlockIndex = index;
+        generator.addSegment(this.pilot);
+    }
+
+    /* The pulse generator takes a block off the tape as it starts playing it,
+     * but a loader started during the block's pilot tone still catches that
+     * block: this winds back to it, so getNextLoadableBlock returns it. */
+    catchPlayingBlock() {
+        if (this.pilot && !this.pilot.isFinished() && this.pulseGenerator.segments.includes(this.pilot)) {
+            this.nextBlockIndex = this.pilotBlockIndex;
+        }
     }
 
     /* Winds the tape to `ms` from its start. The next block is the first
@@ -406,9 +423,9 @@ export class TZXFile {
                             'type': 'StandardSpeedData',
                             'pause': pause,
                             'data': blockData,
-                            'generatePulses': (generator) => {
+                            'generatePulses': (generator, index) => {
                                 // a short leader tone for a data block, a long one for a header
-                                generator.addSegment(new ToneSegment(2168, this.takePilotPulses(2168, pilotPulses(blockData))));
+                                this.queuePilot(generator, index, 2168, pilotPulses(blockData));
                                 generator.addSegment(new PulseSequenceSegment([667, 735]));
                                 generator.addSegment(new DataSegment(blockData, 855, 1710, 8));
                                 if (pause) generator.addSegment(new PauseSegment(pause));
@@ -440,8 +457,8 @@ export class TZXFile {
                             'lastByteMask': lastByteMask,
                             'pause': pause,
                             'data': blockData,
-                            'generatePulses': (generator) => {
-                                generator.addSegment(new ToneSegment(pilotPulseLength, this.takePilotPulses(pilotPulseLength, pilotPulseCount)));
+                            'generatePulses': (generator, index) => {
+                                this.queuePilot(generator, index, pilotPulseLength, pilotPulseCount);
                                 generator.addSegment(new PulseSequenceSegment([syncPulse1Length, syncPulse2Length]));
                                 generator.addSegment(new DataSegment(blockData, zeroBitLength, oneBitLength, lastByteMask));
                                 if (pause) generator.addSegment(new PauseSegment(pause));
@@ -510,12 +527,21 @@ export class TZXFile {
                         const pause = tzx.getUint16(offset, true); offset += 2;
                         const lastByteMask = tzx.getUint8(offset); offset += 1;
                         const dataLength = tzx.getUint16(offset, true) | (tzx.getUint8(offset+2) << 16); offset += 3;
+                        const blockData = new Uint8Array(data, offset, dataLength);
+                        // one bit per sample; lastByteMask is how many of the last byte's bits are used
+                        const count = dataLength ? (((dataLength - 1) * 8) + (((lastByteMask >= 1) && (lastByteMask <= 8)) ? lastByteMask : 8)) : 0;
                         this.blocks.push({
                             'type': 'DirectRecording',
                             'tstatesPerSample': tstatesPerSample,
                             'lastByteMask': lastByteMask,
                             'pause': pause,
-                            'data': new Uint8Array(data, offset, dataLength)
+                            'data': blockData,
+                            'generatePulses': (generator) => {
+                                if (count && tstatesPerSample) {
+                                    generator.addSegment(new SoundSegment({ bits: blockData, from: 0, count, tstatesPerSample }, 0));
+                                }
+                                if (pause) generator.addSegment(new PauseSegment(pause));
+                            }
                         });
                         offset += dataLength;
                     })();
@@ -702,7 +728,7 @@ export class TZXFile {
         this.pulseGenerator = new PulseGenerator((generator) => {
             const block = this.getNextMeaningfulBlock(false);
             if (!block) return false;
-            block.generatePulses(generator);
+            block.generatePulses(generator, this.nextBlockIndex - 1);
             return true;
         });
 
@@ -778,6 +804,14 @@ export class TZXFile {
 
     takePilotPulses(length, count) {
         return TAPFile.prototype.takePilotPulses.call(this, length, count);
+    }
+
+    queuePilot(generator, index, length, count) {
+        TAPFile.prototype.queuePilot.call(this, generator, index, length, count);
+    }
+
+    catchPlayingBlock() {
+        TAPFile.prototype.catchPlayingBlock.call(this);
     }
 
     /* Where a loader starting at the tape's current position can still
@@ -869,15 +903,20 @@ export class TZXFile {
         }
     }
 
+    /* Reads on to the end of the tape and, where the tape goes round, once
+     * more from its start, so a tape with nothing loadable on it gives null. */
     getNextLoadableBlock() {
         this.pilotSkipTstates = 0;  // see TAPFile
+        let mayWrap = this.wrap && (this.nextBlockIndex > 0);
         while (true) {
-            var block = this.getNextMeaningfulBlock(this.wrap);
-            if (!block) return null;
-            if (block.type == 'StandardSpeedData' || block.type == 'TurboSpeedData') {
-                return block.data;
+            const block = this.getNextMeaningfulBlock(false);
+            if (block) {
+                if (block.type == 'StandardSpeedData' || block.type == 'TurboSpeedData') return block.data;
+            } else {
+                if (!mayWrap) return null;
+                this.nextBlockIndex = 0;
+                mayWrap = false;
             }
-            /* FIXME: avoid infinite loop if the TZX file consists only of meaningful but non-loadable blocks */
         }
     }
 };

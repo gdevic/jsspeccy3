@@ -11,7 +11,6 @@ let registerPairs = null;
 let tapePulses = null;
 let soundEdges = null;
 
-let stopped = false;
 let tape = null;
 let tapeIsPlaying = false;
 let tapePositionTstates = 0;      // tape consumed since load/seek, drives the cassette counter
@@ -1001,6 +1000,7 @@ const trapTapeLoad = () => {
     // Winding lifts the tape off the head, and recording plays nothing back.
     if (deckMoving()) return;
     framesSinceTapeTrap = 0;
+    if (!tape.isCassette) tape.catchPlayingBlock();
     const beforeIndex = tape.nextBlockIndex;
     const fromMs = tapePositionMs();
     const block = tape.getNextLoadableBlock(fromMs);
@@ -1026,8 +1026,15 @@ const trapTapeLoad = () => {
         tapePositionTstates = (afterIndex > beforeIndex && afterIndex < tape.blockStartMs.length)
             ? tape.blockStartMs[afterIndex] * TSTATES_PER_MS
             : tape.totalMs * TSTATES_PER_MS;
-        // In the recorder, a later part played in real time carries on from here.
-        if (deckConnected && !tapeIsPlaying) tape.seekToMs(tapePositionMs());
+        /* A later part played in real time carries on from here: in the recorder
+         * from where its counter now is, otherwise from the next block, with
+         * what was left of any block playing dropped. */
+        if (deckConnected && !tapeIsPlaying) {
+            tape.seekToMs(tapePositionMs());
+        } else {
+            tape.pulseGenerator.reset();
+            if (tapeIsPlaying) core.resetTapePulseBuffer();
+        }
         postTapePosition();
     }
     if (deckConnected) {
@@ -1131,7 +1138,6 @@ const runEmulatedFrame = () => {
         inFrame = true;
         switch (status) {
             case 1:
-                stopped = true;
                 throw("Unrecognised opcode!");
             case 2:
                 trapTapeLoad();
@@ -1143,7 +1149,6 @@ const runEmulatedFrame = () => {
                 trapSaveReturn();
                 break;
             default:
-                stopped = true;
                 throw("runFrame returned unexpected result: " + status);
         }
         inFrame = false;
@@ -1161,8 +1166,7 @@ onmessage = (e) => {
         case 'loadCore':
             loadCore(e.data.baseUrl);
             break;
-        case 'runFrame':
-            if (stopped) return;
+        case 'runFrame': {
             const frameBuffer = e.data.frameBuffer;
             const frameData = new Uint8Array(frameBuffer);
 
@@ -1173,16 +1177,29 @@ onmessage = (e) => {
                 audioBufferLeft = e.data.audioBufferLeft;
                 audioBufferRight = e.data.audioBufferRight;
                 audioLength = audioBufferLeft.byteLength / 4;
-                core.setAudioSamplesPerFrame(audioLength);
-            } else {
-                core.setAudioSamplesPerFrame(0);
             }
 
-            runEmulatedFrame();
-            if (tapeTrapsEnabled) {
-                const fastLoadStart = performance.now();
-                while (tapeIsPlaying && tapeAutoPlayed && (performance.now() - fastLoadStart) < FAST_LOAD_MS)
-                    runEmulatedFrame();
+            try {
+                core.setAudioSamplesPerFrame(audioLength);
+                runEmulatedFrame();
+                if (tapeTrapsEnabled) {
+                    const fastLoadStart = performance.now();
+                    while (tapeIsPlaying && tapeAutoPlayed && (performance.now() - fastLoadStart) < FAST_LOAD_MS)
+                        runEmulatedFrame();
+                }
+            } catch (err) {
+                /* The UI waits for every frame it sends to come back, so a
+                 * failed one still returns its buffers, unfilled. */
+                inFrame = false;
+                console.error(err);
+                const buffers = audioLength ? [frameBuffer, audioBufferLeft, audioBufferRight] : [frameBuffer];
+                postMessage({
+                    message: 'frameFailed',
+                    error: String((err && err.message) || err),
+                    frameBuffer,
+                    ...(audioLength ? { audioBufferLeft, audioBufferRight } : {}),
+                }, buffers);
+                break;
             }
 
             frameData.set(workerFrameData);
@@ -1207,6 +1224,7 @@ onmessage = (e) => {
             }
 
             break;
+        }
         case 'keyDown':
             core.keyDown(e.data.row, e.data.mask);
             break;

@@ -77,6 +77,12 @@ registerProcessor('jsspeccy-audio', JSSpeccyAudioProcessor);
 `;
 let workletUrl = null;
 
+/* The core's audio buffers hold 1024 samples (audioBufferLeft in
+ * core.ts.in): a frame's worth at 48 kHz and what spills over into the next
+ * frame. Output running faster than this gets a context at this rate, which
+ * the browser resamples for the device. */
+const MAX_SAMPLE_RATE = 48000;
+
 export class AudioHandler {
     constructor() {
         this.isActive = false;
@@ -89,7 +95,11 @@ export class AudioHandler {
     }
     start() {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
-        const audioContext = new AudioContext({latencyHint: 'interactive'});
+        let audioContext = new AudioContext({latencyHint: 'interactive'});
+        if (audioContext.sampleRate > MAX_SAMPLE_RATE) {
+            audioContext.close();
+            audioContext = new AudioContext({latencyHint: 'interactive', sampleRate: MAX_SAMPLE_RATE});
+        }
         this.audioContext = audioContext;
         this.samplesPerFrame = audioContext.sampleRate / 50;
 
@@ -187,6 +197,13 @@ export class AudioHandler {
         if (ENABLE_OSCILLOSCOPE) {
             this.drawOscilloscope(left, right);
         }
+    }
+
+    /* A frame the worker could not run: its buffers come back unfilled, and
+     * are not played. */
+    frameFailed(audioBufferLeft, audioBufferRight) {
+        this.frameBuffers[0] = audioBufferLeft;
+        this.frameBuffers[1] = audioBufferRight;
     }
 
     drawOscilloscope(leftData, rightData) {
