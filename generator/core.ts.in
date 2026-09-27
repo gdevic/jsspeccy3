@@ -1842,7 +1842,7 @@ export function runUntil(maxT:u32):i16 {
         }
 
         if (
-            (pc == 0x056b || pc == 0x0111 || pc == 0x04d0 || pc == 0x053f)
+            (pc == 0x056b || pc == 0x04d0 || pc == 0x053f)
             && (memoryPageReadMap[0] == 9 || memoryPageReadMap[0] == 10)
             && willTrap
         ) {
