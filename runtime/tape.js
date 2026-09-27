@@ -1,44 +1,17 @@
-/* T-states per millisecond at the 3.5 MHz Spectrum clock (a PauseSegment of N ms
- * emits N*3500 t-states — see PauseSegment.getNextPulseLength below). */
-const TSTATES_PER_MS = 3500;
+import {
+    TSTATES_PER_MS, CASSETTE_MS, dataBlockTstates, headerName, pilotMs, blockMs, catchUntilMs,
+    counterText, describeParts, blankFromMs, parseCassetteFile, writeCassetteTZX, pilotPulses, bytesThatFit,
+    TAPE_TOLERANCE_MS,
+} from './cassette.js';
 
 /* A pause at least this long (ms) after a block ends the current tape "segment"
  * (a loadable portion of the game): segments are split at the silences between
  * blocks. Tunable. */
 const SEGMENT_PAUSE_MS = 500;
 
-/* Popcount lookup, used to total the 1-bits of a data block so we can compute a
- * block's exact play duration without walking every bit individually. */
-const BIT_COUNTS = new Uint8Array(256);
-for (let i = 0; i < 256; i++) {
-    BIT_COUNTS[i] = (i & 1) + ((i >> 1) & 1) + ((i >> 2) & 1) + ((i >> 3) & 1)
-        + ((i >> 4) & 1) + ((i >> 5) & 1) + ((i >> 6) & 1) + ((i >> 7) & 1);
-}
-
-/* Exact t-states to play a data block: each bit is two pulses of its (zero/one)
- * length, and only the top `lastByteBits` bits of the final byte are emitted. */
-function dataBlockTstates(data, lastByteBits, zeroLen, oneLen) {
-    if (data.length === 0) return 0;
-    let ones = 0;
-    for (let i = 0; i < data.length - 1; i++) ones += BIT_COUNTS[data[i]];
-    const last = data[data.length - 1];
-    for (let b = 0; b < lastByteBits; b++) {
-        if (last & (0x80 >> b)) ones++;
-    }
-    const totalBits = (data.length - 1) * 8 + lastByteBits;
-    const zeros = totalBits - ones;
-    return 2 * (ones * oneLen + zeros * zeroLen);
-}
-
-/* Read the 10-character program name out of a standard-speed header block
- * (flag byte 0x00, 19 bytes: flag, type, 10-char name, ...). Returns '' if the
- * block is not a header. Gives segments human labels like "ELITE" / "ManicMine". */
-function headerName(data) {
-    if (!data || data.length < 12 || (data[0] & 0x80)) return '';
-    let name = '';
-    for (let i = 2; i < 12; i++) name += String.fromCharCode(data[i]);
-    return name.replace(/[^\x20-\x7e]/g, ' ').trim();
-}
+/* A loader started this close to the end of a block's pilot tone still
+ * catches the block (see seekToMs). */
+const CATCH_MARGIN_MS = 100;
 
 function msToString(ms) {
     const secs = Math.round(ms / 1000);
@@ -164,6 +137,22 @@ class PauseSegment {
     }
 }
 
+/* Blank tape lasting `tstates`, which need not be a whole number of
+ * milliseconds. */
+class SilenceSegment {
+    constructor(tstates) {
+        this.tstates = Math.max(1, Math.round(tstates));
+        this.emitted = false;
+    }
+    isFinished() {
+        return this.emitted;
+    }
+    getNextPulseLength() {
+        this.emitted = true;
+        return this.tstates;
+    }
+}
+
 class PulseGenerator {
     constructor(getSegments) {
         this.segments = [];
@@ -240,25 +229,32 @@ export class TAPFile {
         }
 
         this.nextBlockIndex = 0;
+        /* Whether the tape goes round again after its last block, as it
+         * does for the toolbar's player; in the tape recorder it stops at
+         * the end, like a real one. */
+        this.wrap = true;
+        /* T-states of the next block's pilot tone already past the head,
+         * after a seek into the middle of it. */
+        this.pilotSkipTstates = 0;
 
         this.pulseGenerator = new PulseGenerator((generator) => {
             if (this.blocks.length === 0) return false;
-            const block = this.blocks[this.nextBlockIndex];
-            this.nextBlockIndex = (this.nextBlockIndex + 1) % this.blocks.length;
-
-            if (block[0] & 0x80) {
-                // add short leader tone for data block
-                generator.addSegment(new ToneSegment(2168, 3223));
-            } else {
-                // add long leader tone for header block
-                generator.addSegment(new ToneSegment(2168, 8063));
+            if (this.nextBlockIndex >= this.blocks.length) {
+                // parked at the end by seekToMs
+                if (!this.wrap) return false;
+                this.nextBlockIndex = 0;
             }
+            const block = this.blocks[this.nextBlockIndex];
+            this.nextBlockIndex = this.wrap ? ((this.nextBlockIndex + 1) % this.blocks.length) : (this.nextBlockIndex + 1);
+
+            // a short leader tone for a data block, a long one for a header
+            generator.addSegment(new ToneSegment(2168, this.takePilotPulses(2168, pilotPulses(block))));
             generator.addSegment(new PulseSequenceSegment([667, 735]));
             generator.addSegment(new DataSegment(block, 855, 1710, 8));
             generator.addSegment(new PauseSegment(1000));
 
             // return false if tape has ended
-            return this.nextBlockIndex != 0;
+            return this.wrap ? (this.nextBlockIndex != 0) : (this.nextBlockIndex < this.blocks.length);
         });
 
         this.buildTimeline();
@@ -293,13 +289,49 @@ export class TAPFile {
     seekToBlock(index) {
         if (index < 0 || index >= this.blocks.length) return;
         this.nextBlockIndex = index;
+        this.pilotSkipTstates = 0;
         this.pulseGenerator.reset();
+    }
+
+    /* How many of a pilot tone's `count` pulses of `length` are left to play,
+     * after a seek into the middle of it; the skip applies to that one tone. */
+    takePilotPulses(length, count) {
+        const skipped = length ? Math.floor(this.pilotSkipTstates / length) : 0;
+        this.pilotSkipTstates = 0;
+        return skipped ? Math.max(1, count - skipped) : count;
+    }
+
+    /* Winds the tape to `ms` from its start. The next block is the first
+     * whose pilot tone hasn't yet gone past, played from wherever the tape
+     * now is: after blank tape up to it, or part way through its tone. Past
+     * the last one, the tape is parked at its end. */
+    seekToMs(ms) {
+        const index = this.blocks.findIndex((block, i) => ms < (this.blockStartMs[i] + pilotMs(block) - CATCH_MARGIN_MS));
+        if (index < 0) {
+            this.nextBlockIndex = this.blocks.length;
+            this.pilotSkipTstates = 0;
+            this.pulseGenerator.reset();
+            return;
+        }
+        this.seekToBlock(index);
+        const startMs = this.blockStartMs[index];
+        if (ms < startMs) {
+            this.pulseGenerator.addSegment(new SilenceSegment((startMs - ms) * TSTATES_PER_MS));
+        } else {
+            this.pilotSkipTstates = (ms - startMs) * TSTATES_PER_MS;
+        }
     }
 
     getNextLoadableBlock() {
         if (this.blocks.length === 0) return null;
+        // a block loaded in one go takes any pilot skip from a seek with it
+        this.pilotSkipTstates = 0;
+        if (this.nextBlockIndex >= this.blocks.length) {
+            if (!this.wrap) return null;
+            this.nextBlockIndex = 0;
+        }
         const block = this.blocks[this.nextBlockIndex];
-        this.nextBlockIndex = (this.nextBlockIndex + 1) % this.blocks.length;
+        this.nextBlockIndex = this.wrap ? ((this.nextBlockIndex + 1) % this.blocks.length) : (this.nextBlockIndex + 1);
         return block;
     }
 
@@ -355,13 +387,8 @@ export class TZXFile {
                             'pause': pause,
                             'data': blockData,
                             'generatePulses': (generator) => {
-                                if (blockData[0] & 0x80) {
-                                    // add short leader tone for data block
-                                    generator.addSegment(new ToneSegment(2168, 3223));
-                                } else {
-                                    // add long leader tone for header block
-                                    generator.addSegment(new ToneSegment(2168, 8063));
-                                }
+                                // a short leader tone for a data block, a long one for a header
+                                generator.addSegment(new ToneSegment(2168, this.takePilotPulses(2168, pilotPulses(blockData))));
                                 generator.addSegment(new PulseSequenceSegment([667, 735]));
                                 generator.addSegment(new DataSegment(blockData, 855, 1710, 8));
                                 if (pause) generator.addSegment(new PauseSegment(pause));
@@ -394,7 +421,7 @@ export class TZXFile {
                             'pause': pause,
                             'data': blockData,
                             'generatePulses': (generator) => {
-                                generator.addSegment(new ToneSegment(pilotPulseLength, pilotPulseCount));
+                                generator.addSegment(new ToneSegment(pilotPulseLength, this.takePilotPulses(pilotPulseLength, pilotPulseCount)));
                                 generator.addSegment(new PulseSequenceSegment([syncPulse1Length, syncPulse2Length]));
                                 generator.addSegment(new DataSegment(blockData, zeroBitLength, oneBitLength, lastByteMask));
                                 if (pause) generator.addSegment(new PauseSegment(pause));
@@ -614,6 +641,7 @@ export class TZXFile {
                         offset += 10;
                         const identifier = String.fromCharCode.apply(null, identifierBytes);
                         const dataLength = tzx.getUint32(offset, true);
+                        offset += 4;
                         this.blocks.push({
                             'type': 'CustomInfo',
                             'identifier': identifier,
@@ -648,6 +676,8 @@ export class TZXFile {
         this.loopToBlockIndex;
         this.repeatCount;
         this.callStack = [];
+        this.wrap = true;          // see TAPFile
+        this.pilotSkipTstates = 0;
 
         this.pulseGenerator = new PulseGenerator((generator) => {
             const block = this.getNextMeaningfulBlock(false);
@@ -722,7 +752,44 @@ export class TZXFile {
         this.loopToBlockIndex = undefined;
         this.repeatCount = undefined;
         this.callStack = [];
+        this.pilotSkipTstates = 0;
         this.pulseGenerator.reset();
+    }
+
+    takePilotPulses(length, count) {
+        return TAPFile.prototype.takePilotPulses.call(this, length, count);
+    }
+
+    /* Where a loader starting at the tape's current position can still
+     * catch `block`: before its pilot tone ends for a block that has one,
+     * otherwise only before it starts. */
+    catchUntilMs(block, index) {
+        const startMs = this.blockStartMs[index];
+        let toneMs = 0;
+        if (block.type === 'StandardSpeedData') toneMs = pilotMs(block.data);
+        else if (block.type === 'TurboSpeedData') toneMs = (block.pilotPulseLength * block.pilotPulseCount) / TSTATES_PER_MS;
+        return (toneMs > CATCH_MARGIN_MS) ? (startMs + toneMs - CATCH_MARGIN_MS) : startMs;
+    }
+
+    /* Winds the tape to `ms` from its start, as TAPFile.seekToMs does. */
+    seekToMs(ms) {
+        const index = this.blocks.findIndex((block, i) => ms <= this.catchUntilMs(block, i));
+        if (index < 0) {
+            this.nextBlockIndex = this.blocks.length;
+            this.loopToBlockIndex = undefined;
+            this.repeatCount = undefined;
+            this.callStack = [];
+            this.pilotSkipTstates = 0;
+            this.pulseGenerator.reset();
+            return;
+        }
+        this.seekToBlock(index);
+        const startMs = this.blockStartMs[index];
+        if (ms < startMs) {
+            this.pulseGenerator.addSegment(new SilenceSegment((startMs - ms) * TSTATES_PER_MS));
+        } else {
+            this.pilotSkipTstates = (ms - startMs) * TSTATES_PER_MS;
+        }
     }
 
     getNextMeaningfulBlock(wrapAtEnd) {
@@ -783,8 +850,9 @@ export class TZXFile {
     }
 
     getNextLoadableBlock() {
+        this.pilotSkipTstates = 0;  // see TAPFile
         while (true) {
-            var block = this.getNextMeaningfulBlock(true);
+            var block = this.getNextMeaningfulBlock(this.wrap);
             if (!block) return null;
             if (block.type == 'StandardSpeedData' || block.type == 'TurboSpeedData') {
                 return block.data;
@@ -793,3 +861,157 @@ export class TZXFile {
         }
     }
 };
+
+
+/* A cassette in the tape recorder (see runtime/cassette.js): standard-speed
+ * blocks at their places along the tape, with blank tape between them, that
+ * SAVE records onto. It fills the worker's tape slot as TAPFile and TZXFile
+ * do, but never goes round again: a loader reads onwards from wherever the
+ * tape is, and finds nothing past the last block. */
+// A block at its place on a cassette, with where it ends worked out once.
+const placed = (startMs, data) => ({ startMs, data, endMs: startMs + blockMs(data) });
+
+export class CassetteTape {
+    constructor(data, opts) {
+        opts = opts || {};
+        this.isCassette = true;
+        this.blocks = parseCassetteFile(data).blocks.map(block => placed(block.startMs, block.data));  // [{startMs, data, endMs}]
+        this.lengthMs = CASSETTE_MS;
+        this.writeProtect = !!opts.writeProtect;
+        this.wrap = false;
+        this.nextBlockIndex = 0;
+        this.cursorMs = 0;         // how far along the tape the pulse generator has got
+        this.lastLoadedEndMs = 0;  // where the block getNextLoadableBlock last returned ends
+        this.pulseGenerator = new PulseGenerator((generator) => this.generatePulses(generator));
+        this.buildTimeline();
+    }
+
+    /* The parts on the tape (see describeParts) as the counter's segments,
+     * and the timings the worker reads, rebuilt whenever the tape changes. */
+    buildTimeline() {
+        this.blocks.sort((a, b) => a.startMs - b.startMs);
+        this.segments = describeParts(this.blocks).map((part) => {
+            const size = (part.length < 1024) ? (part.length + 'B') : (Math.round(part.length / 1024) + 'K');
+            return {
+                ...part,
+                durationMs: part.endMs - part.startMs,
+                label: (part.name || part.typeName) + '  @' + counterText(part.startMs)
+                    + '  (' + part.typeName + ', ' + size + (part.damaged ? ', damaged' : '') + ')',
+            };
+        });
+        this.blockStartMs = this.blocks.map(block => block.startMs);
+        this.totalMs = this.lengthMs;
+        this.totalBytes = this.blocks.reduce((total, block) => total + block.data.length, 0);
+        this.blankFromMs = blankFromMs(this.blocks);
+    }
+
+    // The first block a loader starting at `ms` can still catch, or -1.
+    blockAheadIndex(ms) {
+        return this.blocks.findIndex(block => ms <= catchUntilMs(block));
+    }
+
+    seekToMs(ms) {
+        this.cursorMs = Math.max(0, Math.min(ms, this.lengthMs));
+        const index = this.blockAheadIndex(this.cursorMs);
+        this.nextBlockIndex = (index < 0) ? this.blocks.length : index;
+        this.pulseGenerator.reset();
+    }
+
+    seekToBlock(index) {
+        if (index >= 0 && index < this.blocks.length) this.seekToMs(this.blocks[index].startMs);
+    }
+
+    /* Queues the tape from cursorMs on, a stretch at a time: blank tape up to
+     * the next block, then the block, from part way through its pilot tone
+     * if the tape starts there. A block whose tone has gone by can no longer
+     * be read, so the rest of it plays as blank tape. */
+    generatePulses(generator) {
+        if (this.cursorMs >= this.lengthMs) return false;
+        const index = this.blocks.findIndex(block => this.cursorMs < block.endMs);
+        if (index < 0) {
+            generator.addSegment(new SilenceSegment((this.lengthMs - this.cursorMs) * TSTATES_PER_MS));
+            this.cursorMs = this.lengthMs;
+            this.nextBlockIndex = this.blocks.length;
+            return false;
+        }
+        const block = this.blocks[index];
+        const endMs = block.endMs;
+        if (this.cursorMs < block.startMs) {
+            generator.addSegment(new SilenceSegment((block.startMs - this.cursorMs) * TSTATES_PER_MS));
+            this.cursorMs = block.startMs;
+            return true;
+        }
+        if (this.cursorMs <= catchUntilMs(block)) {
+            const intoTstates = (this.cursorMs - block.startMs) * TSTATES_PER_MS;
+            generator.addSegment(new ToneSegment(2168, Math.max(1, pilotPulses(block.data) - Math.floor(intoTstates / 2168))));
+            generator.addSegment(new PulseSequenceSegment([667, 735]));
+            generator.addSegment(new DataSegment(block.data, 855, 1710, 8));
+            this.nextBlockIndex = index + 1;
+        } else {
+            generator.addSegment(new SilenceSegment((endMs - this.cursorMs) * TSTATES_PER_MS));
+        }
+        this.cursorMs = endMs;
+        return true;
+    }
+
+    /* The block a loader starting at `positionMs` reads next, or null when
+     * there is nothing more on the tape; lastLoadedEndMs is then where the
+     * block ends. */
+    getNextLoadableBlock(positionMs) {
+        const index = this.blockAheadIndex(positionMs);
+        if (index < 0) return null;
+        const block = this.blocks[index];
+        this.nextBlockIndex = index + 1;
+        this.lastLoadedEndMs = block.endMs;
+        return block.data;
+    }
+
+    /* Wipes the tape from fromMs to toMs: every block with any of its length
+     * there goes, since what is left of it can't be read. A block only
+     * touching the range, to within TAPE_TOLERANCE_MS, stays. Returns them. */
+    erase(fromMs, toMs) {
+        if (toMs <= fromMs) return [];
+        const erased = [];
+        const kept = [];
+        for (const block of this.blocks) {
+            const overlaps = (block.startMs < (toMs - TAPE_TOLERANCE_MS)) && (block.endMs > (fromMs + TAPE_TOLERANCE_MS));
+            (overlaps ? erased : kept).push(block);
+        }
+        if (erased.length) {
+            this.blocks = kept;
+            this.buildTimeline();
+        }
+        return erased;
+    }
+
+    // Puts a block recorded at startMs onto (already blank) tape.
+    insertRecorded(startMs, data) {
+        this.blocks.push(placed(startMs, data));
+        this.buildTimeline();
+    }
+
+    /* Records `data` at startMs in one go, over whatever was there, cut
+     * short where the tape runs out. Returns {endMs, erased, written}, where
+     * `written` is whether all of it fitted. */
+    record(startMs, data) {
+        const fits = (startMs + blockMs(data)) <= this.lengthMs;
+        const keep = fits ? data.length : bytesThatFit(data, this.lengthMs - startMs);
+        const endMs = fits ? (startMs + blockMs(data)) : this.lengthMs;
+        const erased = this.erase(startMs, endMs);
+        if (keep) this.insertRecorded(startMs, data.subarray(0, keep));
+        return { endMs, erased, written: fits };
+    }
+
+    snapshotBlocks() {
+        return this.blocks.slice();
+    }
+
+    restoreBlocks(blocks) {
+        this.blocks = blocks.slice();
+        this.buildTimeline();
+    }
+
+    toTZX() {
+        return writeCassetteTZX({ blocks: this.blocks });
+    }
+}

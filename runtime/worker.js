@@ -1,6 +1,7 @@
 import { FRAME_BUFFER_SIZE } from './constants.js';
-import { TAPFile, TZXFile } from './tape.js';
+import { TAPFile, TZXFile, CassetteTape } from './tape.js';
 import { setCartridgeName } from './mdr.js';
+import { blockMs, bytesThatFit, headerName, gameTapeLengthMs } from './cassette.js';
 
 let core = null;
 let memory = null;
@@ -19,6 +20,54 @@ let tapeAutoPlayed = false;       // the tape was started by loader detection, n
 let autoPlaySuppressed = false;   // the user stopped the tape, so detection must not restart it
 let loaderIdleFrames = 0;         // frames in which the machine read the port but no loader sampled it
 let tapeTrapsEnabled = true;
+let motorPosted = false;          // what the UI was last told: is the tape running at play speed
+
+/* The tape recorder. While it is connected, whatever is in the tape slot is
+ * in it: a game tape, or a cassette (a CassetteTape) that SAVE records onto.
+ * Its keys move the tape: deckMode is the key held down, and deckAuto is set
+ * when the machine pressed it rather than the user (a SAVE presses Record
+ * and Play, and lets them go again once it is done). The tape's movement
+ * while recording is accounted up to movedUntilT into the current frame, so
+ * a trap part way through a frame starts from where the tape really is. */
+let deckConnected = false;
+let deckMode = 'stop';            // 'stop', 'play', 'record', 'rewind' or 'ffwd'
+let deckAuto = false;
+let deckReleaseFrames = 0;        // frames until a SAVE's keys are let go, 0 when not counting
+let windSpeed = 0;                // winding speed, in play speeds
+let windTop = 0;                  // the speed a wind builds up to
+let windTarget = null;            // where a wind stops, or null to wind to the end
+let windSeek = null;              // {quiet} when the wind is a jump from the counter, reported on arrival
+let movedUntilT = 0;
+let cassetteToken = null;         // the UI's id for the cassette in the slot
+let cassetteSeq = null;           // which of the UI's inserts put it there, handed back with it
+let cassetteDirty = false;        // it has been recorded on since it was last posted back
+let framesSinceCassetteFlush = 0;
+let pendingSave = null;           // a block being SAVEd in real time, until SA-BYTES returns
+let undoBlocks = null;            // the cassette before the last recording erased something
+let erasedNames = [];             // what the recording in progress has erased
+let framesSinceDeckStatus = 0;
+let framesSinceTrapLoad = 1000;   // frames since the LOAD trap last read a block
+let loadingPosted = false;
+let nothingAheadAt = null;        // the position the last "nothing ahead" hint was for
+let deckJump = null;              // an instant SAVE or LOAD's jump along the tape, for the UI to show
+let pendingDeckSound = null;      // {kind, time}: a key's sound, made when the next frame runs
+let inFrame = false;              // a trap is being handled, part way through a frame
+
+const DECK_AUTO_RELEASE_FRAMES = 75;  // ~1.5s after the last block of a SAVE
+const DECK_STATUS_FRAMES = 4;         // status posts while the tape moves
+const CASSETTE_FLUSH_FRAMES = 250;    // how often a long recording is posted back
+const TRAP_LOAD_SHOWN_FRAMES = 25;    // Play shows down this long after a trapped load
+const DECK_SOUND_STALE_MS = 150;      // a key's sound not made by then is dropped
+
+/* Winding speeds, in play speeds: a wind starts at WIND_START and builds up
+ * to WIND_MAX over WIND_RAMP_S; a jump to a part builds up faster, and
+ * higher if need be, so that it arrives within about WIND_JUMP_S, braking
+ * over the last WIND_BRAKE_S. */
+const WIND_START = 10;
+const WIND_MAX = 120;
+const WIND_RAMP_S = 3;
+const WIND_JUMP_S = 2;
+const WIND_BRAKE_S = 0.25;
 
 /* Interface 1 / Microdrive: per-drive bookkeeping the core doesn't expose
  * directly. mdrTokens identifies which cartridge (an opaque id from the UI's
@@ -66,34 +115,516 @@ const FAST_LOAD_MS = 12;
 const LOADER_IDLE_FRAMES = 25;
 const LOADER_ACTIVE_READS = 10;
 
+const tapePositionMs = () => tapePositionTstates / TSTATES_PER_MS;
+const deckWinding = () => (deckMode === 'rewind') || (deckMode === 'ffwd');
+// The recorder's tape is moving without being played back: loaders can't start it then.
+const deckMoving = () => deckConnected && ((deckMode === 'record') || deckWinding());
+
+/* The core's view of the tape: whether one is in, and whether it is moving,
+ * which stops loader detection from starting it. */
+const updateCoreTapeState = () => {
+    if (core) core.setTapeState(!!tape, tapeIsPlaying || deckMoving());
+};
+
+// Tells the UI whether the tape is running at play speed: playing or recording.
+const postMotor = () => {
+    const running = tapeIsPlaying || (deckConnected && (deckMode === 'record'));
+    if (running === motorPosted) return;
+    motorPosted = running;
+    postMessage({ message: running ? 'playingTape' : 'stoppedTape' });
+};
+
 const setTapePlaying = (playing, auto) => {
     if (playing == tapeIsPlaying) return;
     tapeIsPlaying = playing;
     tapeAutoPlayed = playing && !!auto;
     loaderIdleFrames = 0;
-    if (core) core.setTapeState(!!tape, playing);
-    postMessage({
-        message: playing ? 'playingTape' : 'stoppedTape',
-    });
+    if (deckConnected) {
+        if (playing) {
+            deckMode = 'play';
+            deckAuto = !!auto;
+        } else if (deckMode === 'play') {
+            deckMode = 'stop';
+            deckAuto = false;
+        }
+    }
+    updateCoreTapeState();
+    postMotor();
+    if (deckConnected) postDeckStatus();
 };
 
 /* A tape freshly inserted or ejected starts out stopped. */
 const resetTapeState = () => {
-    if (tapeIsPlaying) postMessage({ message: 'stoppedTape' });
     tapeIsPlaying = false;
     tapeAutoPlayed = false;
     autoPlaySuppressed = false;
-    if (core) core.setTapeState(!!tape, false);
+    deckMode = 'stop';
+    deckAuto = false;
+    deckReleaseFrames = 0;
+    windSpeed = 0;
+    windTarget = null;
+    windSeek = null;
+    updateCoreTapeState();
+    postMotor();
+};
+
+/* ---------- the tape recorder ---------- */
+
+// How long the tape in the slot is, as the recorder winds it.
+const tapeLengthMs = () => {
+    if (!tape) return 0;
+    return tape.isCassette ? tape.lengthMs : gameTapeLengthMs(tape.totalMs);
+};
+
+/* Makes the sound of one of the recorder's keys (see playDeckSound in the
+ * core): straight away inside a trap, otherwise at the start of the next
+ * frame, so it falls in the audio it belongs with. */
+const deckSound = (kind) => {
+    if (!deckConnected) return;
+    if (inFrame) {
+        core.playDeckSound(kind);
+    } else {
+        pendingDeckSound = { kind, time: performance.now() };
+    }
+};
+
+const updateDeckSound = () => {
+    if (!core) return;
+    const motor = !deckConnected ? 0 : ((deckMode === 'record') ? 2 : (tapeIsPlaying ? 1 : 0));
+    const wind = (deckConnected && deckWinding()) ? Math.min(1, windSpeed / WIND_MAX) : 0;
+    core.setDeckSound(motor, wind);
+};
+
+const postDeckStatus = () => {
+    framesSinceDeckStatus = 0;
+    const loading = framesSinceTrapLoad < TRAP_LOAD_SHOWN_FRAMES;
+    loadingPosted = loading;
+    const speed = !tape ? 0 : ((deckMode === 'rewind') ? -windSpeed : ((deckMode === 'ffwd') ? windSpeed
+        : ((tapeIsPlaying || (deckMode === 'record')) ? 1 : 0)));
+    postMessage({
+        message: 'tapeDeckStatus',
+        connected: deckConnected,
+        mode: deckMode,
+        auto: deckAuto,
+        loading,
+        positionMs: tapePositionMs(),
+        speed,
+        lengthMs: tapeLengthMs(),
+        kind: tape ? (tape.isCassette ? 'cassette' : 'game') : null,
+        writeProtect: tape ? (!tape.isCassette || tape.writeProtect) : false,
+        saving: !!pendingSave,
+        jump: deckJump,
+    });
+    deckJump = null;
+};
+
+const postDeckHint = (kind, details) => {
+    postMessage({ message: 'deckHint', kind, positionMs: tapePositionMs(), ...(details || {}) });
+};
+
+/* Posts the cassette's bytes back to the UI, to keep: when it has been
+ * recorded on since the last time, or always if `force`. */
+const flushCassette = (force) => {
+    if (!tape || !tape.isCassette) return;
+    if (!cassetteDirty && !force) return;
+    cassetteDirty = false;
+    framesSinceCassetteFlush = 0;
+    const data = tape.toTZX();
+    postMessage({
+        message: 'cassetteData',
+        token: cassetteToken,
+        seq: cassetteSeq,
+        data: data.buffer,
+        positionMs: tapePositionMs(),
+        writeProtect: tape.writeProtect,
+    }, [data.buffer]);
+};
+
+/* Brings the recording tape up to `toT` T-states into the frame, wiping it
+ * as it goes past the head. Stops at the end of the tape. */
+const advanceRecording = (toT) => {
+    if (!deckConnected || (deckMode !== 'record') || !tape || !tape.isCassette || (toT <= movedUntilT)) {
+        movedUntilT = Math.max(movedUntilT, toT);
+        return;
+    }
+    const fromMs = tapePositionMs();
+    const toMs = Math.min(tape.lengthMs, fromMs + ((toT - movedUntilT) / TSTATES_PER_MS));
+    movedUntilT = toT;
+    noteErased(tape.erase(fromMs, toMs));
+    tapePositionTstates = toMs * TSTATES_PER_MS;
+};
+
+/* Notes what a recording erased, by the names in its headers; a block
+ * without one counts once, as '', unless its header went too. */
+const noteErased = (blocks) => {
+    if (!blocks.length) return;
+    cassetteDirty = true;
+    for (const block of blocks) {
+        const name = (block.data[0] === 0x00) ? headerName(block.data) : '';
+        if (!erasedNames.includes(name)) erasedNames.push(name);
+    }
+    postTapeInfo();
+};
+
+/* Presses Record (and Play with it). A recording erases as it goes, so the
+ * cassette as it was is kept first, for an undo. */
+const engageRecord = (auto) => {
+    if (tapeIsPlaying) setTapePlaying(false);
+    if (deckWinding()) endWind(false);
+    if (core) core.resetTapePulseBuffer();  // nothing plays back while recording
+    deckMode = 'record';
+    deckAuto = auto;
+    deckReleaseFrames = 0;
+    undoBlocks = tape.snapshotBlocks();
+    erasedNames = [];
+    updateCoreTapeState();
+    postMotor();
+    updateDeckSound();
+};
+
+/* The keys come up after recording: whatever was being SAVEd in real time
+ * ends where the tape stopped, and the cassette goes back to the UI. */
+const endRecording = () => {
+    if (pendingSave) finishPendingSave(null);
+    deckMode = 'stop';
+    deckAuto = false;
+    deckReleaseFrames = 0;
+    tape.seekToMs(tapePositionMs());
+    flushCassette(false);
+    if (erasedNames.length) {
+        const names = erasedNames.filter(Boolean);
+        postDeckHint('recordedOver', { names: names.length ? names : [''], canUndo: !!undoBlocks });
+    } else {
+        undoBlocks = null;
+    }
+    erasedNames = [];
+    updateCoreTapeState();
+    postMotor();
+};
+
+const startWind = (direction, target, seek) => {
+    deckMode = (direction < 0) ? 'rewind' : 'ffwd';
+    deckAuto = false;
+    windSpeed = WIND_START;
+    windTarget = target;
+    windSeek = seek;
+    windTop = WIND_MAX;
+    if (target !== null) {
+        // fast enough to get there in about WIND_JUMP_S, allowing for speeding up and braking
+        windTop = Math.max(WIND_MAX, (Math.abs(target - tapePositionMs()) / (WIND_JUMP_S * 1000)) * 1.6);
+    }
+    updateCoreTapeState();
+    postMotor();
+};
+
+/* The wind is over: the tape is ready to play from where it stopped. If it
+ * was a jump from the counter and got there, the UI hears about it as a
+ * seek, to start a load if one is wanted. */
+const endWind = (arrived) => {
+    const seek = windSeek;
+    windSpeed = 0;
+    windTarget = null;
+    windSeek = null;
+    deckMode = 'stop';
+    deckAuto = false;
+    if (tape) tape.seekToMs(tapePositionMs());
+    if (core) core.resetTapePulseBuffer();
+    nothingAheadAt = null;
+    updateCoreTapeState();
+    postTapePosition();
+    if (arrived && seek) postTapeSeeked(seek.quiet);
+};
+
+// Winds the tape for one frame of `frameMs`.
+const windStep = (frameMs) => {
+    const direction = (deckMode === 'rewind') ? -1 : 1;
+    const positionMs = tapePositionMs();
+    let limit = (direction < 0) ? 0 : tapeLengthMs();
+    let top = WIND_MAX;
+    let accel = (WIND_MAX - WIND_START) / WIND_RAMP_S;
+    if (windTarget !== null) {
+        limit = windTarget;
+        top = Math.min(windTop, Math.max(WIND_START, Math.abs(windTarget - positionMs) / (WIND_BRAKE_S * 1000)));
+        accel = windTop / 0.4;
+    }
+    windSpeed = Math.min(top, windSpeed + (accel * frameMs / 1000));
+    let next = positionMs + (direction * windSpeed * frameMs);
+    const arrived = (direction < 0) ? (next <= limit) : (next >= limit);
+    if (arrived) next = limit;
+    tapePositionTstates = next * TSTATES_PER_MS;
+    if (arrived) {
+        const jump = windTarget !== null;
+        endWind(true);
+        deckSound(jump ? 2 : 4);
+        postDeckStatus();
+    }
+};
+
+/* Winds the tape to `ms`: at once when `quiet` (restoring a session) or
+ * already there, otherwise on the recorder, visibly. `seek` is set for a
+ * jump from the counter. */
+const windTo = (ms, seek, quiet) => {
+    if (!tape) return;
+    stopDeck();
+    ms = Math.max(0, Math.min(ms, tapeLengthMs()));
+    if (quiet || !deckConnected || (Math.abs(ms - tapePositionMs()) < 1)) {
+        tapePositionTstates = ms * TSTATES_PER_MS;
+        tape.seekToMs(ms);
+        if (core) core.resetTapePulseBuffer();
+        nothingAheadAt = null;
+        postTapePosition();
+        if (seek) postTapeSeeked(seek.quiet || quiet);
+        if (deckConnected) postDeckStatus();
+        return;
+    }
+    startWind((ms < tapePositionMs()) ? -1 : 1, ms, seek);
+    deckSound(1);
+    postDeckStatus();
+};
+
+// Lets every key up: the tape stops, whatever it was doing.
+const stopDeck = () => {
+    if (deckMode === 'record') endRecording();
+    if (deckWinding()) endWind(false);
+    if (tapeIsPlaying) setTapePlaying(false);
+    deckMode = 'stop';
+    deckAuto = false;
+    updateCoreTapeState();
+    postMotor();
+};
+
+/* One of the recorder's keys, pressed by the user. A key that can't go
+ * down (Record on a write-protected cassette, say) springs back, with a hint
+ * saying why. */
+const pressDeckKey = (key) => {
+    if (!deckConnected) return;
+    if (!tape && (key !== 'stop')) {
+        postDeckHint('noCassette', { key });
+        return;
+    }
+    switch (key) {
+        case 'play':
+            // The tape plays on from where it stopped, or from where it was wound to.
+            if (deckMode === 'play') return;
+            stopDeck();
+            autoPlaySuppressed = false;
+            setTapePlaying(true);
+            deckSound(1);
+            break;
+        case 'record':
+            if (!tape.isCassette) { postDeckHint('gameTape', { key }); return; }
+            if (tape.writeProtect) { postDeckHint('writeProtected', { key }); return; }
+            if (deckMode === 'record') return;
+            stopDeck();
+            movedUntilT = 0;
+            engageRecord(false);
+            deckSound(1);
+            break;
+        case 'rewind':
+        case 'ffwd':
+            if ((deckMode === key) && (windTarget === null)) return;
+            stopDeck();
+            startWind((key === 'rewind') ? -1 : 1, null, null);
+            deckSound(1);
+            break;
+        case 'stop':
+            if ((deckMode === 'stop') && !tapeIsPlaying) return;
+            stopDeck();
+            autoPlaySuppressed = true;
+            deckSound(2);
+            break;
+    }
+    postDeckStatus();
+};
+
+/* Takes the tape out of the slot, or makes way for another: a cassette is
+ * posted back with where it was left and why it went (`reason`: 'eject',
+ * 'replaced', or 'parked' when the recorder is switched off). */
+const releaseTape = (reason) => {
+    if (!tape) return;
+    // A recording ended by the cassette leaving can't be undone: the undo goes with it.
+    undoBlocks = null;
+    stopDeck();
+    if (tape.isCassette) {
+        flushCassette(false);
+        postMessage({ message: 'cassetteEjected', token: cassetteToken, seq: cassetteSeq, positionMs: tapePositionMs(), reason });
+        cassetteToken = null;
+    }
+    erasedNames = [];
+    if (reason !== 'parked') deckSound(3);
+};
+
+/* A block being SAVEd in real time is over: SA-BYTES returned (`sent` is
+ * how many bytes it put out), or the save was cut short (`sent` null) by the
+ * keys coming up, the tape running out or the machine moving on. While the
+ * tape recorded throughout, every byte SA-BYTES put out is on it, however
+ * fast the machine's timing ran; otherwise what went onto the tape before
+ * recording stopped is kept. The tape is then past the block, so what comes
+ * next can't erase it. */
+const finishPendingSave = (sent) => {
+    const save = pendingSave;
+    pendingSave = null;
+    if (core) core.setSaveReturnTrap(false);
+    if (!tape || !tape.isCassette) return;
+    let keep;
+    if ((sent !== null) && (save.recordStopMs === null)) {
+        keep = Math.min(sent, save.bytes.length);
+    } else {
+        const stopMs = (save.recordStopMs !== null) ? save.recordStopMs : tapePositionMs();
+        keep = Math.min((sent === null) ? save.bytes.length : sent, bytesThatFit(save.bytes, stopMs - save.startMs));
+    }
+    if (keep > 0) {
+        const recorded = save.bytes.subarray(0, keep);
+        tape.insertRecorded(save.startMs, recorded);
+        const endMs = Math.min(tape.lengthMs, save.startMs + blockMs(recorded));
+        if (tapePositionMs() < endMs) tapePositionTstates = endMs * TSTATES_PER_MS;
+        cassetteDirty = true;
+        flushCassette(false);
+        postTapeInfo();
+    }
+    if (deckAuto && (deckMode === 'record')) deckReleaseFrames = DECK_AUTO_RELEASE_FRAMES;
+    if (deckConnected) postDeckStatus();
+};
+
+/* A real-time SAVE that never came back through SA/LD-RET (a program
+ * jumping into the middle of SA-BYTES, say) is finished once the machine is
+ * plainly doing something else. */
+const checkPendingSave = () => {
+    const pc = core.getPC();
+    const romPage = memoryData[Number(core.MEMORY_PAGE_READ_MAP)];
+    const inSaBytes = (pc >= 0x04c2) && (pc <= 0x053f) && ((romPage === 9) || (romPage === 10));
+    if (!inSaBytes || (tapePositionMs() > pendingSave.deadlineMs)) finishPendingSave(null);
+};
+
+/* Status 3, SA-BYTES about to save a block, trapped while the recorder is
+ * connected. With a cassette to record on, the SAVE presses Record and Play,
+ * and the block goes onto the tape where it is: all at once with instant
+ * tape loading on, when SA-BYTES is skipped, or as the ROM saves it for
+ * real, when it is only noted here and kept once it is done (status 4).
+ * Without one, the ROM just saves to nothing, and the UI is told why. */
+const trapTapeSave = () => {
+    if (!deckConnected) return;
+    if (!tape || !tape.isCassette || tape.writeProtect) {
+        postDeckHint(!tape ? 'noCassette' : (!tape.isCassette ? 'gameTape' : 'writeProtected'), { save: true });
+        return;
+    }
+    const tNow = core.getTStates();
+    advanceRecording(tNow);
+    // A block still being recorded in real time is over once SA-BYTES starts another.
+    if (pendingSave) finishPendingSave(null);
+    const flag = registerPairs[0] >> 8;
+    const start = registerPairs[8];  /* IX */
+    const length = registerPairs[2];  /* DE */
+    const sp = registerPairs[10];
+    const bytes = new Uint8Array(length + 2);
+    bytes[0] = flag;
+    let parity = flag;
+    for (let i = 0; i < length; i++) {
+        const byte = core.peek((start + i) & 0xffff);
+        bytes[i + 1] = byte;
+        parity ^= byte;
+    }
+    bytes[length + 1] = parity;
+
+    if (deckMode !== 'record') {
+        engageRecord(true);
+        movedUntilT = tNow;
+        deckSound(1);
+    }
+    deckReleaseFrames = 0;
+    const startMs = tapePositionMs();
+
+    if (tapeTrapsEnabled) {
+        const result = tape.record(startMs, bytes);
+        noteErased(result.erased);
+        cassetteDirty = true;
+        tapePositionTstates = result.endMs * TSTATES_PER_MS;
+        // kept at once, not only when the keys come up, in case the page goes first
+        flushCassette(false);
+        postTapeInfo();
+        deckJump = { fromMs: startMs, toMs: result.endMs, kind: 'save' };
+        if (!result.written) {
+            postDeckHint('endOfTape', { save: true });
+            endRecording();
+            deckSound(4);
+        } else {
+            deckReleaseFrames = DECK_AUTO_RELEASE_FRAMES;
+        }
+        /* Leave the registers as SA-BYTES itself does on finishing: IX past
+         * the parity byte, DE run down past zero, carry set; its RET then
+         * goes through SA/LD-RET, which puts the border back. */
+        registerPairs[8] = (start + length + 1) & 0xffff;  /* IX */
+        registerPairs[2] = 0xffff;  /* DE */
+        registerPairs[3] = 0x0000;  /* HL */
+        registerPairs[1] = 0x000e;  /* BC */
+        registerPairs[0] = 0x0051;  /* AF */
+        core.setPC(0x053e);
+    } else {
+        const returnSP = (core.peek(sp) | (core.peek((sp + 1) & 0xffff) << 8)) === 0x053f ? ((sp + 2) & 0xffff) : null;
+        pendingSave = {
+            startMs, bytes, start, returnSP,
+            deadlineMs: startMs + blockMs(bytes) + 2000,
+            recordStopMs: null,
+        };
+        if (returnSP !== null) core.setSaveReturnTrap(true);
+    }
+    postDeckStatus();
+};
+
+/* Status 4, SA/LD-RET reached while a SAVE is being recorded in real time:
+ * the SAVE is over if this is SA-BYTES returning. IX tells how far it got,
+ * stepping past each byte as it goes out: all of them, flag and parity
+ * included, unless BREAK stopped it. */
+const trapSaveReturn = () => {
+    if (!pendingSave || (registerPairs[10] !== pendingSave.returnSP)) return;
+    advanceRecording(core.getTStates());
+    finishPendingSave(((registerPairs[8] - pendingSave.start) & 0xffff) + 1);
+};
+
+/* After every frame: the recorder's tape moves on while recording or
+ * winding, the keys of a finished SAVE come up, and the UI hears about it. */
+const serviceDeck = () => {
+    if (framesSinceTrapLoad < 1000) framesSinceTrapLoad++;
+    if (!deckConnected) return;
+    const frameCycles = core.getFrameCycleCount();
+    if (tape && (deckMode === 'record')) {
+        advanceRecording(frameCycles);
+        if (pendingSave) checkPendingSave();
+        if (tapePositionMs() >= tape.lengthMs) {
+            if (pendingSave) pendingSave.recordStopMs = tape.lengthMs;
+            endRecording();
+            postDeckHint('endOfTape', {});
+            deckSound(4);
+            postDeckStatus();
+        } else if (deckAuto && !pendingSave && (deckReleaseFrames > 0) && (--deckReleaseFrames === 0)) {
+            endRecording();
+            deckSound(2);
+            postDeckStatus();
+        } else if (cassetteDirty && (++framesSinceCassetteFlush >= CASSETTE_FLUSH_FRAMES)) {
+            flushCassette(false);
+        }
+    } else if (tape && deckWinding()) {
+        windStep(frameCycles / TSTATES_PER_MS);
+    }
+    movedUntilT = 0;
+    framesSinceDeckStatus++;
+    const moving = tapeIsPlaying || deckMode === 'record' || deckWinding();
+    const loading = framesSinceTrapLoad < TRAP_LOAD_SHOWN_FRAMES;
+    if ((moving && (framesSinceDeckStatus >= DECK_STATUS_FRAMES)) || (loading !== loadingPosted)) postDeckStatus();
+    if (moving && (framesSinceDeckStatus === 0)) postTapePosition();
 };
 
 /* Start the tape when the core has seen a loader start sampling EAR, and stop it
  * once the loader has gone idle. Only a tape that detection started is stopped
- * by it, so a tape the user set playing keeps running. */
+ * by it, so a tape the user set playing keeps running. A cassette holds only
+ * blocks the tape trap reads, so with instant loading on it is never started:
+ * a LOAD with nothing ahead of it waits with the tape still. */
 const serviceLoaderDetection = () => {
     const startRequested = core.takeLoaderStartRequest();
     const active = core.takeLoaderActivity() >= LOADER_ACTIVE_READS;
     const portRead = core.takeEarReads() > 0;
-    if (startRequested && tape && !tapeIsPlaying && !autoPlaySuppressed && !tape.pulseGenerator.isAtEnd()) {
+    const trapOnly = tape && tape.isCassette && tapeTrapsEnabled;
+    if (startRequested && tape && !trapOnly && !tapeIsPlaying && !autoPlaySuppressed && !tape.pulseGenerator.isAtEnd()) {
         setTapePlaying(true, true);
     } else if (tapeIsPlaying && tapeAutoPlayed) {
         if (active) loaderIdleFrames = 0;
@@ -111,6 +642,22 @@ const postTapeInfo = () => {
         totalBytes: tape.totalBytes,
         positionMs: tapePositionTstates / TSTATES_PER_MS,
         blockIndex: tape.nextBlockIndex,
+        kind: tape.isCassette ? 'cassette' : 'game',
+        lengthMs: tapeLengthMs(),
+        blankFromMs: tape.isCassette ? tape.blankFromMs : tape.totalMs,
+        writeProtect: !tape.isCassette || tape.writeProtect,
+    });
+};
+
+/* A seek has moved the tape. Moving it is all that happens here: something
+ * still has to read it, so the UI is told whether a load is already in
+ * flight, to know whether one needs starting. */
+const postTapeSeeked = (quiet) => {
+    postMessage({
+        message: 'tapeSeeked',
+        loadInFlight: framesSinceTapeTrap < TRAP_IDLE_FRAMES || tapeIsPlaying,
+        quiet: !!quiet,
+        kind: tape ? (tape.isCassette ? 'cassette' : 'game') : null,
     });
 };
 
@@ -133,6 +680,8 @@ const loadCore = (baseUrl) => {
         workerFrameData = memoryData.subarray(core.FRAME_BUFFER, FRAME_BUFFER_SIZE);
         registerPairs = new Uint16Array(core.memory.buffer, core.REGISTERS, 12);
         tapePulses = new Uint16Array(core.memory.buffer, core.TAPE_PULSES, core.TAPE_PULSES_LENGTH);
+        // the tape recorder may have been connected before the core was ready
+        core.setSaveTraps(deckConnected);
 
         postMessage({
             'message': 'ready',
@@ -334,24 +883,53 @@ const takeSnapshot = () => {
         zxPrinter: printerEnabled,
         printer: { mechanism: core.getPrinterMechanism(), phase: core.getPrinterPhase() },
         drives,
+        tapePositionMs: tapePositionMs(),
+        // the cassette in the tape recorder, as it is now: it may hold recordings not posted back yet
+        cassette: (tape && tape.isCassette)
+            ? { token: cassetteToken, data: tape.toTZX(), positionMs: tapePositionMs(), writeProtect: tape.writeProtect }
+            : null,
     };
 };
 
 const trapTapeLoad = () => {
     if (!tape) return;
+    // Winding lifts the tape off the head, and recording plays nothing back.
+    if (deckMoving()) return;
     framesSinceTapeTrap = 0;
     const beforeIndex = tape.nextBlockIndex;
-    const block = tape.getNextLoadableBlock();
-    if (!block) return;
+    const fromMs = tapePositionMs();
+    const block = tape.getNextLoadableBlock(fromMs);
+    if (!block) {
+        // Nothing more on the tape: LOAD waits, as it would for a real one.
+        if (deckConnected && (nothingAheadAt !== fromMs)) {
+            nothingAheadAt = fromMs;
+            postDeckHint('nothingAhead', {});
+        }
+        return;
+    }
 
-    // Advance the cassette counter: an instant (trapped) load jumps straight to
-    // the next block's start, or to the end once we wrap past the last block.
-    if (tape.blockStartMs) {
+    if (tape.isCassette) {
+        // A cassette's counter moves on to the end of the block just read.
+        tapePositionTstates = tape.lastLoadedEndMs * TSTATES_PER_MS;
+        tape.seekToMs(tape.lastLoadedEndMs);
+        if (tapeIsPlaying) core.resetTapePulseBuffer();
+        postTapePosition();
+    } else if (tape.blockStartMs) {
+        // Advance the cassette counter: an instant (trapped) load jumps straight to
+        // the next block's start, or to the end once we wrap past the last block.
         const afterIndex = tape.nextBlockIndex;
         tapePositionTstates = (afterIndex > beforeIndex && afterIndex < tape.blockStartMs.length)
             ? tape.blockStartMs[afterIndex] * TSTATES_PER_MS
             : tape.totalMs * TSTATES_PER_MS;
+        // In the recorder, a later part played in real time carries on from here.
+        if (deckConnected && !tapeIsPlaying) tape.seekToMs(tapePositionMs());
         postTapePosition();
+    }
+    if (deckConnected) {
+        framesSinceTrapLoad = 0;
+        nothingAheadAt = null;
+        deckJump = { fromMs, toMs: tapePositionMs(), kind: 'load' };
+        postDeckStatus();
     }
 
     /* get expected block type and load vs verify flag from AF' */
@@ -420,6 +998,12 @@ const trapTapeLoad = () => {
 const runEmulatedFrame = () => {
     if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
 
+    updateDeckSound();
+    if (pendingDeckSound) {
+        if ((performance.now() - pendingDeckSound.time) < DECK_SOUND_STALE_MS) core.playDeckSound(pendingDeckSound.kind);
+        pendingDeckSound = null;
+    }
+
     if (tape && tapeIsPlaying) {
         const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
         const tapePulseWriteIndex = core.getTapePulseWriteIndex();
@@ -431,11 +1015,15 @@ const runEmulatedFrame = () => {
         tapePositionTstates += tstatesGenerated;
         framesSincePositionPost++;
         if (tapeFinished || framesSincePositionPost >= 5) postTapePosition();
-        if (tapeFinished) setTapePlaying(false);
+        if (tapeFinished) {
+            setTapePlaying(false);
+            deckSound(4);  // the recorder's auto stop
+        }
     }
 
     let status = core.runFrame();
     while (status) {
+        inFrame = true;
         switch (status) {
             case 1:
                 stopped = true;
@@ -443,14 +1031,22 @@ const runEmulatedFrame = () => {
             case 2:
                 trapTapeLoad();
                 break;
+            case 3:
+                trapTapeSave();
+                break;
+            case 4:
+                trapSaveReturn();
+                break;
             default:
                 stopped = true;
                 throw("runFrame returned unexpected result: " + status);
         }
+        inFrame = false;
 
         status = core.resumeFrame();
     }
     serviceLoaderDetection();
+    serviceDeck();
     serviceMicrodrives();
     servicePrinter();
 };
@@ -516,9 +1112,11 @@ onmessage = (e) => {
             core.setKempstonState(e.data.state);
             break;
         case 'setMachineType':
+            if (pendingSave) finishPendingSave(null);
             core.setMachineType(e.data.type);
             break;
         case 'reset':
+            if (pendingSave) finishPendingSave(null);
             core.reset();
             break;
         case 'loadMemory':
@@ -546,6 +1144,7 @@ onmessage = (e) => {
             }
             const transfers = Object.values(snapshot.memoryPages).map(p => p.buffer)
                 .concat(snapshot.drives.map(d => d.data.buffer));
+            if (snapshot.cassette) transfers.push(snapshot.cassette.data.buffer);
             postMessage({ message: 'snapshot', id: e.data.id, snapshot }, transfers);
             break;
         }
@@ -575,6 +1174,7 @@ onmessage = (e) => {
             break;
         }
         case 'loadSnapshot':
+            if (pendingSave) finishPendingSave(null);
             try {
                 loadSnapshot(e.data.snapshot);
             } catch (err) {
@@ -588,15 +1188,22 @@ onmessage = (e) => {
             });
             break;
         case 'openTAPFile':
+        case 'openTZXFile': {
+            let opened;
             try {
-                tape = new TAPFile(e.data.data);
+                opened = (e.data.message === 'openTAPFile') ? new TAPFile(e.data.data) : new TZXFile(e.data.data);
             } catch (err) {
                 postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'tape', error: String(err) });
                 break;
             }
+            // A cassette in the recorder makes way, and goes back to the box.
+            releaseTape('replaced');
+            tape = opened;
+            tape.wrap = !deckConnected;
             resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
+            nothingAheadAt = null;
             postMessage({
                 message: 'fileOpened',
                 id: e.data.id,
@@ -604,61 +1211,139 @@ onmessage = (e) => {
                 quiet: !!e.data.quiet,
             });
             postTapeInfo();
+            if (deckConnected) postDeckStatus();
             break;
-        case 'openTZXFile':
+        }
+        case 'insertCassette': {
+            /* A cassette into the tape recorder: a TZX file as runtime/cassette.js
+             * writes it, `token` the UI's id for it, wound to where it was left. */
+            let cassette;
             try {
-                tape = new TZXFile(e.data.data);
+                cassette = new CassetteTape(e.data.data, { writeProtect: !!e.data.writeProtect });
             } catch (err) {
-                postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'tape', error: String(err) });
+                postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'cassette', error: String((err && err.message) || err) });
                 break;
             }
+            releaseTape('replaced');
+            tape = cassette;
+            cassetteToken = e.data.token ?? null;
+            cassetteSeq = e.data.seq ?? null;
+            cassetteDirty = false;
             resetTapeState();
-            tapePositionTstates = 0;
+            const positionMs = Math.max(0, Math.min(Number(e.data.positionMs) || 0, cassette.lengthMs));
+            tapePositionTstates = positionMs * TSTATES_PER_MS;
+            tape.seekToMs(positionMs);
+            if (core) core.resetTapePulseBuffer();
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
-            postMessage({
-                message: 'fileOpened',
-                id: e.data.id,
-                mediaType: 'tape',
-                quiet: !!e.data.quiet,
-            });
+            nothingAheadAt = null;
+            postMessage({ message: 'fileOpened', id: e.data.id, mediaType: 'cassette', quiet: true });
             postTapeInfo();
+            postDeckStatus();
             break;
+        }
         case 'seekTape':
             if (tape) {
-                tape.seekToBlock(e.data.index);
                 autoPlaySuppressed = false;
+                if (deckConnected) {
+                    // The recorder winds there, and reports the seek on arriving.
+                    windTo(tape.blockStartMs[e.data.index] || 0, { quiet: !!e.data.quiet }, !!e.data.quiet);
+                    break;
+                }
+                tape.seekToBlock(e.data.index);
                 tapePositionTstates = (tape.blockStartMs[e.data.index] || 0) * TSTATES_PER_MS;
                 if (core) core.resetTapePulseBuffer();
                 postTapePosition();
-                /* Moving the tape is all we can do here: something still has to
-                 * read it. Tell the UI whether a load is already in flight, so
-                 * it knows whether one needs starting. */
-                postMessage({
-                    message: 'tapeSeeked',
-                    loadInFlight: framesSinceTapeTrap < TRAP_IDLE_FRAMES || tapeIsPlaying,
-                    quiet: !!e.data.quiet,
-                });
+                postTapeSeeked(e.data.quiet);
             }
             break;
+        case 'windTape':
+            // The recorder winds to a position, e.g. a part picked from its panel.
+            if (tape) windTo(Number(e.data.positionMs) || 0, null, !!e.data.quiet);
+            break;
         case 'ejectTape':
+            releaseTape(e.data.reason || 'eject');
             tape = null;
             resetTapeState();
             tapePositionTstates = 0;
             framesSinceTapeTrap = TRAP_IDLE_FRAMES;
+            nothingAheadAt = null;
             if (core) core.resetTapePulseBuffer();
             postMessage({ message: 'tapeEjected' });
+            if (deckConnected) postDeckStatus();
             break;
 
         case 'playTape':
-            if (tape) {
+            if (deckConnected) {
+                pressDeckKey('play');
+            } else if (tape) {
                 autoPlaySuppressed = false;
                 setTapePlaying(true);
             }
             break;
         case 'stopTape':
-            if (tape) {
+            if (deckConnected) {
+                pressDeckKey('stop');
+            } else if (tape) {
                 autoPlaySuppressed = true;
                 setTapePlaying(false);
+            }
+            break;
+        case 'deckKey':
+            pressDeckKey(e.data.key);
+            break;
+        case 'flushCassette':
+            // The UI wants the cassette's latest bytes kept now, e.g. to show it in the box.
+            flushCassette(false);
+            break;
+        case 'setTapeDeck': {
+            /* Connects or disconnects the tape recorder. Disconnecting stops
+             * recording and winding, and a cassette in it has been parked by
+             * the UI first; a game tape stays in, playing as it was. */
+            const connected = !!e.data.connected;
+            if (connected === deckConnected) break;
+            if (!connected) {
+                if (deckMode === 'record') endRecording();
+                if (deckWinding()) endWind(false);
+                deckMode = 'stop';
+                deckAuto = false;
+            }
+            deckConnected = connected;
+            if (connected && tapeIsPlaying) deckMode = 'play';
+            // before the core has loaded, loadCore passes this on
+            if (core) core.setSaveTraps(connected);
+            if (tape && !tape.isCassette) {
+                tape.wrap = !connected;
+                // Connected, the tape carries on from where the counter says it is.
+                if (connected && !tapeIsPlaying) tape.seekToMs(tapePositionMs());
+            }
+            updateCoreTapeState();
+            updateDeckSound();
+            postMotor();
+            postDeckStatus();
+            if (tape) postTapeInfo();
+            break;
+        }
+        case 'setCassetteWriteProtect':
+            if (tape && tape.isCassette) {
+                tape.writeProtect = !!e.data.value;
+                if (tape.writeProtect && (deckMode === 'record')) {
+                    endRecording();
+                    deckSound(2);
+                }
+                postTapeInfo();
+                postDeckStatus();
+            }
+            break;
+        case 'undoCassetteRecording':
+            // Puts back what the last recording erased, and takes the recording off.
+            if (tape && tape.isCassette && undoBlocks && (deckMode !== 'record')) {
+                tape.restoreBlocks(undoBlocks);
+                tape.seekToMs(tapePositionMs());
+                undoBlocks = null;
+                cassetteDirty = true;
+                flushCassette(false);
+                postTapeInfo();
+                postDeckStatus();
             }
             break;
         case 'setTapeTraps':

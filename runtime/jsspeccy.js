@@ -15,6 +15,7 @@ import { isPlayZXAvailable } from './playzx-session.js';
 import { validateMDRFile } from './mdr.js';
 import { createMicrodriveDock } from './microdrive-ui.js';
 import { createPrinter } from './printer-ui.js';
+import { createTapeDeck } from './tape-deck-ui.js';
 import { isSessionFile, buildSessionFile, readSessionFile, confirmRestore, chooseSaveTarget, writeSaveTarget } from './session.js';
 
 import sessionSaveIcon from './icons/session-save.svg';
@@ -27,6 +28,7 @@ import exitFullscreenIcon from './icons/exitfullscreen.svg';
 import tapePlayIcon from './icons/tape_play.svg';
 import tapePauseIcon from './icons/tape_pause.svg';
 import ejectIcon from './icons/eject.svg';
+import tapeRecorderIcon from './icons/tape-recorder.svg';
 import keyboardIcon from './icons/keyboard.svg';
 import microdriveIcon from './icons/microdrive.svg';
 import printerIcon from './icons/printer.svg';
@@ -83,6 +85,24 @@ class Emulator extends EventEmitter {
         this.tapePositionMs = 0;
         this.tapeBlockIndex = 0; // block the tape is parked on: what the next load reads
         this.tapeFile = null;    // {name, data} of the loaded tape, for saving a session
+        /* The tape recorder (see runtime/tape-deck-ui.js). While it is
+         * connected, the tape slot is the recorder: tapeKind says what is in
+         * it, 'game' (an opened tape) or 'cassette' (one SAVE records onto),
+         * or null. deckStatus is the recorder's last report: its keys, the
+         * tape's position and speed (deckStatusTime is when it came). */
+        this.tapeDeckConnected = false;
+        this.tapeKind = null;
+        this.tapeLengthMs = 0;
+        this.tapeBlankFromMs = 0;
+        this.tapeWriteProtect = false;
+        this.deckStatus = null;
+        this.deckStatusTime = 0;
+        /* Tapes and cassettes sent to the worker whose fileOpened hasn't come
+         * back yet (by file-open id), and the latest of them; and what the
+         * files given in opts.openUrl are opened by (a promise), if any. */
+        this.tapeOpenIDs = new Set();
+        this.lastTapeOpenID = null;
+        this.startupOpened = Promise.resolve();
         this.rom48Variant = 'standard';  // which 48K ROM is in page 10: 'standard' or 'gw03'
         this.nextSnapshotID = 0;
         this.snapshotResolutions = {};
@@ -133,7 +153,7 @@ class Emulator extends EventEmitter {
                         this.setMachine(opts.machine || 48);
                         this.setTapeTraps(this.tapeTrapsEnabled);
                         if (opts.openUrl) {
-                            this.openUrlList(opts.openUrl).catch(err => {
+                            this.startupOpened = this.openUrlList(opts.openUrl).catch(err => {
                                 alert(err);
                             }).then(() => {
                                 if (opts.autoStart) this.start();
@@ -170,6 +190,10 @@ class Emulator extends EventEmitter {
                     }
                     break;
                 case 'fileOpened':
+                    if (this.tapeOpenIDs.delete(e.data.id) && !e.data.error) {
+                        // what the tape slot holds now, ahead of the tapeInfo that follows
+                        this.tapeKind = (e.data.mediaType == 'cassette') ? 'cassette' : 'game';
+                    }
                     if (e.data.error) {
                         this.fileOpenPromiseResolutions[e.data.id]({ mediaType: e.data.mediaType, error: e.data.error });
                         break;
@@ -180,6 +204,8 @@ class Emulator extends EventEmitter {
                             this.playTape();
                         }
                     }
+                    // A cassette takes the place of an opened tape, unless another was opened since.
+                    if ((e.data.mediaType == 'cassette') && (e.data.id === this.lastTapeOpenID)) this.tapeFile = null;
                     this.fileOpenPromiseResolutions[e.data.id]({
                         mediaType: e.data.mediaType,
                     });
@@ -216,6 +242,10 @@ class Emulator extends EventEmitter {
                     this.tapeTotalBytes = e.data.totalBytes || 0;
                     this.tapePositionMs = e.data.positionMs || 0;
                     this.tapeBlockIndex = e.data.blockIndex || 0;
+                    this.tapeKind = e.data.kind || null;
+                    this.tapeLengthMs = e.data.lengthMs || 0;
+                    this.tapeBlankFromMs = e.data.blankFromMs || 0;
+                    this.tapeWriteProtect = !!e.data.writeProtect;
                     this.emit('tapeInfo');
                     break;
                 case 'tapePosition':
@@ -226,6 +256,9 @@ class Emulator extends EventEmitter {
                 case 'tapeSeeked':
                     if (e.data.quiet) {
                         // restoring a session: the tape just moves
+                    } else if (e.data.kind == 'cassette') {
+                        // a cassette is loaded from by the user's own LOAD: booting the
+                        // tape loader would replace the program they are working on
                     } else if (!this.tapeTrapsEnabled) {
                         this.playTape();
                     } else if (!e.data.loadInFlight && this.autoLoadTapes) {
@@ -241,7 +274,29 @@ class Emulator extends EventEmitter {
                     this.tapePositionMs = 0;
                     this.tapeBlockIndex = 0;
                     this.tapeIsPlaying = false;
+                    this.tapeKind = null;
+                    this.tapeLengthMs = 0;
+                    this.tapeBlankFromMs = 0;
+                    this.tapeWriteProtect = false;
                     this.emit('tapeEjected');
+                    break;
+                case 'tapeDeckStatus':
+                    this.deckStatus = e.data;
+                    this.deckStatusTime = performance.now();
+                    this.tapePositionMs = e.data.positionMs || 0;
+                    this.emit('tapeDeckStatus', e.data);
+                    break;
+                case 'cassetteData':
+                    // A cassette's bytes after recording on it (a TZX file, as an
+                    // ArrayBuffer), for whoever keeps cassettes to store against the token.
+                    this.emit('cassetteData', e.data);
+                    break;
+                case 'cassetteEjected':
+                    // A cassette left the recorder: e.data {token, positionMs, reason}.
+                    this.emit('cassetteEjected', e.data);
+                    break;
+                case 'deckHint':
+                    this.emit('deckHint', e.data);
                     break;
                 case 'microdriveStatus':
                     this.microdriveMotors = e.data.motors;
@@ -493,6 +548,18 @@ class Emulator extends EventEmitter {
         });
     }
 
+    // A file-open id for a tape or cassette, noted until its fileOpened comes back.
+    nextTapeOpenID() {
+        const fileID = this.nextFileOpenID++;
+        this.tapeOpenIDs.add(fileID);
+        this.lastTapeOpenID = fileID;
+        return fileID;
+    }
+    // Whether a tape or cassette is on its way into the tape slot.
+    get tapeOpening() {
+        return this.tapeOpenIDs.size > 0;
+    }
+
     /* Inserts a tape. opts.name is its file name, kept with a copy of the
      * bytes for saving a session (a tape opened without a name isn't
      * saved); opts.quiet (restoring a session) inserts it without
@@ -500,7 +567,7 @@ class Emulator extends EventEmitter {
     openTAPFile(data, opts) {
         opts = opts || {};
         this.tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
-        const fileID = this.nextFileOpenID++;
+        const fileID = this.nextTapeOpenID();
         this.worker.postMessage({
             message: 'openTAPFile',
             id: fileID,
@@ -515,7 +582,7 @@ class Emulator extends EventEmitter {
     openTZXFile(data, opts) {
         opts = opts || {};
         this.tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
-        const fileID = this.nextFileOpenID++;
+        const fileID = this.nextTapeOpenID();
         this.worker.postMessage({
             message: 'openTZXFile',
             id: fileID,
@@ -728,10 +795,67 @@ class Emulator extends EventEmitter {
             quiet: !!quiet,
         });
     }
-    ejectTape() {
+    /* `reason` is passed back with a cassette that leaves the recorder:
+     * 'eject' unless given, or 'parked' when the recorder is switched off. */
+    ejectTape(reason) {
         this.worker.postMessage({
             message: 'ejectTape',
+            reason: reason || 'eject',
         });
+        this.tapeKind = null;  // as it will be, ahead of the tapeEjected that follows
+    }
+
+    /* Connects or disconnects the tape recorder. While it is connected,
+     * SAVE records onto a cassette in it. */
+    setTapeDeck(connected) {
+        this.tapeDeckConnected = connected;
+        this.worker.postMessage({ message: 'setTapeDeck', connected });
+        this.emit('setTapeDeck', connected);
+    }
+    /* Puts a cassette (a TZX file, as runtime/cassette.js writes it) into the
+     * tape recorder, in place of whatever tape is in. opts.token is the
+     * caller's id for it, handed back with its bytes after recording, and
+     * opts.seq a number telling this insert from any other of the same
+     * cassette; opts.positionMs is where the tape was left. Resolves like
+     * openTAPFile. */
+    insertCassette(data, opts) {
+        opts = opts || {};
+        const bytes = (data instanceof ArrayBuffer) ? new Uint8Array(data) : data;
+        const buf = bytes.slice(0).buffer;
+        const fileID = this.nextTapeOpenID();
+        this.worker.postMessage({
+            message: 'insertCassette',
+            id: fileID,
+            data: buf,
+            token: opts.token ?? null,
+            seq: opts.seq ?? null,
+            positionMs: opts.positionMs || 0,
+            writeProtect: !!opts.writeProtect,
+        }, [buf]);
+        return new Promise((resolve) => {
+            this.fileOpenPromiseResolutions[fileID] = resolve;
+        });
+    }
+    /* Presses one of the recorder's keys: 'play', 'record', 'rewind', 'ffwd'
+     * or 'stop'. */
+    deckKey(key) {
+        this.worker.postMessage({ message: 'deckKey', key });
+    }
+    /* Winds the tape to `positionMs`, visibly unless `quiet`. */
+    windTape(positionMs, quiet) {
+        this.worker.postMessage({ message: 'windTape', positionMs, quiet: !!quiet });
+    }
+    setCassetteWriteProtect(value) {
+        this.worker.postMessage({ message: 'setCassetteWriteProtect', value: !!value });
+    }
+    // Takes back the last recording that erased something, restoring what it erased.
+    undoCassetteRecording() {
+        this.worker.postMessage({ message: 'undoCassetteRecording' });
+    }
+    /* Has the worker post the cassette's bytes back if it has been recorded
+     * on since they were last posted; a barrier() after it waits for them. */
+    flushCassette() {
+        this.worker.postMessage({ message: 'flushCassette' });
     }
     keyDown(row, mask) {
         this.worker.postMessage({ message: 'keyDown', row, mask });
@@ -1124,6 +1248,9 @@ window.JSSpeccy = (container, opts) => {
         emu.on('openedTapeFile', () => {
             tapeButton.enable();
         });
+        emu.on('tapeInfo', () => {
+            tapeButton.enable();
+        });
         emu.on('playingTape', () => {
             tapeButton.setIcon(tapePauseIcon);
             tapeButton.setLabel('Stop tape');
@@ -1135,9 +1262,11 @@ window.JSSpeccy = (container, opts) => {
 
         /* Cassette counter: shows tape position / total (advancing as the tape
          * loads, instantly under tape-traps or gradually in real time), and the
-         * loaded game's size. Click it to jump to any segment (a portion of the
-         * game split at the silences between blocks), which also supports the
-         * multi-load games whose parts load one at a time. */
+         * loaded game's size. On the compact toolbar it shows the position
+         * alone, so the toolbar stays on one row. Click it to jump to any
+         * segment (a portion of the game split at the silences between
+         * blocks), which also supports the multi-load games whose parts load
+         * one at a time. */
         const fmtMs = (ms) => {
             const s = Math.round(ms / 1000);
             return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
@@ -1163,10 +1292,14 @@ window.JSSpeccy = (container, opts) => {
             });
         });
         counterButton.disable();
+        let tapeIn = false;
         const updateCounter = () => {
-            counterButton.setText(fmtMs(emu.tapePositionMs) + '/' + fmtMs(emu.tapeTotalMs));
+            if (!tapeIn) return;
+            counterButton.setText(fmtMs(emu.tapePositionMs) + (ui.toolbar.compact ? '' : '/' + fmtMs(emu.tapeTotalMs)));
         };
+        ui.on('setZoom', updateCounter);
         emu.on('tapeInfo', () => {
+            tapeIn = true;
             counterButton.enable();
             updateCounter();
             counterButton.setLabel(
@@ -1185,6 +1318,7 @@ window.JSSpeccy = (container, opts) => {
             ejectButton.enable();
         });
         emu.on('tapeEjected', () => {
+            tapeIn = false;
             ui.hideTapePopup();
             counterButton.setText('--:--');
             counterButton.setLabel('Cassette counter');
@@ -1192,6 +1326,28 @@ window.JSSpeccy = (container, opts) => {
             ejectButton.disable();
             tapeButton.disable();
         });
+
+        /* Tape recorder: stands to the left of the Spectrum above the
+         * Microdrives, joined to it by its EAR and MIC leads. The button beside
+         * the eject button connects it or disconnects it. While connected, the
+         * tape buttons above work its keys, whatever tape is in goes into it,
+         * and SAVE records onto a cassette of your own (see
+         * runtime/tape-deck-ui.js). Hidden in fullscreen, like the docks. */
+        let tapeDeck = null;
+        if (!opts.sandbox) {
+            tapeDeck = createTapeDeck(ui, emu);
+            const tapeDeckButton = ui.toolbar.addButton(tapeRecorderIcon, {label: 'Connect tape recorder'}, () => {
+                tapeDeck.toggle();
+                emu.focus();
+            });
+            emu.on('setTapeDeck', (connected) => {
+                tapeDeckButton.setLabel(connected ? 'Disconnect tape recorder' : 'Connect tape recorder');
+            });
+            ui.on('setZoom', (factor) => {
+                tapeDeck.setFullscreen(factor === 'fullscreen');
+            });
+            fileMenu.addItem('Tape cassettes…', () => tapeDeck.openBox());
+        }
 
         const fullscreenButton = ui.toolbar.addButton(
             fullscreenIcon,
@@ -1287,7 +1443,8 @@ window.JSSpeccy = (container, opts) => {
          * the click, then asks where to put the file. Restoring - from the
          * toolbar, File -> Open, or a session file dropped on the Spectrum -
          * asks first, then replaces the machine, tape, printout and
-         * settings, and adds the session's cartridges to the box. */
+         * settings, and adds the session's cartridges and cassettes to their
+         * boxes. */
         if (!opts.sandbox) {
             let sessionBusy = false;
             const showKeyboard = (shown) => {
@@ -1336,9 +1493,10 @@ window.JSSpeccy = (container, opts) => {
                                 keyboardShown: keyboardWanted,
                                 zoom: ui.zoom,
                             },
-                            tape: emu.tapeFile ? { name: emu.tapeFile.name, data: emu.tapeFile.data, block: emu.tapeBlockIndex } : null,
+                            tape: emu.tapeFile ? { name: emu.tapeFile.name, data: emu.tapeFile.data, block: emu.tapeBlockIndex, positionMs: snapshot.tapePositionMs } : null,
                             printer: printer.sessionSave(),
                             microdrives: microdriveDock.sessionSave(snapshot.drives),
+                            tapeRecorder: tapeDeck.sessionSave(snapshot.cassette),
                             gameName: emu.loadedGameName,
                             power: emu.isInitiallyPaused ? 'off' : (emu.isRunning ? 'running' : 'paused'),
                         };
@@ -1348,6 +1506,7 @@ window.JSSpeccy = (container, opts) => {
                     if (target === false) return;
                     const parts = await captured;
                     parts.microdrives = await parts.microdrives;
+                    parts.tapeRecorder = await parts.tapeRecorder;
                     parts.printer.picture = await printer.sessionPicture(parts.printer.rows);
                     const blob = await buildSessionFile(parts);
                     await writeSaveTarget(target, blob, fileName);
@@ -1362,7 +1521,8 @@ window.JSSpeccy = (container, opts) => {
             /* The machine is paused for the whole restore, so the old program
              * can't act on the new tape, printout or cartridges. The snapshot
              * goes in first, with the Interface 1 connected or not as saved
-             * so that its paging applies; the peripherals follow. The machine
+             * so that its paging applies; the peripherals follow, the tape
+             * recorder after the tape, since it may hold the tape. The machine
              * is then left as it was when the session was saved: switched
              * off, paused showing its screen, or running. */
             sessions.restore = async (zip) => {
@@ -1398,8 +1558,14 @@ window.JSSpeccy = (container, opts) => {
                             : emu.openTAPFile(session.tape.data, tapeOpts));
                         if (opened && opened.error) throw new Error(opened.error);
                         emu.seekTape(session.tape.block, true);
-                    } else if (emu.tapeFile || emu.tapeTotalMs) {
+                    } else if ((emu.tapeFile || emu.tapeTotalMs) && (session.tapeRecorder || (emu.tapeKind !== 'cassette'))) {
+                        // A session from before the tape recorder leaves a cassette of yours in it.
                         emu.ejectTape();
+                    }
+                    // A session from before the tape recorder leaves it as it is.
+                    if (session.tapeRecorder) await tapeDeck.sessionRestore(session.tapeRecorder);
+                    if (session.tape && emu.tapeDeckConnected && (session.tape.positionMs !== null)) {
+                        emu.windTape(session.tape.positionMs, true);
                     }
                     emu.setLoadedGame(session.gameName);
                     restored = true;

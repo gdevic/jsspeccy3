@@ -145,6 +145,10 @@ let rom1Page:u8 = 9;
 let betadiskEnabled:bool = false;
 let betadiskROMActive:bool = false;
 let tapeTrapsEnabled:bool = true;
+// The tape recorder is connected: SA-BYTES is caught once it has the bytes to save
+let saveTrapsEnabled:bool = false;
+// A SAVE is being recorded in real time: SA-BYTES is caught again as it returns
+let saveReturnTrapArmed:bool = false;
 
 // ZX Interface 1: if1Enabled is the user-facing "is it plugged in" switch
 // (ports/paging are inert while false); if1ROMActive tracks whether the 8K
@@ -164,6 +168,28 @@ let mdrWhirrHiss:f32 = 0.0;  // low-passed noise: the tape running past the head
 let mdrWhirrClick:f32 = 0.0;  // the click of a motor starting, dying away
 let mdrWhirrRunning:bool = false;
 let mdrWhirrSeed:u32 = 7;
+
+// The tape recorder's own sounds (see deckSample)
+let deckMotor:u8 = 0;  // 0 = stopped, 1 = playing, 2 = recording
+let deckWind:f32 = 0.0;  // how fast it is winding, 0 to 1
+let deckHumLevel:f32 = 0.0;
+let deckHumPhase:f32 = 0.0;
+let deckWowPhase:f32 = 0.0;
+let deckHiss:f32 = 0.0;
+let deckWhineLevel:f32 = 0.0;
+let deckWhineHz:f32 = 180.0;
+let deckWhinePhase:f32 = 0.0;
+let deckBandLow:f32 = 0.0;  // two low-passes of the noise, their difference a band of it
+let deckBandLower:f32 = 0.0;
+let deckThump:f32 = 0.0;  // the level of a key's thump, dying away
+let deckThumpPhase:f32 = 0.0;
+let deckThumpDecayS:f32 = 0.025;
+let deckClick:f32 = 0.0;  // the level of a key's click, dying away
+let deckRattle:f32 = 0.0;  // the eject spring's rattle, dying away
+let deckRattlePhase:f32 = 0.0;
+let deckSecondClick:u32 = 0;  // samples until the eject's second click, 0 for none
+let deckSeed:u32 = 11;
+let deckSounding:bool = false;  // some sound is playing or dying away; while not, deckSample does nothing
 
 // ZX Printer (see the port handlers further down for the model)
 let zxpEnabled:bool = false;
@@ -314,6 +340,9 @@ let opcodePrefix:u8 = 0;
 let framebufferIndex = 0;
 let borderColour:u8 = 0;
 let speakerState:u8 = 0;
+let micState:u8 = 0;  // the MIC output, bit 3 of port 0xfe, faintly heard in the speaker
+let micIn:f32 = 0.0;  // its level going into the speaker, and coming out after the DC is taken off
+let micOut:f32 = 0.0;
 let selectedAYRegister:u8 = 0;
 let floatingBusValue:u8 = 0xff;
 let currentTapeTime:u32 = 0;  // time at which tape pulse pointer was last updated
@@ -481,6 +510,16 @@ export function getHalted():bool {
 }
 export function setTapeTraps(val:bool):void {
     tapeTrapsEnabled = val;
+}
+export function setSaveTraps(val:bool):void {
+    saveTrapsEnabled = val;
+    if (!val) saveReturnTrapArmed = false;
+}
+export function setSaveReturnTrap(val:bool):void {
+    saveReturnTrapArmed = val;
+}
+export function getFrameCycleCount():u32 {
+    return frameCycleCount;
 }
 export function setTapeState(inserted:bool, playing:bool):void {
     tapeInserted = inserted;
@@ -978,6 +1017,112 @@ function zxpBuzzSample():f32 {
     return zxpBuzzLevel * (pulse + ramp + (noise * 0.6));
 }
 
+/* One sample of the tape recorder's own sounds: the hum of its motor, with
+the hiss of the tape over the head, while it plays or records; a whine that
+rises with the speed while it winds; and the thump and click of a key going
+down or the keys popping up, or the latch, spring and second click of the
+door opening. All quiet, under the Spectrum's own sound. The worker sets the
+motor and winding speed every frame and starts a key's sound as it happens. */
+const DECK_HUM_VOLUME:f32 = 0.02;
+const DECK_HUM_HZ:f32 = 100.0;
+const DECK_WOW_HZ:f32 = 0.5;
+const DECK_WHINE_VOLUME:f32 = 0.03;
+const DECK_KEY_VOLUME:f32 = 0.06;
+const DECK_THUMP_HZ:f32 = 70.0;
+const DECK_RATTLE_HZ:f32 = 60.0;
+
+export function setDeckSound(motor:u8, wind:f32):void {
+    deckMotor = motor;
+    deckWind = wind;
+    if (motor || (wind > 0.0)) deckSounding = true;
+}
+
+// kind: 1 = a key goes down, 2 = the keys pop up, 3 = the door opens, 4 = the tape stops at its end
+export function playDeckSound(kind:u8):void {
+    const sampleRate:f32 = f32(samplesPerFrame) * 50.0;
+    if (kind == 1) {
+        deckThump = 1.0;
+        deckThumpDecayS = 0.025;
+        deckClick = 0.7;
+    } else if (kind == 2) {
+        deckThump = 0.55;
+        deckThumpDecayS = 0.018;
+        deckClick = 0.9;
+    } else if (kind == 3) {
+        deckThump = 0.5;
+        deckThumpDecayS = 0.02;
+        deckClick = 1.0;
+        deckRattle = 0.8;
+        deckSecondClick = u32(0.11 * sampleRate);
+    } else if (kind == 4) {
+        deckThump = 0.8;
+        deckThumpDecayS = 0.02;
+        deckClick = 0.8;
+    }
+    deckThumpPhase = 0.25;  // starting from the triangle's zero crossing
+    deckSounding = true;
+}
+
+function deckTriangle(phase:f32):f32 {
+    return (phase < 0.5) ? ((phase * 4.0) - 1.0) : (3.0 - (phase * 4.0));
+}
+
+function deckSample():f32 {
+    if (!deckSounding) return 0.0;
+    const humTarget:f32 = deckMotor ? DECK_HUM_VOLUME : 0.0;
+    const whineTarget:f32 = (deckWind > 0.0) ? (DECK_WHINE_VOLUME * (0.25 + (0.75 * deckWind))) : 0.0;
+    const keysSounding:bool = (deckThump > 0.001) || (deckClick > 0.001) || (deckRattle > 0.001) || (deckSecondClick > 0);
+    if (humTarget == 0.0 && whineTarget == 0.0 && deckHumLevel < 0.0002 && deckWhineLevel < 0.0002 && !keysSounding) {
+        deckHumLevel = 0.0;
+        deckWhineLevel = 0.0;
+        deckSounding = false;
+        return 0.0;
+    }
+    const sampleRate:f32 = f32(samplesPerFrame) * 50.0;
+    deckSeed = (deckSeed * 1664525) + 1013904223;
+    const noise:f32 = (f32(deckSeed >> 16) / 65536.0) - 0.5;
+    let out:f32 = 0.0;
+
+    // the motor eases in over 60ms and out over 150ms, its pitch wavering a little
+    deckHumLevel += (humTarget - deckHumLevel) / (((humTarget > deckHumLevel) ? 0.06 : 0.15) * sampleRate);
+    if (deckHumLevel > 0.0002) {
+        deckWowPhase += DECK_WOW_HZ / sampleRate;
+        if (deckWowPhase >= 1.0) deckWowPhase -= 1.0;
+        deckHumPhase += (DECK_HUM_HZ * (1.0 + (0.01 * deckTriangle(deckWowPhase)))) / sampleRate;
+        if (deckHumPhase >= 1.0) deckHumPhase -= 1.0;
+        deckHiss += (noise - deckHiss) * 0.2;
+        out += deckHumLevel * ((deckTriangle(deckHumPhase) * 0.5) + (deckHiss * ((deckMotor == 2) ? 2.2 : 1.5)));
+    }
+
+    // winding: the pitch glides after the speed
+    deckWhineLevel += (whineTarget - deckWhineLevel) / (0.08 * sampleRate);
+    if (deckWhineLevel > 0.0002) {
+        deckWhineHz += ((180.0 + (1400.0 * deckWind)) - deckWhineHz) / (0.12 * sampleRate);
+        deckWhinePhase += deckWhineHz / sampleRate;
+        if (deckWhinePhase >= 1.0) deckWhinePhase -= 1.0;
+        deckBandLow += (noise - deckBandLow) * 0.35;
+        deckBandLower += (deckBandLow - deckBandLower) * 0.04;
+        out += deckWhineLevel * ((deckTriangle(deckWhinePhase) * 0.6) + ((deckBandLow - deckBandLower) * 2.0));
+    }
+
+    if (keysSounding) {
+        if (deckSecondClick > 0) {
+            deckSecondClick--;
+            if (deckSecondClick == 0) deckClick = 0.8;
+        }
+        deckThumpPhase += DECK_THUMP_HZ / sampleRate;
+        if (deckThumpPhase >= 1.0) deckThumpPhase -= 1.0;
+        deckRattlePhase += DECK_RATTLE_HZ / sampleRate;
+        if (deckRattlePhase >= 1.0) deckRattlePhase -= 1.0;
+        out += DECK_KEY_VOLUME * ((deckThump * deckTriangle(deckThumpPhase)) + (deckClick * noise * 2.0)
+            + (deckRattle * noise * deckTriangle(deckRattlePhase)));
+        deckThump -= deckThump / (deckThumpDecayS * sampleRate);
+        deckClick -= deckClick / (0.003 * sampleRate);
+        deckRattle -= deckRattle / (0.04 * sampleRate);
+    }
+    return out;
+}
+
 export function readPort(addr:u16):u8 {
     /* apply pre-read contention */
     const page:u8 = memoryPageReadMap[addr >> 14];
@@ -1074,6 +1219,7 @@ export function writePort(addr:u16, val:u8):void {
         updateAudioBuffer(t);
         borderColour = val & 0x07;
         speakerState = (val & 0x10) >> 4;
+        micState = (val & 0x08) >> 3;
     } else if (!(addr & 0x8002)) {
         /* 128/+2 paging */
         if (!pagingLocked) {
@@ -1169,13 +1315,31 @@ function updateAudioBuffer(targetTime:u32):void {
     updateAudioBufferInner(targetTime);
 }
 
+const MIC_LEVEL:f32 = 0.08;
+
 function updateAudioBufferInner(targetTime:u32):void {
     /* Fill the audio buffer up to the given target tstate number, using the current state
     of the speaker, AY and tape. targetTime is chosen to be a small enough increment that
     no changes of state (including new tape pulses) occur in this timespan. */
+    if (targetTime < lastAudioT) {
+        /* The clock went back (the T-state count was set, e.g. by a
+        snapshot): carry on from there, rather than let the unsigned
+        difference wrap round into a huge number of samples. */
+        lastAudioT = targetTime;
+        return;
+    }
     microslicesSinceLastSample += (targetTime - lastAudioT) * samplesPerFrame;
     while (microslicesSinceLastSample >= frameCycleCount) {
-        const speakerLevel:f32 = (speakerState ? 0.5 : 0.0) + (tapeLevel ? 0.25 : 0.0);
+        /* MIC reaches the speaker too, faintly, as on a real 48K, so a SAVE is
+        heard. Its DC is taken off: LOAD holds MIC high throughout, and
+        would otherwise shift the speaker's level for as long as it runs. Once
+        it has died away it is set to 0, since otherwise it settles on a
+        denormal value, which makes every sample after it slow to work out. */
+        const micNow:f32 = micState ? MIC_LEVEL : 0.0;
+        micOut = (micNow - micIn) + (0.995 * micOut);
+        if ((micOut < 0.000001) && (micOut > -0.000001)) micOut = 0.0;
+        micIn = micNow;
+        const speakerLevel:f32 = (speakerState ? 0.5 : 0.0) + (tapeLevel ? 0.25 : 0.0) + micOut;
 
         toneGeneratorACounter -= ayCyclesPerSample;
         while (toneGeneratorACounter < 0) {
@@ -1253,7 +1417,7 @@ function updateAudioBufferInner(targetTime:u32):void {
         const levelB:f32 = ayVolumeLevels[finalVolumeB];
         const levelC:f32 = ayVolumeLevels[finalVolumeC];
 
-        const peripherals:f32 = zxpBuzzSample() + mdrWhirrSample();
+        const peripherals:f32 = zxpBuzzSample() + mdrWhirrSample() + deckSample();
 
         audioBufferLeft[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.86603 + levelB * 0.5 + levelC * 0.70711 + peripherals;
         audioBufferRight[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.5 + levelB * 0.86603 + levelC * 0.70711 + peripherals;
@@ -1566,6 +1730,9 @@ function recalculateAYCyclesPerSample():void {
 /* status codes returned from runFrame / resumeFrame:
 0 = OK (end of frame)
 1 = unrecognised opcode (should never happen...)
+2 = tape loading trap: LD-BYTES is about to read a block
+3 = tape saving trap: SA-BYTES is about to save a block
+4 = a SAVE being recorded in real time has come out of SA-BYTES
 */
 
 
@@ -1580,9 +1747,9 @@ export function runFrame():i16 {
         lastAudioT = 0;
     } else {
         /* copy any excess samples from previous frame's buffer */
-        for (i = 0; i < audioBufferPointer; i++) {
-            audioBufferLeft[i] = audioBufferLeft[samplesPerFrame + i];
-            audioBufferRight[i] = audioBufferRight[samplesPerFrame + i];
+        for (let j:u32 = 0; j < audioBufferPointer; j++) {
+            audioBufferLeft[j] = audioBufferLeft[samplesPerFrame + j];
+            audioBufferRight[j] = audioBufferRight[samplesPerFrame + j];
         }
     }
 
@@ -1632,7 +1799,8 @@ export function resumeFrame():i16 {
     zxpLastT = t;
     lastAudioT -= frameCycleCount;
     if (lastEarReadT > -100000) lastEarReadT -= i32(frameCycleCount);
-    audioBufferPointer -= samplesPerFrame;
+    // A frame short of samples (the clock was set back) leaves none over, rather than wrapping round.
+    audioBufferPointer = (audioBufferPointer > samplesPerFrame) ? (audioBufferPointer - samplesPerFrame) : 0;
 
     return 0;
 }
@@ -1674,12 +1842,20 @@ export function runUntil(maxT:u32):i16 {
         }
 
         if (
-            (pc == 0x056b || pc == 0x0111)
+            (pc == 0x056b || pc == 0x0111 || pc == 0x04d0 || pc == 0x053f)
             && (memoryPageReadMap[0] == 9 || memoryPageReadMap[0] == 10)
-            && tapeTrapsEnabled && willTrap
+            && willTrap
         ) {
-            // tape loading trap
-            return 2;
+            if (pc == 0x04d0) {
+                // tape saving trap: SA-FLAG, with the flag byte in A, the start in IX and the length in DE
+                if (saveTrapsEnabled) return 3;
+            } else if (pc == 0x053f) {
+                // SA/LD-RET, which SA-BYTES returns through
+                if (saveReturnTrapArmed) return 4;
+            } else if (tapeTrapsEnabled) {
+                // tape loading trap
+                return 2;
+            }
         }
         willTrap = true;
 

@@ -100,7 +100,7 @@ const RAINBOW_SLOPE = 0.33;
  * the front right corner of the top, and a shallow front face holding the
  * red LED and the cartridge slot. An inserted cartridge shows as its label
  * end pushed into the slot, standing slightly proud of the front face. */
-const DRIVE_W = 66, DRIVE_H = 72;
+export const DRIVE_W = 66, DRIVE_H = 72;
 export const DOCK_SCALE = 1.2; // drawn size relative to the display, before the zoom factor
 const TOP_Y = 1, STEP_Y = 25, FRONT_Y = 57, BOTTOM_Y = 70;
 
@@ -232,7 +232,7 @@ function buildDriveIcon(driveIndex) {
  * side of the Spectrum, ending in a small black plug. RIBBON_PLUG_Y is the
  * plug's vertical centre in drive units, which the dock lines up with the
  * toolbar strip. */
-const RIBBON_W = 26;
+export const RIBBON_W = 26;
 const RIBBON_Y0 = 11, RIBBON_Y1 = 7, RIBBON_THICK = 9;
 export const RIBBON_PLUG_Y = RIBBON_Y1 + (RIBBON_THICK / 2);
 

@@ -3,14 +3,16 @@
  *
  * A session is a snapshot in time of everything: the running machine
  * (memory, CPU, paging, sound chip), the machine and ROM chosen, the tape
- * and where it is parked, the Microdrive cartridge box and what is in each
- * drive, the printer's roll and printout, and the settings (joystick, tape
- * loading, keyboard, display size). It is saved as a ZIP of readable parts,
- * so each can also be used on its own:
+ * and where it is parked, the cassette box and which cassette is in the tape
+ * recorder, the Microdrive cartridge box and what is in each drive, the
+ * printer's roll and printout, and the settings (joystick, tape loading,
+ * keyboard, display size). It is saved as a ZIP of readable parts, so each
+ * can also be used on its own:
  *
  *   session.json               what the session holds, and the settings
  *   machine.szx                the machine, as a standard SZX snapshot
  *   tape/<name>                the tape file as it was opened
+ *   cassette/<nn>-<name>.tzx   every cassette in the box
  *   microdrive/<nn>-<name>.mdr every cartridge in the box
  *   printer/printout.bin       the printout, 32 bytes per dot row
  *   printer/printout.png       the printout as a picture
@@ -23,6 +25,7 @@ import JSZip from 'jszip';
 import { parseSZXFile, writeSZXFile } from './snapshot.js';
 import { TAPFile, TZXFile } from './tape.js';
 import { validateMDRFile } from './mdr.js';
+import { CASSETTE_MS, parseCassetteFile, writeCassetteTZX, relabel } from './cassette.js';
 
 const MANIFEST = 'session.json';
 const FORMAT = 'jsspeccy-session';
@@ -33,8 +36,18 @@ const MACHINE_NAMES = { 48: 'Spectrum 48K', 128: 'Spectrum 128K', 5: 'Pentagon 1
 const JOYSTICK_TYPES = ['none', 'kempston', 'cursor', 'sinclair1', 'sinclair2'];
 const TAPE_AUTOLOAD_MODES = ['default', 'usr0'];
 
-// A file name safe on every system, keeping it recognisable.
-const safeName = (name, fallback) => (String(name || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim() || fallback);
+/* A file name safe on every system, and short enough for any, keeping it
+ * recognisable and keeping its extension. */
+const MAX_NAME = 100;
+function safeName(name, fallback) {
+    let safe = String(name || '').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
+    if (safe.length > MAX_NAME) {
+        const dot = safe.lastIndexOf('.');
+        const extension = ((dot > 0) && ((safe.length - dot) <= 8)) ? safe.slice(dot) : '';
+        safe = safe.slice(0, MAX_NAME - extension.length).trim() + extension;
+    }
+    return safe || fallback;
+}
 
 /* Where in the ZIP the session is: '' at the top, or 'folder/' when it is
  * inside a single folder; null if the ZIP holds no session. */
@@ -59,7 +72,11 @@ export async function isSessionFile(zip) {
  *   snapshot     from Emulator.getSnapshot()
  *   settings     {machine, rom48, joystickType, joystickDevice, tapeTraps,
  *                 autoLoadTapes, tapeAutoLoadMode, keyboardShown, zoom}
- *   tape         {name, data, block} or null
+ *   tape         {name, data, block, positionMs} or null
+ *   tapeRecorder {connected, parked, cassette: id of the one in the recorder
+ *                 or null, cassettes: [{id, label, colour, writeProtect,
+ *                 positionMs, created, modified, data}]}
+ *                (`parked` when the cassette waits in a disconnected recorder)
  *   microdrives  {connected, drives: [id or null], cartridges: [{id, label,
  *                 colour, created, modified, data}]}
  *   printer      {connected, paper, saved, rows: [Uint8Array], scroll, picture: Blob or null}
@@ -76,7 +93,22 @@ export async function buildSessionFile(parts) {
     if (parts.tape) {
         const file = 'tape/' + safeName(parts.tape.name, 'tape.tzx');
         zip.file(file, parts.tape.data);
-        tape = { file, name: parts.tape.name, block: parts.tape.block };
+        tape = { file, name: parts.tape.name, block: parts.tape.block, positionMs: parts.tape.positionMs };
+    }
+
+    let tapeRecorder = null;
+    if (parts.tapeRecorder) {
+        const recorder = parts.tapeRecorder;
+        const cassettes = recorder.cassettes.map((c, i) => {
+            // labelled inside the file too, so it reads as that cassette anywhere
+            const file = `cassette/${String(i + 1).padStart(2, '0')}-${safeName(c.label, 'cassette')}.tzx`;
+            zip.file(file, relabel(c.data, c.label));
+            return {
+                id: c.id, label: c.label, colour: c.colour, writeProtect: !!c.writeProtect,
+                positionMs: c.positionMs, created: c.created, modified: c.modified, file,
+            };
+        });
+        tapeRecorder = { connected: !!recorder.connected, parked: !!recorder.parked, cassette: recorder.cassette || null, cassettes };
     }
 
     const cartridges = parts.microdrives.cartridges.map((c, i) => {
@@ -107,6 +139,7 @@ export async function buildSessionFile(parts) {
         },
         settings: parts.settings,
         tape,
+        tapeRecorder,
         microdrives: { connected: parts.microdrives.connected, drives: parts.microdrives.drives, cartridges },
         printer: {
             connected: parts.printer.connected,
@@ -164,7 +197,43 @@ export async function readSessionFile(zip) {
         const isTZX = name.toLowerCase().endsWith('.tzx');
         if (!(isTZX ? TZXFile.isValid(data) : TAPFile.isValid(data))) throw new Error('The tape in the session, ' + name + ', is damaged.');
         const block = Number.isInteger(manifest.tape.block) && manifest.tape.block >= 0 ? manifest.tape.block : 0;
-        tape = { name, data, block, isTZX };
+        const positionMs = (Number.isFinite(manifest.tape.positionMs) && manifest.tape.positionMs >= 0) ? manifest.tape.positionMs : null;
+        tape = { name, data, block, positionMs, isTZX };
+    }
+
+    let tapeRecorder = null;
+    const recorder = manifest.tapeRecorder;
+    if (recorder && typeof recorder === 'object') {
+        const cassettes = [];
+        const ids = new Set();
+        for (const c of (Array.isArray(recorder.cassettes) ? recorder.cassettes : [])) {
+            if (!c || typeof c !== 'object') continue;
+            const raw = await need(c.file, 'arraybuffer');
+            let blocks;
+            try {
+                blocks = parseCassetteFile(raw).blocks;
+            } catch (e) {
+                throw new Error('A cassette in the session, ' + c.file + ', is damaged.');
+            }
+            // an id seen already is the manifest's mistake: the later one is a cassette of its own
+            const id = (typeof c.id === 'string' && c.id && !ids.has(c.id)) ? c.id : null;
+            if (id) ids.add(id);
+            cassettes.push({
+                id,
+                label: typeof c.label === 'string' ? c.label.slice(0, 24) : '',
+                colour: typeof c.colour === 'string' ? c.colour : undefined,
+                writeProtect: !!c.writeProtect,
+                positionMs: Number.isFinite(c.positionMs) ? Math.max(0, Math.min(c.positionMs, CASSETTE_MS)) : 0,
+                created: Number.isFinite(c.created) ? c.created : undefined,
+                modified: Number.isFinite(c.modified) ? c.modified : undefined,
+                // in the form the recorder writes, as the cassette box keeps it: a TAP
+                // becomes a cassette, and the label is kept beside it, not in it
+                data: writeCassetteTZX({ blocks }),
+            });
+        }
+        // the cassette in the recorder, by its id; one the session doesn't hold counts as none
+        const cassette = (typeof recorder.cassette === 'string' && cassettes.some(c => c.id === recorder.cassette)) ? recorder.cassette : null;
+        tapeRecorder = { connected: !!recorder.connected, parked: !!recorder.parked && !!cassette, cassette, cassettes };
     }
 
     const saved = manifest.microdrives || {};
@@ -194,6 +263,7 @@ export async function readSessionFile(zip) {
         snapshot,
         settings: checkedSettings(manifest.settings),
         tape,
+        tapeRecorder,
         microdrives: { connected: !!saved.connected, drives, cartridges },
         printer: {
             connected: !!printer.connected,
@@ -205,6 +275,15 @@ export async function readSessionFile(zip) {
         gameName: typeof manifest.gameName === 'string' ? manifest.gameName : null,
         power: ['off', 'paused', 'running'].includes(machine.power) ? machine.power : 'running',
     };
+}
+
+// The restore card's line for the cassettes, or null for a session without a tape recorder.
+function recorderLine(recorder) {
+    if (!recorder) return null;
+    const count = recorder.cassettes.length;
+    const inRecorder = recorder.cassette ? recorder.cassettes.find(c => c.id === recorder.cassette) : null;
+    const where = inRecorder ? `, ${inRecorder.label || 'an unnamed one'} in the tape recorder${recorder.connected ? '' : ' (off)'}` : '';
+    return `${count} cassette${count === 1 ? '' : 's'}${where}`;
 }
 
 /* Asks before a restore replaces what is running, with a summary of the
@@ -232,9 +311,10 @@ export function confirmRestore(ui, session) {
             session.machineName + (session.gameName ? `, running ${session.gameName}` : '')
                 + (session.power === 'off' ? ', switched off' : (session.power === 'paused' ? ', paused' : '')),
             session.tape ? `Tape: ${session.tape.name}` : 'No tape',
+            recorderLine(session.tapeRecorder),
             `${count} Microdrive cartridge${count === 1 ? '' : 's'}`,
             session.printer.rows.length ? `Printout: ${(session.printer.rows.length * 92 / 2560).toFixed(1)} cm` : 'No printout',
-        ];
+        ].filter(Boolean);
         for (const text of lines) {
             const line = document.createElement('div');
             line.textContent = text;
@@ -242,7 +322,7 @@ export function confirmRestore(ui, session) {
         }
         const note = document.createElement('div');
         Object.assign(note.style, { color: '#999', fontSize: '11px', marginTop: '8px' });
-        note.textContent = 'This replaces the running machine, the tape, the printout and the settings. Its cartridges join your box: none are deleted, and where your box holds newer work on one of them, both are kept.';
+        note.textContent = 'This replaces the running machine, the tape, the printout and the settings. Its cartridges and cassettes join your boxes: none are deleted, and where a box holds newer work on one of them, both are kept.';
         body.appendChild(note);
 
         const footer = document.createElement('div');

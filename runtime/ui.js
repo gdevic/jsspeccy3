@@ -330,7 +330,7 @@ class ToolbarButton {
     }
     setCompact(compact) {
         this.compact = compact;
-        Object.assign(this.elem.style, compact ? { margin: '1px', padding: '1px 2px' } : { margin: '2px', padding: '' });
+        Object.assign(this.elem.style, compact ? { margin: '1px', padding: '1px' } : { margin: '2px', padding: '' });
         if (this.elem.firstChild) this.elem.firstChild.style.height = compact ? '16px' : '20px';
     }
     setLabel(label) {
