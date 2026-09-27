@@ -71,7 +71,7 @@ The toolbar button between the Microdrive and fullscreen buttons connects a ZX P
 
 The printer is emulated at the hardware level, after Sinclair's own description of it: two styli on a belt take turns across the paper, each on it for about 32ms and off it for about 16ms at full speed, an encoder gives 256 pulses across the 92mm print width of the 100mm paper, and the paper feeds one dot's height for every pass. It answers the port with address line A2 low, reporting the paper edge and each dot position to the program, which switches the stylus, the motor and its slow speed. A full-screen `COPY` takes about 8½ seconds.
 
-The printer measures its paper: a roll holds about 20m, and the panel shows how much is left. The roll, with its printout, stays with the browser session: it survives a reload, and a new session starts with a fresh roll, so save a printout to keep it. When the roll runs out, printing waits for paper just as on the real printer, where the ROM finds no paper edge; load a new roll to carry on, or press BREAK. Clicking the printer opens its panel, to load a new roll, tear the printout off, or save it to the PC as a PNG (a printout of more than about 11.5 m, too long for one picture, as a ZIP of PNGs that follow on from each other). The FEED button on top of the printer's right tower feeds blank paper while it is held down.
+The printer measures its paper: a roll holds about 20m, and the panel shows how much is left. The roll, with its printout, stays on the printer between visits until it is torn off or a new roll is loaded; save a printout to keep it. When the roll runs out, printing waits for paper just as on the real printer, where the ROM finds no paper edge; load a new roll to carry on, or press BREAK. Clicking the printer opens its panel, to load a new roll, tear the printout off, or save it to the PC as a PNG (a printout of more than about 11.5 m, too long for one picture, as a ZIP of PNGs that follow on from each other). The FEED button on top of the printer's right tower feeds blank paper while it is held down.
 
 ## Saving and restoring a session
 
@@ -230,6 +230,8 @@ then you need to configure the web server to serve .wasm files with the correct 
 ```
 AddType application/wasm wasm
 ```
+
+Run the emulator in one tab at a time. Everything it keeps in the browser (its settings, the cassette and cartridge boxes, what is in the recorder and the drives, the printer's roll, and where its dialogs and panels were left) is shared by every tab of that browser, and mostly goes by the tab that changed it last: the printout kept, for one, is the one from the tab that printed last. Only a cassette or cartridge recorded on in two tabs is kept twice, as two copies in its box.
 
 ## Licence
 

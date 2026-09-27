@@ -410,9 +410,10 @@ function buildPanel(printer) {
 /* ==================== the dock ==================== */
 
 /* Whether the printer is connected is kept in localStorage, like the
- * Microdrive dock. The roll - the paper left on it and the printout - stays
- * with the browser session in sessionStorage: it survives a reload, and a new
- * session starts with a fresh roll. The printout is stored deflated, which
+ * Microdrive dock, and so is the roll - the paper left on it and the
+ * printout: it stays on the printer between visits until it is torn off or
+ * a new roll is loaded. Every tab of the browser stores its roll there, so
+ * the one that printed last is the one kept. The printout is stored deflated, which
  * the browser does asynchronously, so for the last save as the page goes
  * away it is stored as it is instead, in runs. */
 // On a first visit, with nothing kept yet, the printer is connected.
@@ -509,7 +510,7 @@ function fromBase64(text) {
 
 async function loadRoll() {
     try {
-        const saved = JSON.parse(sessionStorage.getItem(ROLL_KEY));
+        const saved = JSON.parse(localStorage.getItem(ROLL_KEY));
         if (saved && Number.isFinite(saved.paper)) {
             let printout = null;
             if (typeof saved.deflated === 'string' && canDeflate) {
@@ -536,7 +537,7 @@ async function saveRollDeflated(paper, printout, saved, isCurrent) {
         const deflated = toBase64(await transform(packed, new CompressionStream('deflate-raw')));
         if (!isCurrent()) return false;
         try {
-            sessionStorage.setItem(ROLL_KEY, JSON.stringify({ paper, deflated, saved }));
+            localStorage.setItem(ROLL_KEY, JSON.stringify({ paper, deflated, saved }));
             return true;
         } catch (e) {
             if (!keep) return false;  // storage unavailable altogether
@@ -550,7 +551,7 @@ function saveRoll(paper, printout, saved) {
     for (let keep = printout.length; ; keep = Math.floor(keep / 2)) {
         try {
             const rows = printout.slice(printout.length - keep);
-            sessionStorage.setItem(ROLL_KEY, JSON.stringify({ paper, printout: encodePrintout(rows), saved }));
+            localStorage.setItem(ROLL_KEY, JSON.stringify({ paper, printout: encodePrintout(rows), saved }));
             return;
         } catch (e) {
             if (!keep) return;  // storage unavailable altogether
