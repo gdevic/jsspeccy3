@@ -1,3 +1,28 @@
+Unreleased
+----------
+
+
+* Add a portable cassette recorder beside the Spectrum: SAVE records onto 60-minute cassettes kept in the browser between visits and in saved sessions, LOAD reads them back from wherever the tape is wound to, holding Record yourself records the beeper's sound too, and a cassette box creates, imports, exports, renames, write-protects and duplicates cassettes
+* Add a script API (`emu.machine`, `emu.keyboard` and `emu.tape`) that switches the machine on, types into it and works the tape recorder from code, and waits for what happens, for tests and demos
+* Add recognition of a character clicked on the screen, showing which ROM character it is and the keys that type it; a double-click types it
+* Add the rest of the TZX format: CSW and generalized data blocks, blocks that stop the tape (always, or in 48K mode only), signal level blocks, and jumps, loops and calls that go backwards; the tape counter and its list of parts follow loops and jumps in the order the tape plays them
+* Add Save to PC to the Microdrive drive panel, and save a printout longer than about 11.5 m as a ZIP of PNGs rather than dropping its start
+* Make the tape recorder, the Microdrives and the ZX Printer connected on a first visit; after that each stays as the visitor left it
+* Make the page scroll to the tape recorder and Microdrives when zoomed in, keep the current zoom when a session is restored, and remember the tape loading settings across visits
+* Make VERIFY with instant tape loading compare the tape with memory, failing with "R Tape loading error" where they differ, and make Play on a toolbar tape that has run out start it again from the beginning
+* Make `emu.exit()` remove everything the emulator added to the page and keep a recording or Microdrive save still in progress, returning a promise; `setZoom`, `enterFullscreen` and `emu.tape.setInstantLoading` called from a page or script no longer change the visitor's saved settings
+* Make the build run on Node 26 from any shell, cmd and PowerShell included, with the optimized core as the default build, and make `npm test` fail when a test fails
+* Fix the emulator freezing or hanging on tape errors and damaged TZX files; a frame that fails now pauses the machine with a message
+* Fix the sound: AY stereo, sound drifting out of step with the picture, AY envelopes that hold, audio on devices running above 48 kHz, and AY registers reading back bits they don't have
+* Fix hardware details: the floating bus, interrupt timing (R during the acknowledge, IM 0's length, and the 48K's shorter interrupt), LD A,I and LD A,R when interrupted, Reset on the Pentagon leaving TR-DOS paged in, a spinning Microdrive stopping when a cartridge is inserted, and the Cursor and Sinclair joysticks letting go of keys held on the keyboard
+* Fix snapshots: `.z80` machine types, T-states, sound chip state, a byte 12 of 255 and uncompressed version 1 files, `.sna` files with the stack at the edge of memory, and snapshots taken inside the Interface 1 ROM opened with the Microdrives disconnected; a snapshot that can't be loaded whole is now refused before anything changes
+* Fix pokes: undoing trainers that share bytes, forgetting them after a reset or a new load, bank pokes on the 48K, and undoing a poke after the game has paged another bank in
+* Fix cassettes and cartridges being lost or overwritten: when a write to the browser's storage fails, when two tabs record on the same one, on a quick disconnect and reconnect of the recorder, on a format while the drive is still writing, and when a session is restored over work done since it was saved
+* Fix the page: frame pacing, sound that stayed silent until a click, keys stuck down after focus left the page, calls made before start-up had finished, a URL that failed to download being opened as a file, numpad 8 typing DELETE, the UK ' key acting as Caps Shift, Symbol Shift + W closing the tab without asking, and a quick pause and resume running two frame loops
+* Fix the PlayZX, Pokes and Find games dialogs: Enter loading the previous search's first result, duplicate downloads after reopening, a failed catalog load lasting until reload, Find games sticking on errors and mangling some titles, and the machine left paused after closing Find games
+* Fix a restored session losing the dots of a row being printed, a hand-edited session with an empty cassette id emptying the recorder, and the tape counter marking the first pass of a looped part
+
+
 3.2.3 (2026-09-25)
 ------------------
 

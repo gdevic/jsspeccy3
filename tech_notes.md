@@ -22,7 +22,7 @@ To build jsspeccy-core.wasm, we run the script generator/gencore.js, which runs 
 
 The preprocessor step serves two purposes: firstly, it allows us to programmatically build the large repetitive `switch` statements that form the Z80 core. Secondly, it allows us to use conventional array syntax to access our statically-defined arrays. Currently, AssemblyScript does not appear to have any native support for static arrays - any use of array syntax causes it to immediately pull in a `malloc` implementation and a higher-level array construct with bounds checking, all of which is unwanted overhead for our purposes. The gencore.js processor rewrites array syntax into direct memory access [`load` / `store` instructions](https://www.assemblyscript.org/stdlib/builtins.html#memory).
 
-All statically-defined arrays are allocated at the start of the module's memory map, from address 0 onward. Currently a 1664Kb block is allocated for these - if you need more, increase `memoryBase` in asconfig.json. gencore.js stops the build with an error if the allocations outgrow it.
+All statically-defined arrays are allocated at the start of the module's memory map, from address 0 onward, each one starting on a multiple of its element size so that its loads and stores are aligned. Currently a 1664Kb block is allocated for these - if you need more, increase `memoryBase` in asconfig.json. gencore.js stops the build with an error if the allocations outgrow it.
 
 The core's top-level statements (setting up the power-on machine state) run when the module is instantiated, in source order, and the AssemblyScript compiler rejects any such code that reaches a global declared further down the file. For that reason this start-up block sits at the very end of core.ts.in, after every declaration it could touch.
 
@@ -33,7 +33,7 @@ The gencore.js preprocessor recognises the following directives:
   * An assignment such as `frameBuffer[ptr] = 0x00;` will be rewritten as `store<u8>(0 + ptr, 0x00);`
   * A lookup such as `val = frameBuffer[ptr];` will be rewritten as `val = load<u8>(0 + ptr);`
   * `(&frameBuffer)` will be replaced with the array's base address, e.g. `const FRAME_BUFFER = (&frameBuffer);` becomes `const FRAME_BUFFER = 0;`
-  * Keep in mind that these are simple regexp replacements, not a full parser - it's likely to fail on statements that are split over multiple lines, or have nested brackets. If you don't like this, feel free to submit a better implementation of static arrays to the AssemblyScript project :-)
+  * Keep in mind that these are simple regexp replacements, not a full parser - it's likely to fail on statements that are split over multiple lines, or have nested brackets. An assignment to an array element, or to a register, is only recognised at the start of a line, so the body of an `if` or `for` that assigns one goes on a line of its own, in braces; `if (x) frameBuffer[i] = 0;` on one line fails to compile. If you don't like this, feel free to submit a better implementation of static arrays to the AssemblyScript project :-)
 * `#const` - defines an identifier to be replaced by the given expression. For example, given a directive `#const FLAG_C 0x01`, a subsequent line `result &= FLAG_C;` will be rewritten to `result &= 0x01;`. `const FLAG_C = 0x01;` would achieve the same thing, but will also define a symbol in the resulting module, which we probably don't want.
 * `#regpair` - allocates two bytes to store a Z80 register pair. This is always little-endian, as per the WebAssembly spec. For example, if the next memory address to be allocated is 0x1000, then `#regpair BC B C` will define identifiers `BC`, `B` and `C` such that:
   * `val = BC;` is rewritten to `val = load<u16>(0x1000);`
@@ -43,6 +43,16 @@ The gencore.js preprocessor recognises the following directives:
   * `val = C;` is rewritten to `val = load<u8>(0x1000);`
   * `C = result;` is rewritten to `store<u8>(0x1000, result);`
 * `#optable` - generates the sequence of `case` statements that decode an opcode byte. The subroutine bodies for each class of instruction are defined in generator/instructions.js, and these are pattern-matched to the actual instruction lists in generator/opcodes_*.txt.
+
+
+Tape playback
+-------------
+
+A tape in the worker (runtime/tape.js: `TAPFile`, `TZXFile`, or `CassetteTape` for a cassette in the tape recorder) feeds a `PulseGenerator`, which turns segments (tones, pulse sequences, data bits, pauses, sound recordings) into pulse lengths in the core's `TAPE_PULSES` buffer, each flipping the EAR level unless the segment sets the level itself (TZX blocks 0x19 and 0x2B). A segment can also stop the tape (TZX 0x20 with a pause of 0, and 0x2A in 48K mode), which ends the worker's play as the end of the tape does, but leaves the rest to play when it is started again.
+
+A TZX file is not played in block order: jumps, loops and calls move through it. The `TZXFile` walker's position is its control state, the next block plus the loop it is in and the calls it will return from. `buildTimeline` walks the file once as it would play, laying out a block in a loop once for each time round and leaving out blocks a jump passes over, and records the control state before each entry. The cassette counter, the list of parts and every seek work on that timeline, so winding to a place restores the walker exactly as playing up to it would have left it. A file that plays for ever is laid out up to where its control state first repeats.
+
+With instant loading, LD-BYTES is trapped (status 2) and `trapTapeLoad` copies the next block straight into memory, or for VERIFY compares it with memory, then leaves the registers and the carry flag as LD-BYTES itself would on return.
 
 
 Frame buffer format
