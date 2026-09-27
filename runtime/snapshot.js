@@ -379,7 +379,7 @@ export function parseSZXFile(data) {
 
 /* Writes a snapshot, in the structure the parsers above produce, as an SZX
  * file (the zx-state format, version 1.4): the Z80 registers, the ULA and
- * paging state, the AY chip on a 128K or Pentagon, the Interface 1 and
+ * paging state, the AY chip, the Interface 1 and
  * whether its ROM is paged in, the Pentagon's Beta 128 disk interface and
  * whether TR-DOS is paged in, a connected ZX Printer, and every RAM page the
  * machine has, deflated. Returns an ArrayBuffer. */
@@ -427,9 +427,10 @@ export function writeSZXFile(snapshot) {
         bytes[o + 3] = snapshot.ulaState.borderColour;  // last write to port 0xfe
     });
 
-    if (snapshot.ay && snapshot.model !== 48) {
+    if (snapshot.ay) {
         block('AY\0\0', 18, (view, bytes, o) => {
-            bytes[o + 0] = 0;
+            // the 48K has the chip too, as a 128-style AY (ZXSTAYF_128AY)
+            bytes[o + 0] = (snapshot.model === 48) ? 0x02 : 0x00;
             bytes[o + 1] = snapshot.ay.selected;
             for (let i = 0; i < 16; i++) bytes[o + 2 + i] = snapshot.ay.registers[i] || 0;
         });

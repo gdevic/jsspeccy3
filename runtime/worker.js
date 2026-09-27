@@ -818,6 +818,9 @@ const loadCore = (baseUrl) => {
         postMessage({
             'message': 'ready',
         });
+    }).catch(err => {
+        // a missing module, or one sent as some other type than application/wasm
+        postMessage({ message: 'coreFailed', error: String((err && err.message) || err) });
     });
 }
 
@@ -851,6 +854,52 @@ const insertMicrodrive = (drive, data, token, seq) => {
     mdrSeqs[drive] = seq ?? null;
     mdrBlocks[drive] = blocks;
     mdrFramesSinceFlush[drive] = 0;
+};
+
+/* The drives' mechanism, which a saved session keeps beside the cartridges
+ * (see getMicrodriveMechanism in the core): per drive its motor, head and
+ * the counters of the half under the head, the COMMS CLK line, and the
+ * block-halves whose preamble is part written, as [index, state]; every
+ * other half's state follows from what is on the cartridge. */
+const MDR_MECHANISM_FIELDS = 7;
+const PREAMBLE_BYTES = 8 * 512;
+
+const takeMicrodriveMechanism = () => {
+    const drives = [];
+    for (let d = 0; d < 8; d++) {
+        const fields = [];
+        for (let f = 0; f < MDR_MECHANISM_FIELDS; f++) fields.push(core.getMicrodriveMechanism(d, f));
+        drives.push(fields);
+    }
+    const preambles = [];
+    for (let i = 0; i < PREAMBLE_BYTES; i++) {
+        const state = memoryData[core.MICRODRIVE_PREAMBLE + i];
+        if ((state !== 0) && (state !== 0xff)) preambles.push([i, state]);
+    }
+    return { commsClk: !!core.getIF1CommsClk(), drives, preambles };
+};
+
+/* Puts back what takeMicrodriveMechanism took, once the cartridges are in
+ * their drives again, since inserting one resets its drive. */
+const setMicrodriveMechanism = (mechanism) => {
+    if (!interface1Enabled || !mechanism || !Array.isArray(mechanism.drives)) return;
+    const valid = (v) => Number.isInteger(v) && (v >= 0) && (v <= 0xffffffff);
+    mechanism.drives.slice(0, 8).forEach((fields, d) => {
+        if (!Array.isArray(fields)) return;
+        fields.slice(0, MDR_MECHANISM_FIELDS).forEach((v, f) => {
+            if (valid(v)) core.setMicrodriveMechanism(d, f, v);
+        });
+    });
+    if (Array.isArray(mechanism.preambles)) {
+        for (const entry of mechanism.preambles) {
+            if (!Array.isArray(entry)) continue;
+            const [i, state] = entry;
+            if (Number.isInteger(i) && (i >= 0) && (i < PREAMBLE_BYTES) && Number.isInteger(state) && (state >= 1) && (state <= 12)) {
+                memoryData[core.MICRODRIVE_PREAMBLE + i] = state;
+            }
+        }
+    }
+    core.setIF1CommsClk(!!mechanism.commsClk);
 };
 
 const ejectMicrodrive = (drive) => {
@@ -969,7 +1018,7 @@ const loadSnapshot = (snapshot) => {
         core.writePort(0x7ffd, snapshot.ulaState.pagingFlags);
     }
     if (snapshot.ay) {
-        for (let reg = 0; reg < 14; reg++) {
+        for (let reg = 0; reg < 16; reg++) {
             core.writePort(0xfffd, reg);
             core.writePort(0xbffd, snapshot.ay.registers[reg] || 0);
         }
@@ -986,13 +1035,16 @@ const loadSnapshot = (snapshot) => {
         if (Array.isArray(row) && (row.length === 32)) memoryData.set(row.map(b => b & 0xff), core.PRINTER_ROW);
     }
 
-    core.setTStates(snapshot.tstates);
+    // A count past the end of the frame, which only a damaged file holds, wraps
+    // round into it; left as it is, the machine would stand still for minutes.
+    core.setTStates((snapshot.tstates >>> 0) % core.getFrameCycleCount());
 };
 
 /* The whole machine as it stands between two frames, in the structure the
  * snapshot parsers produce, plus what a saved session keeps beside it: the
- * Interface 1 paging, the printer mechanism, and the live image of every
- * cartridge in a drive (it may hold writes not yet flushed). */
+ * Interface 1 paging, the printer mechanism, the live image of every
+ * cartridge in a drive (it may hold writes not yet flushed), and the drives'
+ * mechanism. */
 const takeSnapshot = () => {
     const model = core.getMachineType();
     const registers = {};
@@ -1047,6 +1099,7 @@ const takeSnapshot = () => {
             row: Array.from(memoryData.subarray(core.PRINTER_ROW, core.PRINTER_ROW + 32)),
         },
         drives,
+        microdriveMechanism: takeMicrodriveMechanism(),
         tapePositionMs: tapePositionMs(),
         // the cassette in the tape recorder, as it is now: it may hold recordings not posted back yet
         cassette: (tape && tape.isCassette)
@@ -1588,6 +1641,9 @@ onmessage = (e) => {
             break;
         case 'ejectMicrodrive':
             ejectMicrodrive(e.data.drive);
+            break;
+        case 'setMicrodriveMechanism':
+            setMicrodriveMechanism(e.data.mechanism);
             break;
         case 'setMicrodriveWriteProtect':
             core.setMicrodriveWriteProtect(e.data.drive, !!e.data.value);

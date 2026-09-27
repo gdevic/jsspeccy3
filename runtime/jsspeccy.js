@@ -212,6 +212,9 @@ class Emulator extends EventEmitter {
                         });
                     }).catch(err => { alert(err); });
                     break;
+                case 'coreFailed':
+                    alert('The emulator could not load its core: ' + e.data.error);
+                    break;
                 case 'frameCompleted':
                     // benchmarkRunCount++;
                     if ('audioBufferLeft' in e.data) {
@@ -248,7 +251,7 @@ class Emulator extends EventEmitter {
                         this.tapeKind = (e.data.mediaType == 'cassette') ? 'cassette' : 'game';
                     }
                     if (e.data.error) {
-                        this.fileOpenPromiseResolutions[e.data.id]({ mediaType: e.data.mediaType, error: e.data.error });
+                        this.settleFileOpen(e.data.id, { mediaType: e.data.mediaType, error: e.data.error });
                         break;
                     }
                     if (e.data.mediaType == 'tape' && this.autoLoadTapes && !e.data.quiet) {
@@ -259,7 +262,7 @@ class Emulator extends EventEmitter {
                     }
                     // A cassette takes the place of an opened tape, unless another was opened since.
                     if ((e.data.mediaType == 'cassette') && (e.data.id === this.lastTapeOpenID)) this.tapeFile = null;
-                    this.fileOpenPromiseResolutions[e.data.id]({
+                    this.settleFileOpen(e.data.id, {
                         mediaType: e.data.mediaType,
                     });
                     if (e.data.mediaType == 'tape') {
@@ -785,6 +788,14 @@ class Emulator extends EventEmitter {
         });
     }
 
+    /* Answers the file open `id`, once. Its answer holds on to what was
+     * opened (a whole snapshot or tape), so it is let go of with it. */
+    settleFileOpen(id, result) {
+        const resolve = this.fileOpenPromiseResolutions[id];
+        delete this.fileOpenPromiseResolutions[id];
+        if (resolve) resolve(result);
+    }
+
     async openFile(file) {
         const opener = this.getFileOpener(file.name);
         if (opener) {
@@ -809,6 +820,8 @@ class Emulator extends EventEmitter {
         const opener = this.getFileOpener(urlPath(url), name);
         if (opener) {
             const buf = await fetchBytes(url);
+            // a load whose caller has given up by the time the file arrives is dropped
+            if (opts.stillWanted && !opts.stillWanted()) return null;
             await this.coreReady;
             return opener(buf).then((res) => {
                 if (res && res.error) throw res.error;
@@ -985,6 +998,12 @@ class Emulator extends EventEmitter {
         this.microdriveTokens[drive] = null;
         this.worker.postMessage({ message: 'ejectMicrodrive', drive });
         this.emit('ejectMicrodrive', drive);
+    }
+    /* Sets the drives' motors, heads and sync state as a session saved them,
+     * so a Microdrive command caught in the middle carries on; for after the
+     * session's cartridges are back in their drives. */
+    setMicrodriveMechanism(mechanism) {
+        this.worker.postMessage({ message: 'setMicrodriveMechanism', mechanism });
     }
     setMicrodriveWriteProtect(drive, value) {
         this.worker.postMessage({ message: 'setMicrodriveWriteProtect', drive, value });
@@ -1725,6 +1744,7 @@ window.JSSpeccy = (container, opts) => {
                     if (loaded && loaded.error) throw new Error(loaded.error);
 
                     await microdriveDock.sessionRestore(session.microdrives);
+                    if (session.snapshot.microdriveMechanism) emu.setMicrodriveMechanism(session.snapshot.microdriveMechanism);
                     printer.sessionRestore(session.printer);
                     if (session.tape) {
                         const tapeOpts = { name: session.tape.name, quiet: true };
@@ -1842,13 +1862,11 @@ window.JSSpeccy = (container, opts) => {
                 return response.json();
             }).then(data => {
                 if (dialog.closed) return;
-                let chosenFilename = null;
-                (data.files || []).forEach(file => {
-                    const ext = file.name.split('.').pop().toLowerCase();
-                    if (ext == 'z80' || ext == 'sna' || ext == 'tap' || ext == 'tzx' || ext == 'szx') {
-                        chosenFilename = file.name;
-                    }
+                const chosen = (data.files || []).find(file => {
+                    const ext = String(file.name).split('.').pop().toLowerCase();
+                    return ext == 'z80' || ext == 'sna' || ext == 'tap' || ext == 'tzx' || ext == 'szx';
                 });
+                const chosenFilename = chosen ? chosen.name : null;
                 if (!chosenFilename) {
                     done(new Error('it has no file the emulator can load'));
                     return;
@@ -1856,8 +1874,10 @@ window.JSSpeccy = (container, opts) => {
                 // the file's path within the item, a segment at a time, keeping its slashes
                 const finalUrl = 'https://cors.archive.org/cors/' + encodeURIComponent(result.identifier)
                     + '/' + chosenFilename.split('/').map(encodeURIComponent).join('/');
-                return emu.openUrl(finalUrl).then(() => {
+                // a dialog closed while the game downloads leaves the machine as it is
+                return emu.openUrl(finalUrl, {stillWanted: () => !dialog.closed}).then((res) => {
                     opening = false;
+                    if (!res || dialog.closed) return;
                     dialog.close();
                     emu.focus();
                     emu.start();

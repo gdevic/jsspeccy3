@@ -138,6 +138,8 @@ export async function buildSessionFile(parts) {
             snapshot: 'machine.szx',
             // the printer's mechanism, and the row under its stylus, are not something SZX carries
             printerMechanism: snapshot.printer,
+            // nor the Microdrives' motors, heads and sync state
+            microdriveMechanism: snapshot.microdriveMechanism,
             // 'off' (never started), 'paused' or 'running'
             power: parts.power,
         },
@@ -216,6 +218,9 @@ export async function readSessionFile(zip) {
     const machine = manifest.machine || {};
     const snapshot = parseSZXFile(await need(machine.snapshot, 'arraybuffer', 'its machine snapshot'));
     if (machine.printerMechanism) snapshot.printer = machine.printerMechanism;
+    if (machine.microdriveMechanism && (typeof machine.microdriveMechanism === 'object')) {
+        snapshot.microdriveMechanism = machine.microdriveMechanism;
+    }
 
     let tape = null;
     if (manifest.tape) {

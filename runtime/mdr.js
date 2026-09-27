@@ -209,7 +209,9 @@ export function parse(blockBytes, writeProtect) {
         const descOk = checksum(blockBytes, base + RECFLG, 14) === blockBytes[base + DESCHK];
         const isEOF = (recflg & 0x02) !== 0;
         const isFree = !isEOF && reclen === 0 && descOk;
-        const isBad = isEOF && reclen === 0 && descOk;
+        // FORMAT marks a bad sector as an empty last record with no name; an
+        // empty file (OPEN # then CLOSE #) is one too, but under its name
+        const isBad = isEOF && reclen === 0 && descOk && (blockBytes[base + RECNAM] === 0x00);
         const isUsed = descOk && !isFree && !isBad;
 
         let sector = { index: b, hdNumb: blockBytes[base + HDNUMB], formatted: hdValid, state: 'free', fileName: null };

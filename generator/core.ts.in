@@ -1611,8 +1611,10 @@ export function getPagingValue():u8 {
 export function getSelectedAYRegister():u8 {
     return selectedAYRegister;
 }
+// An AY register as last written, for a snapshot: a read of port A or B goes
+// through the mixer's direction bits, but the latch behind it is the state.
 export function getAYRegister(reg:u8):u8 {
-    return readAYRegister(reg);
+    return (reg < 16) ? ayRegisters[reg] : 0x00;
 }
 
 // Whether the Interface 1 shadow ROM is paged in right now. It can only be
@@ -1807,6 +1809,62 @@ export function clearMicrodriveModified(drive:i32):void {
 export function getMicrodriveHeadPos(drive:i32):u32 {
     if (drive < 0 || drive > 7) return 0;
     return mdrHeadPos[drive];
+}
+
+/* A drive's mechanism, which a saved session keeps so that a Microdrive
+command caught in the middle carries on where it was: field 0 the motor, 1
+the head's byte offset, 2 the bytes moved over this half, 3 and 4 the gap and
+sync counters, 5 the half's length (15 or 528), 6 the last byte read. The
+cartridge goes in first, since inserting one resets them all. */
+export function getMicrodriveMechanism(drive:i32, field:i32):u32 {
+    if (drive < 0 || drive > 7) return 0;
+    switch (field) {
+        case 0: return mdrMotorOn[drive];
+        case 1: return mdrHeadPos[drive];
+        case 2: return mdrTransferred[drive];
+        case 3: return mdrGapCounter[drive];
+        case 4: return mdrSyncCounter[drive];
+        case 5: return mdrMaxBytes[drive];
+        case 6: return mdrLast[drive];
+    }
+    return 0;
+}
+export function setMicrodriveMechanism(drive:i32, field:i32, val:u32):void {
+    if (drive < 0 || drive > 7) return;
+    switch (field) {
+        case 0:
+            mdrMotorOn[drive] = (val != 0) ? 1 : 0;
+            break;
+        case 1:
+            mdrHeadPos[drive] = (val < u32(mdrBlocks[drive]) * MICRODRIVE_BLOCK_LEN) ? val : 0;
+            break;
+        case 2:
+            mdrTransferred[drive] = val;
+            break;
+        case 3:
+            mdrGapCounter[drive] = u8(min<u32>(val, 15));
+            break;
+        case 4:
+            mdrSyncCounter[drive] = u8(min<u32>(val, 15));
+            break;
+        case 5:
+            mdrMaxBytes[drive] = (val == 528) ? 528 : 15;
+            break;
+        case 6:
+            mdrLast[drive] = u8(val);
+            break;
+    }
+}
+// Each block-half's sync state (described where it is allocated), which a
+// session keeps where a half's preamble is part written.
+export const MICRODRIVE_PREAMBLE:usize = (&mdrPream);
+
+// The Interface 1's COMMS CLK line, whose falling edge moves the motor select on.
+export function getIF1CommsClk():bool {
+    return if1CommsClk;
+}
+export function setIF1CommsClk(val:bool):void {
+    if1CommsClk = val;
 }
 
 function pollKeyboard(addr:u8):u8 {
@@ -2184,7 +2242,7 @@ function writeAYRegister(reg:u8, val:u8):void {
             if (toneGeneratorCPeriod === 0) toneGeneratorCPeriod = 8;
             break;
         case 6:
-            noiseGeneratorPeriod = f64((val & 0x1f) << 4);
+            noiseGeneratorPeriod = f64(u32(val & 0x1f) << 4);
             if (noiseGeneratorPeriod === 0) noiseGeneratorPeriod = 16;
             break;
         case 7:
