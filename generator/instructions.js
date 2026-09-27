@@ -827,6 +827,7 @@ export default {
         const val:u8 = u8(ir >> 8);
         A = val;
         F = (F & FLAG_C) | sz53Table[val] | (iff2 ? FLAG_V : 0);
+        loadedIROnLastStep = true;
     `,
     'LD A,R': () => `
         const ir:u16 = IR;
@@ -835,6 +836,7 @@ export default {
         const val:u8 = u8(ir & 0xff);
         A = val;
         F = (F & FLAG_C) | sz53Table[val] | (iff2 ? FLAG_V : 0);
+        loadedIROnLastStep = true;
     `,
     'LD I,A': () => `
         contendDirtyRead(IR);

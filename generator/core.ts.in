@@ -376,9 +376,15 @@ let willTrap:bool = true;
 let loggingEnabled:bool = false;
 let logPtr = 0;
 
+// How many T-states from the start of a frame the ULA holds /INT low.
+let interruptLength:u32 = 32;
+// Whether the instruction just run was LD A,I or LD A,R (see runUntil).
+let loadedIROnLastStep:bool = false;
+
 let machineType:u32 = 48;
 export function setMachineType(type:u32):void {
     machineType = type;
+    interruptLength = (type == 48 || type == 1212) ? 32 : 36;
     if (type == 48 || type == 1212) {
         frameCycleCount = 69888;
         screenStartTstate = 14335;
@@ -1889,7 +1895,7 @@ export function resumeFrame():i16 {
 
 export function runUntil(maxT:u32):i16 {
     while (t < maxT || opcodePrefix) {
-        if (t < 36 && iff1 && interruptible) {
+        if (t < interruptLength && iff1 && interruptible) {
             /* process interrupt */
 
             if (halted) {
@@ -1899,6 +1905,13 @@ export function runUntil(maxT:u32):i16 {
             }
 
             iff1 = iff2 = 0;
+            // the acknowledge is an M1 cycle, which refreshes R
+            const r = R;
+            R = (r & 0x80) | ((r + 1) & 0x7f);
+            // on an NMOS Z80, P/V reads the IFF2 just cleared when LD A,I or LD A,R is interrupted
+            if (loadedIROnLastStep) {
+                F = F & ~FLAG_V;
+            }
 
             /* push current PC in readiness for call to interrupt handler */
             let sp = SP;
@@ -1917,11 +1930,12 @@ export function runUntil(maxT:u32):i16 {
                 const hi:u16 = u16(readMem(intVector + 1));
                 pc = (lo | (hi << 8));
                 t += 7;
-            } else { /* im == 0 */
+            } else { /* im == 0: the bus reads 0xFF, a RST 38, acknowledged as long as IM 1 */
                 pc = 0x0038;
-                t += 6;
+                t += 7;
             }
         }
+        loadedIROnLastStep = false;
 
         if (
             (pc == 0x056b || pc == 0x04d0 || pc == 0x053f)
