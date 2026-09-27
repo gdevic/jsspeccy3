@@ -158,7 +158,7 @@ For additional JavaScript hackery, the return value of the JSSpeccy function cal
 * `emu.openFileDialog()` - open the file chooser dialog
 * `emu.openUrl(url)` - open the file at the given URL
 * `emu.loadSnapshotFromStruct(snapshot)` - load a snapshot from the given data structure; the data format is currently undocumented but runtime/snapshot.js should give you a decent idea of it...
-* `emu.onReady(callback)` - call the given callback once the emulator is fully initialised
+* `emu.onReady(callback)` - call the given callback once the emulator is fully initialised: the files given in `openUrl` are open and `autoStart` has started the machine. Files opened, snapshots loaded and a machine chosen while it is still loading take effect once it has loaded, rather than being lost to its start-up
 * `emu.exit()` - immediately stop the emulator and remove it from the document
 * `emu.machine` - the machine's power and pause, worked from a script (see below)
 * `emu.keyboard` - the Spectrum's keyboard, pressed from a script (see below)

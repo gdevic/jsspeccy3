@@ -38,16 +38,40 @@ import { createKeyboardOverlay } from './keyboard-overlay.js';
 
 const scriptUrl = document.currentScript.src;
 
+// How far behind time the frame loop catches up (see advanceFrameTime).
+const MAX_FRAME_LAG_MS = 100;
+
 // The file name at the end of a path.
 const baseName = (path) => String(path).split('/').pop();
 
+// A URL without its query string or fragment, which don't name the file.
+const urlPath = (url) => String(url).split(/[?#]/)[0];
+
 // The file name at the end of a URL, decoded.
 const urlFileName = (url) => {
-    const name = baseName(url).split('?')[0];
+    const name = baseName(urlPath(url));
     try {
         return decodeURIComponent(name);
     } catch (e) {
         return name;
+    }
+};
+
+// A file's bytes fetched from `url`; an error page from the server is not taken for the file.
+const fetchBytes = async (url) => {
+    const response = await fetch(url);
+    if (!response.ok) throw 'Could not load ' + urlFileName(url) + ': the server answered ' + response.status + ' ' + response.statusText;
+    return response.arrayBuffer();
+};
+
+// Calls each of `handlers`; one that throws doesn't keep the rest from being called.
+const callEach = (handlers) => {
+    for (const handler of handlers) {
+        try {
+            handler();
+        } catch (err) {
+            console.error(err);
+        }
     }
 };
 
@@ -147,28 +171,34 @@ class Emulator extends EventEmitter {
         this.printerMotor = false;
 
         this.onReadyHandlers = [];
+        this.onStartedHandlers = [];
+        this.isStarted = false;
+        /* Resolves once the worker has the core and the ROMs and the machine is
+         * set up; files opened before then wait for it, rather than be wiped by
+         * that set-up or reach a worker with no core. */
+        this.coreReady = new Promise(resolve => { this.resolveCoreReady = resolve; });
 
         this.worker.onmessage = (e) => {
             switch(e.data.message) {
                 case 'ready':
                     this.loadRoms().then(() => {
-                        this.setMachine(opts.machine || 48);
-                        this.setTapeTraps(this.tapeTrapsEnabled);
-                        if (opts.openUrl) {
-                            this.startupOpened = this.openUrlList(opts.openUrl).catch(err => {
-                                alert(err);
-                            }).then(() => {
-                                if (opts.autoStart) this.start();
-                            });
-                        } else if (opts.autoStart) {
-                            this.start();
-                        }
-
                         this.isReady = true;
-                        for (let i=0; i < this.onReadyHandlers.length; i++) {
-                            this.onReadyHandlers[i]();
-                        }
-                    });
+                        // a machine chosen while the core was loading is kept
+                        this.setMachine(this.machineType || opts.machine || 48);
+                        this.setTapeTraps(this.tapeTrapsEnabled);
+                        this.resolveCoreReady();
+
+                        const opened = opts.openUrl ? this.openUrlList(opts.openUrl).catch(err => { alert(err); }) : Promise.resolve();
+                        this.startupOpened = opened.then(() => {
+                            if (opts.autoStart) this.start();
+                        });
+                        // after startupOpened is set, which the recorder and the Microdrives wait for
+                        callEach(this.onReadyHandlers);
+                        this.startupOpened.then(() => {
+                            this.isStarted = true;
+                            callEach(this.onStartedHandlers);
+                        });
+                    }).catch(err => { alert(err); });
                     break;
                 case 'frameCompleted':
                     // benchmarkRunCount++;
@@ -180,10 +210,9 @@ class Emulator extends EventEmitter {
                     if (this.isRunning) {
                         const time = performance.now();
                         if (time > this.nextFrameTime) {
-                            /* running at full blast - start next frame but adjust time base
-                            to give it the full time allocation */
+                            // behind time: run the next frame straight away, to catch up
                             this.runFrame();
-                            this.nextFrameTime = time + this.msPerFrame;
+                            this.advanceFrameTime(time);
                         } else {
                             this.isExecutingFrame = false;
                         }
@@ -406,8 +435,7 @@ class Emulator extends EventEmitter {
     }
 
     async loadRom(url, page) {
-        const response = await fetch(new URL(url, scriptUrl));
-        const data = new Uint8Array(await response.arrayBuffer());
+        const data = new Uint8Array(await fetchBytes(new URL(url, scriptUrl)));
         if (page === 10) this.romFont = data.slice(0x3D00, 0x4000);
         this.worker.postMessage({
             message: 'loadMemory',
@@ -430,8 +458,7 @@ class Emulator extends EventEmitter {
      * hardware maps it) - so it's loaded as one 16K buffer with the same 8K
      * copied to both 0x0000 and 0x2000, rather than through loadRom(). */
     async loadInterface1Rom() {
-        const response = await fetch(new URL('roms/if1-2.rom', scriptUrl));
-        const rom = new Uint8Array(await response.arrayBuffer());
+        const rom = new Uint8Array(await fetchBytes(new URL('roms/if1-2.rom', scriptUrl)));
         const mirrored = new Uint8Array(0x4000);
         mirrored.set(rom, 0);
         mirrored.set(rom, 0x2000);
@@ -464,6 +491,16 @@ class Emulator extends EventEmitter {
         }
     }
 
+    /* A frame is due every msPerFrame, however late the last one ran, so a
+     * display refreshing slower than 50 Hz, or a slow round trip to the
+     * worker, is made up by running frames back to back. Once more than
+     * MAX_FRAME_LAG_MS behind (a stalled tab, or a machine too slow to keep
+     * up) the lost time is let go. */
+    advanceFrameTime(time) {
+        this.nextFrameTime += this.msPerFrame;
+        if ((time - this.nextFrameTime) > MAX_FRAME_LAG_MS) this.nextFrameTime = time;
+    }
+
     runAnimationFrame(time) {
         if (this.displayHandler.readyToShow()) {
             this.displayHandler.show();
@@ -473,7 +510,7 @@ class Emulator extends EventEmitter {
             // A machine started before the worker has its core and ROMs waits for them.
             if (time > this.nextFrameTime && !this.isExecutingFrame && this.isReady) {
                 this.runFrame();
-                this.nextFrameTime += this.msPerFrame;
+                this.advanceFrameTime(time);
             }
             window.requestAnimationFrame((t) => {
                 this.runAnimationFrame(t);
@@ -483,10 +520,13 @@ class Emulator extends EventEmitter {
 
     setMachine(type) {
         if (type != 128 && type != 5) type = 48;
-        this.worker.postMessage({
-            message: 'setMachineType',
-            type,
-        });
+        // Before the core is in, the machine is set up with this once it is.
+        if (this.isReady) {
+            this.worker.postMessage({
+                message: 'setMachineType',
+                type,
+            });
+        }
         this.machineType = type;
         this.activePokes.clear();  // the new machine starts with its memory cleared
         this.emit('setMachine', type);
@@ -551,6 +591,7 @@ class Emulator extends EventEmitter {
     }
 
     loadSnapshot(snapshot) {
+        if (!this.isReady) return this.coreReady.then(() => this.loadSnapshot(snapshot));
         const fileID = this.nextFileOpenID++;
         this.worker.postMessage({
             message: 'loadSnapshot',
@@ -587,32 +628,30 @@ class Emulator extends EventEmitter {
      * saved); opts.quiet (restoring a session) inserts it without
      * auto-loading it. */
     openTAPFile(data, opts) {
-        opts = opts || {};
-        this.tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
-        const fileID = this.nextTapeOpenID();
-        this.worker.postMessage({
-            message: 'openTAPFile',
-            id: fileID,
-            data,
-            quiet: !!opts.quiet,
-        })
-        return new Promise((resolve, reject) => {
-            this.fileOpenPromiseResolutions[fileID] = resolve;
-        });
+        return this.openTapeFile('openTAPFile', data, opts);
     }
 
     openTZXFile(data, opts) {
+        return this.openTapeFile('openTZXFile', data, opts);
+    }
+
+    /* The tape becomes emu.tapeFile only once the worker has taken it: one it
+     * turns away leaves the tape that was in the slot where it was. */
+    openTapeFile(message, data, opts) {
         opts = opts || {};
-        this.tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
+        const tapeFile = opts.name ? { name: opts.name, data: copyBytes(data) } : null;
         const fileID = this.nextTapeOpenID();
         this.worker.postMessage({
-            message: 'openTZXFile',
+            message,
             id: fileID,
             data,
             quiet: !!opts.quiet,
         })
-        return new Promise((resolve, reject) => {
-            this.fileOpenPromiseResolutions[fileID] = resolve;
+        return new Promise((resolve) => {
+            this.fileOpenPromiseResolutions[fileID] = (result) => {
+                if (!result.error) this.tapeFile = tapeFile;
+                resolve(result);
+            };
         });
     }
 
@@ -731,6 +770,7 @@ class Emulator extends EventEmitter {
         const opener = this.getFileOpener(file.name);
         if (opener) {
             const buf = await file.arrayBuffer();
+            await this.coreReady;
             return opener(buf).then((res) => {
                 if (res && res.error) throw res.error;
                 // A microdrive cartridge tracks its own label, not the
@@ -746,21 +786,22 @@ class Emulator extends EventEmitter {
 
     async openUrl(url, opts) {
         opts = opts || {};
-        const opener = this.getFileOpener(url.toString(), urlFileName(url.toString()));
+        const name = urlFileName(url);
+        const opener = this.getFileOpener(urlPath(url), name);
         if (opener) {
-            const response = await fetch(url);
-            const buf = await response.arrayBuffer();
+            const buf = await fetchBytes(url);
+            await this.coreReady;
             return opener(buf).then((res) => {
                 if (res && res.error) throw res.error;
                 // Internal loads (e.g. tape-loader snapshots) must not
                 // masquerade as the loaded game.
                 if (opts.trackName !== false && res.mediaType !== 'microdrive' && res.mediaType !== 'session') {
-                    this.setLoadedGame(urlFileName(url.toString()));
+                    this.setLoadedGame(name);
                 }
                 return res;
             });
         } else {
-            throw 'Unrecognised file type: ' + url.split('/').pop();
+            throw 'Unrecognised file type: ' + name;
         }
     }
     async openUrlList(urls) {
@@ -944,15 +985,25 @@ class Emulator extends EventEmitter {
         this.worker.postMessage({ message: 'setPrinterFeed', on });
     }
 
-    /* Calls back once loadRoms() has resolved and any openUrl/autoStart from
-     * the constructor's opts has run - immediately if that's already
-     * happened. The public JSSpeccy(...) return value's onReady delegates
-     * to this. */
+    /* Calls back once the core and the ROMs are in and the machine is set
+     * up, immediately if that has already happened. */
     onReady(callback) {
         if (this.isReady) {
             callback();
         } else {
             this.onReadyHandlers.push(callback);
+        }
+    }
+
+    /* Calls back once, beyond that, the files in the constructor's
+     * opts.openUrl are open and opts.autoStart has started the machine,
+     * immediately if that has already happened. The public JSSpeccy(...)
+     * return value's onReady delegates to this. */
+    onStarted(callback) {
+        if (this.isStarted) {
+            callback();
+        } else {
+            this.onStartedHandlers.push(callback);
         }
     }
 
@@ -1797,7 +1848,7 @@ window.JSSpeccy = (container, opts) => {
         loadSnapshotFromStruct: (snapshot) => {
             emu.loadSnapshot(snapshot);
         },
-        onReady: (callback) => { emu.onReady(callback); },
+        onReady: (callback) => { emu.onStarted(callback); },
         exit: () => {exit();},
         machine: createMachineApi(emu),
         keyboard: createKeyboardApi(emu),

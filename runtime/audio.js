@@ -83,6 +83,12 @@ let workletUrl = null;
  * the browser resamples for the device. */
 const MAX_SAMPLE_RATE = 48000;
 
+/* A context made without a user gesture (autoStart, a dropped file, a
+ * scripted start) starts suspended; the next of these on the page resumes
+ * it. */
+const RESUME_EVENTS = ['pointerdown', 'keydown', 'touchend'];
+const isHeld = (audioContext) => (audioContext.state === 'suspended') || (audioContext.state === 'interrupted');
+
 export class AudioHandler {
     constructor() {
         this.isActive = false;
@@ -141,11 +147,28 @@ export class AudioHandler {
         }
 
         this.isActive = true;
+        this.resumeOnGesture(audioContext);
 
         if (ENABLE_OSCILLOSCOPE) {
             this.canvas.width = this.samplesPerFrame;
             this.canvas.height = 64;
         }
+    }
+
+    resumeOnGesture(audioContext) {
+        if (!isHeld(audioContext)) return;
+        const unwatch = () => RESUME_EVENTS.forEach(type => document.removeEventListener(type, resume, true));
+        const resume = () => {
+            if ((this.audioContext !== audioContext) || !isHeld(audioContext)) {
+                unwatch();
+                return;
+            }
+            audioContext.resume().then(() => {
+                if (!isHeld(audioContext)) unwatch();
+            }, () => {});
+        };
+        RESUME_EVENTS.forEach(type => document.addEventListener(type, resume, true));
+        this.stopResumeWatch = unwatch;
     }
 
     /* Main-thread fallback. Its callbacks can be delayed by a busy page, but
@@ -173,6 +196,8 @@ export class AudioHandler {
         if (this.scriptNode) this.scriptNode.disconnect();
         this.workletNode = null;
         this.scriptNode = null;
+        if (this.stopResumeWatch) this.stopResumeWatch();
+        this.stopResumeWatch = null;
         this.audioContext.close();
     }
 

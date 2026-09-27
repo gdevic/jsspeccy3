@@ -299,13 +299,16 @@ async function fetchImage(gid) {
 async function insertTape(buffer, format, ui, emu, name) {
     // Named after the game, so a saved session keeps this tape.
     const fileName = (name || 'PlayZX game') + (format === 'tzx' ? '.tzx' : '.tap');
+    let result;
     if (format === 'tzx') {
         if (!TZXFile.isValid(buffer)) throw new PlayZXError(UNSUPPORTED_ERROR);
-        await emu.openTZXFile(buffer, { name: fileName });
+        result = await emu.openTZXFile(buffer, { name: fileName });
     } else {
         if (!TAPFile.isValid(buffer)) throw new PlayZXError(UNSUPPORTED_ERROR);
-        await emu.openTAPFile(buffer, { name: fileName });
+        result = await emu.openTAPFile(buffer, { name: fileName });
     }
+    // The emulator turned the tape away, and kept the one it had.
+    if (result.error) throw new PlayZXError('The emulator could not read this tape: ' + result.error);
     // Let the Pokes dialog match trainers against the catalog title.
     if (name) emu.setLoadedGame(name);
     ui.hideDialog();

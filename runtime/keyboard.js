@@ -171,12 +171,17 @@ export class BaseKeyboardHandler {
         // or application) sends its keyup elsewhere, so every key is released
         // as focus leaves rather than staying held on the Spectrum.
         this.blurHandler = () => this.releaseAllKeys();
+        // The same goes for focus moving elsewhere on the page, out of the root element.
+        this.focusoutHandler = (evt) => {
+            if (!evt.relatedTarget || !this.rootElement.contains(evt.relatedTarget)) this.releaseAllKeys();
+        };
     }
 
     start() {
         this.rootElement.addEventListener('keydown', this.keydownHandler);
         this.rootElement.addEventListener('keyup', this.keyupHandler);
         this.rootElement.addEventListener('keypress', this.keypressHandler);
+        this.rootElement.addEventListener('focusout', this.focusoutHandler);
         window.addEventListener('blur', this.blurHandler);
         this.eventsAreBound = true;
     }
@@ -185,6 +190,7 @@ export class BaseKeyboardHandler {
         this.rootElement.removeEventListener('keydown', this.keydownHandler);
         this.rootElement.removeEventListener('keyup', this.keyupHandler);
         this.rootElement.removeEventListener('keypress', this.keypressHandler);
+        this.rootElement.removeEventListener('focusout', this.focusoutHandler);
         window.removeEventListener('blur', this.blurHandler);
         // With the listeners gone no keyup arrives, so nothing may stay held
         if (this.eventsAreBound) this.releaseAllKeys();

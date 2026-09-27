@@ -170,6 +170,17 @@ function checkedSettings(saved) {
     return settings;
 }
 
+/* Whether the worker will take the tape: a TZX file is read through, since
+ * its signature says nothing about the blocks after it. */
+function tapeReads(data, isTZX) {
+    if (!isTZX) return TAPFile.isValid(data);
+    try {
+        return TZXFile.isValid(data) && !!new TZXFile(data);
+    } catch (e) {
+        return false;
+    }
+}
+
 /* Reads a session from an opened ZIP back into the parts buildSessionFile
  * takes, with the snapshot ready for Emulator.loadSnapshot(). Everything is
  * checked here, before anything is changed, so a damaged session is turned
@@ -195,7 +206,7 @@ export async function readSessionFile(zip) {
         const name = safeName(manifest.tape.name, 'tape.tzx');
         const data = await need(manifest.tape.file, 'arraybuffer');
         const isTZX = name.toLowerCase().endsWith('.tzx');
-        if (!(isTZX ? TZXFile.isValid(data) : TAPFile.isValid(data))) throw new Error('The tape in the session, ' + name + ', is damaged.');
+        if (!tapeReads(data, isTZX)) throw new Error('The tape in the session, ' + name + ', is damaged.');
         const block = Number.isInteger(manifest.tape.block) && manifest.tape.block >= 0 ? manifest.tape.block : 0;
         const positionMs = (Number.isFinite(manifest.tape.positionMs) && manifest.tape.positionMs >= 0) ? manifest.tape.positionMs : null;
         tape = { name, data, block, positionMs, isTZX };
