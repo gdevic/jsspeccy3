@@ -411,10 +411,12 @@ function buildPanel(printer) {
  * session starts with a fresh roll. The printout is stored deflated, which
  * the browser does asynchronously, so for the last save as the page goes
  * away it is stored as it is instead, in runs. */
+// On a first visit, with nothing kept yet, the printer is connected.
 function loadConnected() {
     try {
         const saved = JSON.parse(localStorage.getItem(STATE_KEY));
-        return !!(saved && saved.connected);
+        if (saved === null) return true;
+        return !!saved.connected;
     } catch (e) {
         return false;
     }

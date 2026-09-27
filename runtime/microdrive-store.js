@@ -225,11 +225,12 @@ export async function duplicate(id) {
 }
 
 /* Which cartridge (by id, or null) sits in each drive, and whether the
- * Interface 1 is connected. */
+ * Interface 1 is connected. On a first visit, with nothing kept yet, it is
+ * connected with empty drives. */
 export function getDockState() {
     try {
         const raw = localStorage.getItem(DOCK_KEY);
-        if (!raw) return { connected: false, drives: new Array(DRIVE_COUNT).fill(null) };
+        if (!raw) return { connected: true, drives: new Array(DRIVE_COUNT).fill(null) };
         const parsed = JSON.parse(raw);
         const drives = new Array(DRIVE_COUNT).fill(null);
         if (Array.isArray(parsed.drives)) {

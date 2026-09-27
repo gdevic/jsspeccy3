@@ -215,11 +215,12 @@ export async function duplicate(id) {
 }
 
 /* Whether the tape recorder is connected, and which cassette (by id, or
- * null) is in it - or waiting in it, disconnected, to go back in. */
+ * null) is in it - or waiting in it, disconnected, to go back in. On a first
+ * visit, with nothing kept yet, the recorder is connected. */
 export function getDeckState() {
     try {
         const parsed = JSON.parse(localStorage.getItem(DECK_KEY));
-        if (!parsed) return { connected: false, cassette: null };
+        if (!parsed) return { connected: true, cassette: null };
         return { connected: !!parsed.connected, cassette: (typeof parsed.cassette === 'string') ? parsed.cassette : null };
     } catch (e) {
         return { connected: false, cassette: null };
