@@ -1758,8 +1758,17 @@ window.JSSpeccy = (container, opts) => {
     }
 
     const openGameBrowser = () => {
+        const wasRunning = emu.isRunning;
         emu.pause();
         const body = ui.showDialog();
+        // Closing the dialog, by its X or after opening a game, sets the machine going as it was.
+        const originalHideDialog = ui.hideDialog;
+        ui.hideDialog = () => {
+            delete ui.hideDialog;
+            originalHideDialog.call(ui);
+            if (wasRunning) emu.start();
+            emu.focus();
+        };
         body.innerHTML = `
             <label>Find games</label>
             <form>
@@ -1777,7 +1786,8 @@ window.JSSpeccy = (container, opts) => {
         searchForm.addEventListener('submit', (e) => {
             e.preventDefault();
             searchButton.innerText = 'Searching...';
-            const searchTerm = input.value.replace(/[^\w\s\-\']/, '');
+            // anything that could end the quoted title in the query goes
+            const searchTerm = input.value.replace(/[^\w\s\-\']/g, '');
 
             const encodeParam = (key, val) => {
                 return encodeURIComponent(key) + '=' + encodeURIComponent(val);
@@ -1793,8 +1803,13 @@ window.JSSpeccy = (container, opts) => {
                 + '&' + encodeParam('page', '1')
                 + '&' + encodeParam('output', 'json')
             )
+            const failed = (what) => (err) => {
+                searchButton.innerText = 'Search';
+                alert(what + ': ' + ((err && err.message) || err));
+            };
             fetch(searchUrl).then(response => {
                 searchButton.innerText = 'Search';
+                if (!response.ok) throw new Error('HTTP ' + response.status);
                 return response.json();
             }).then(data => {
                 resultsContainer.innerHTML = '<ul></ul><p>- powered by <a href="https://archive.org/">Internet Archive</a></p>';
@@ -1812,8 +1827,11 @@ window.JSSpeccy = (container, opts) => {
                     resultLink.addEventListener('click', (e) => {
                         e.preventDefault();
                         fetch(
-                            'https://archive.org/metadata/' + result.identifier
-                        ).then(response => response.json()).then(data => {
+                            'https://archive.org/metadata/' + encodeURIComponent(result.identifier)
+                        ).then(response => {
+                            if (!response.ok) throw new Error('HTTP ' + response.status);
+                            return response.json();
+                        }).then(data => {
                             let chosenFilename = null;
                             data.files.forEach(file => {
                                 const ext = file.name.split('.').pop().toLowerCase();
@@ -1824,7 +1842,9 @@ window.JSSpeccy = (container, opts) => {
                             if (!chosenFilename) {
                                 alert('No loadable file found');
                             } else {
-                                const finalUrl = 'https://cors.archive.org/cors/' + result.identifier + '/' + chosenFilename;
+                                // the file's path within the item, a segment at a time, keeping its slashes
+                                const finalUrl = 'https://cors.archive.org/cors/' + encodeURIComponent(result.identifier)
+                                    + '/' + chosenFilename.split('/').map(encodeURIComponent).join('/');
                                 emu.openUrl(finalUrl).catch((err) => {
                                     alert(err);
                                 }).then(() => {
@@ -1833,10 +1853,10 @@ window.JSSpeccy = (container, opts) => {
                                     emu.start();
                                 });
                             }
-                        })
+                        }).catch(failed('Could not list the game’s files'));
                     })
                 })
-            })
+            }).catch(failed('The search failed'));
         })
         input.focus();
     }

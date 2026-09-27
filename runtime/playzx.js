@@ -222,8 +222,10 @@ const db = new PlayZXDatabase();
  * else is reported as a generic network failure. */
 class PlayZXError extends Error {}
 
-/* Guards against a second Load click while one is in flight. */
-let loadInProgress = false;
+/* Guards against a second Load click while one is in flight: the load in
+ * flight, or null. Closing the dialog lets it go, and a load that finishes
+ * after that leaves alone the guard of one started since. */
+let loadInProgress = null;
 
 async function decodeStoredImage(plaintext) {
     if (plaintext.length < 37) throw new PlayZXError('Invalid data.');
@@ -320,7 +322,8 @@ async function loadGame(gid, name, ui, emu, setStatus, isClosed) {
     const status = (typeof setStatus === 'function') ? setStatus : () => {};
     const closed = (typeof isClosed === 'function') ? isClosed : () => false;
     if (loadInProgress) return;
-    loadInProgress = true;
+    const thisLoad = {};
+    loadInProgress = thisLoad;
     status('Loading…');
     try {
         const {buffer, format} = await fetchImage(gid);
@@ -340,7 +343,7 @@ async function loadGame(gid, name, ui, emu, setStatus, isClosed) {
             status(NETWORK_ERROR);
         }
     } finally {
-        loadInProgress = false;
+        if (loadInProgress === thisLoad) loadInProgress = null;
     }
 }
 
@@ -356,7 +359,7 @@ export function openPlayZXDialog(ui, emu) {
     const close = () => {
         if (closed) return;
         closed = true;
-        loadInProgress = false;
+        loadInProgress = null;
         document.removeEventListener('keydown', onKeyDown, true);
         delete ui.hideDialog;
         originalHideDialog.call(ui);
@@ -541,6 +544,12 @@ export function openPlayZXDialog(ui, emu) {
     searchInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
+            // the results must be for what the box says now, not for a search still waiting to run
+            if (searchTimer) {
+                clearTimeout(searchTimer);
+                searchTimer = null;
+                runSearch();
+            }
             if (results.length) load(results[0].gid, results[0].name);
         }
     });

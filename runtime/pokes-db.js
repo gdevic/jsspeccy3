@@ -39,8 +39,14 @@ export class PokesDatabase {
         this.games = null;   // [{name, year, pub, tokens, trainers}]
     }
 
+    // A load that fails is forgotten, so the next one tries again.
     load() {
-        if (!this._loadPromise) this._loadPromise = this._doLoad();
+        if (!this._loadPromise) {
+            this._loadPromise = this._doLoad().catch((err) => {
+                this._loadPromise = null;
+                throw err;
+            });
+        }
         return this._loadPromise;
     }
 

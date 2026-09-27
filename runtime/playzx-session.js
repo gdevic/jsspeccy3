@@ -14,6 +14,8 @@ let cached = null; // {sid, keyBytes, exp}
 let turnstilePromise = null;
 let mintPromise = null;
 
+/* The verification widget's script, loaded once; a load that fails is
+ * forgotten, with its script element, so the next download tries again. */
 function loadTurnstile() {
     if (turnstilePromise) return turnstilePromise;
     turnstilePromise = new Promise((resolve, reject) => {
@@ -21,8 +23,13 @@ function loadTurnstile() {
         const script = document.createElement('script');
         script.src = TURNSTILE_SCRIPT_URL;
         script.async = true;
-        script.onload = () => resolve(window.turnstile);
-        script.onerror = () => reject(new Error('Failed to load the verification widget.'));
+        const fail = () => {
+            script.remove();
+            turnstilePromise = null;
+            reject(new Error('Failed to load the verification widget.'));
+        };
+        script.onload = () => (window.turnstile ? resolve(window.turnstile) : fail());
+        script.onerror = fail;
         document.head.appendChild(script);
     });
     return turnstilePromise;
