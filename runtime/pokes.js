@@ -126,12 +126,15 @@ export function openPokesDialog(ui, emu) {
     });
     root.appendChild(pokeDetailBar);
 
+    /* A byte read from memory is shown whatever it was, 0 included; the
+     * catalog's original is shown only when not 0, which many .pok files
+     * write for "not known". */
     function formatPoke(p, actualValue, actualOriginal) {
         const value = (actualValue !== undefined) ? actualValue : p.value;
-        const original = (actualOriginal !== undefined) ? actualOriginal : p.original;
+        const original = (actualOriginal !== undefined) ? actualOriginal : (p.original || null);
         let s = 'POKE ' + p.address + ',' + (value === 256 ? '<value>' : value);
         if (!(p.bank & 0x08)) s = 'bank ' + (p.bank & 0x07) + ': ' + s;
-        if (original) s += ' (was ' + original + ')';
+        if (original !== null) s += ' (was ' + original + ')';
         return s;
     }
 

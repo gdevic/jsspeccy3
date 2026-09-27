@@ -110,6 +110,11 @@ export class PlayZXDatabase {
         this._loaded = true;
     }
 
+    // Whether the catalog is in, which every query below needs.
+    get loaded() {
+        return this._loaded;
+    }
+
     count() {
         const stmt = this.db.prepare('SELECT COUNT(*) AS n FROM Images');
         try {
@@ -520,6 +525,12 @@ export function openPlayZXDialog(ui, emu) {
             return;
         }
         help.style.display = 'none';
+        // until the catalog is in, the status says it is loading, and the search runs once it is
+        if (!db.loaded) {
+            results = [];
+            searchResults.innerHTML = '';
+            return;
+        }
 
         const found = db.search(query, MAX_RESULTS);
         if (found && !Array.isArray(found) && found.error) {
@@ -582,6 +593,12 @@ export function openPlayZXDialog(ui, emu) {
 
     function showNames(index) {
         alphaList.innerHTML = '';
+        // the letter's titles come once the catalog is in
+        if (!db.loaded) {
+            alphaList.appendChild(el('div', {margin: '4px 0', color: '#666', fontSize: '90%'},
+                {textContent: 'The game database is still loading.'}));
+            return;
+        }
         const names = db.alphaNames(index) || [];
         alphaList.appendChild(el('div',
             {margin: '4px 0', color: '#666', fontSize: '90%'},
@@ -627,6 +644,7 @@ export function openPlayZXDialog(ui, emu) {
     db.load().then(() => {
         setStatus('');
         runSearch();
+        if (currentAlpha !== null) showNames(currentAlpha);
         searchInput.focus();
     }).catch((e) => {
         setStatus('Failed to load game database: ' + ((e && e.message) ? e.message : e));

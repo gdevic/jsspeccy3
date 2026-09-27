@@ -811,9 +811,9 @@ function mdrPortMdrOut(val:u8):void {
 /* Port 0xef read: status. Bit 0 = write protect (active low, only while a
 drive's motor runs), bit 1 = sync, bit 2 = gap (both active low once a
 half's preamble has been written, alternating 15 reads high/low so the
-ROM's edge-driven primitive can find a sector boundary), bit 3 = busy
-(unused by the ROM), bit 4 = DTR (RS232, always "not ready" - nothing
-attached). */
+ROM's edge-driven primitive can find a sector boundary), bit 3 = DTR
+(RS232, always "not ready" - nothing attached), bit 4 = busy (unused by
+the ROM). */
 function mdrPortCtrIn():u8 {
     let ret:u8 = 0xff;
     for (let m:i32 = 0; m < 8; m++) {

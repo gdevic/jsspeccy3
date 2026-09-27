@@ -730,8 +730,9 @@ export class UIController extends EventEmitter {
         );
     }
 
+    // Resolves once in fullscreen; rejects where the browser refuses it.
     enterFullscreen() {
-        this.appContainer.requestFullscreen();
+        return this.appContainer.requestFullscreen();
     }
     exitFullscreen() {
         if (this.isFullscreen) {

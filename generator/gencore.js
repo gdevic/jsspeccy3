@@ -129,8 +129,11 @@ const TYPE_SIZES = {
 let mem = 0;
 const vars = {};
 
+// Each array starts on a multiple of its element size, so its loads and stores are aligned.
 const allocateArray = (varName, type, count) => {
-    const len = TYPE_SIZES[type] * count;
+    const size = TYPE_SIZES[type];
+    const len = size * count;
+    mem = Math.ceil(mem / size) * size;
     vars[varName] = new ArrayVariable(mem, type);
     mem += len;
 }

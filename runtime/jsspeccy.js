@@ -1919,7 +1919,11 @@ window.JSSpeccy = (container, opts) => {
     return {
         setZoom: (zoom) => {displayByApi(zoom); ui.setZoom(zoom);},
         toggleFullscreen: () => {ui.toggleFullscreen();},
-        enterFullscreen: () => {displayByApi('fullscreen'); ui.enterFullscreen();},
+        enterFullscreen: () => {
+            displayByApi('fullscreen');
+            // refused, it makes no change for the note to pass over
+            Promise.resolve(ui.enterFullscreen()).catch(() => { apiDisplay = null; });
+        },
         exitFullscreen: () => {ui.exitFullscreen();},
         setMachine: (model) => {emu.setMachine(model);},
         setJoystickType: (type) => {emu.setJoystickType(type);},

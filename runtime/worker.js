@@ -808,7 +808,7 @@ const loadCore = (baseUrl) => {
         core = results.instance.exports;
         memory = core.memory;
         memoryData = new Uint8Array(memory.buffer);
-        workerFrameData = memoryData.subarray(core.FRAME_BUFFER, FRAME_BUFFER_SIZE);
+        workerFrameData = memoryData.subarray(core.FRAME_BUFFER, core.FRAME_BUFFER + FRAME_BUFFER_SIZE);
         registerPairs = new Uint16Array(core.memory.buffer, core.REGISTERS, 12);
         tapePulses = new Uint16Array(core.memory.buffer, core.TAPE_PULSES, core.TAPE_PULSES_LENGTH);
         soundEdges = new Uint32Array(core.memory.buffer, core.SOUND_EDGES, core.SOUND_EDGES_LENGTH);

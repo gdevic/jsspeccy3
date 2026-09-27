@@ -202,22 +202,24 @@ export async function readSessionFile(zip) {
     const root = await sessionRoot(zip);
     if (root === null) throw new Error('This ZIP file is not a saved session.');
     const manifest = JSON.parse(await zip.file(root + MANIFEST).async('string'));
-    if (!(manifest.version <= VERSION)) throw new Error('This session was saved by a newer version of the emulator.');
+    if (!Number.isFinite(manifest.version)) throw new Error('This session is damaged: its session.json has no version.');
+    if (manifest.version > VERSION) throw new Error('This session was saved by a newer version of the emulator.');
 
-    const need = async (path, type) => {
+    // A part the manifest names, or `what` it should have named, is missing.
+    const need = async (path, type, what) => {
         const file = (typeof path === 'string') ? zip.file(root + path) : null;
-        if (!file) throw new Error('The session is missing ' + path + '.');
+        if (!file) throw new Error('The session is missing ' + ((typeof path === 'string') ? path : what) + '.');
         return file.async(type);
     };
 
     const machine = manifest.machine || {};
-    const snapshot = parseSZXFile(await need(machine.snapshot, 'arraybuffer'));
+    const snapshot = parseSZXFile(await need(machine.snapshot, 'arraybuffer', 'its machine snapshot'));
     if (machine.printerMechanism) snapshot.printer = machine.printerMechanism;
 
     let tape = null;
     if (manifest.tape) {
         const name = safeName(manifest.tape.name, 'tape.tzx');
-        const data = await need(manifest.tape.file, 'arraybuffer');
+        const data = await need(manifest.tape.file, 'arraybuffer', 'its tape file');
         const isTZX = name.toLowerCase().endsWith('.tzx');
         if (!tapeReads(data, isTZX)) throw new Error('The tape in the session, ' + name + ', is damaged.');
         const block = Number.isInteger(manifest.tape.block) && manifest.tape.block >= 0 ? manifest.tape.block : 0;
@@ -233,7 +235,7 @@ export async function readSessionFile(zip) {
         const givenIds = new Map();  // id in the manifest -> id here
         for (const c of (Array.isArray(recorder.cassettes) ? recorder.cassettes : [])) {
             if (!c || typeof c !== 'object') continue;
-            const raw = await need(c.file, 'arraybuffer');
+            const raw = await need(c.file, 'arraybuffer', 'a cassette file');
             let blocks;
             try {
                 blocks = parseCassetteFile(raw).blocks;
@@ -272,7 +274,8 @@ export async function readSessionFile(zip) {
     const saved = manifest.microdrives || {};
     const cartridges = [];
     for (const c of (Array.isArray(saved.cartridges) ? saved.cartridges : [])) {
-        const data = new Uint8Array(await need(c.file, 'arraybuffer'));
+        if (!c || typeof c !== 'object') continue;
+        const data = new Uint8Array(await need(c.file, 'arraybuffer', 'a cartridge file'));
         if (!validateMDRFile(data.buffer)) throw new Error('A cartridge in the session, ' + c.file + ', is damaged.');
         cartridges.push({
             id: typeof c.id === 'string' ? c.id : null,
@@ -287,7 +290,7 @@ export async function readSessionFile(zip) {
     const drives = (Array.isArray(saved.drives) ? saved.drives : []).map(id => (typeof id === 'string') ? id : null);
 
     const printer = manifest.printer || {};
-    const printout = new Uint8Array(await need(printer.printout, 'arraybuffer'));
+    const printout = new Uint8Array(await need(printer.printout, 'arraybuffer', 'its printout'));
     const rows = [];
     for (let i = 0; i + ROW_BYTES <= printout.length; i += ROW_BYTES) rows.push(printout.slice(i, i + ROW_BYTES));
 
