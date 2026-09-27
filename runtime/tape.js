@@ -20,6 +20,13 @@ const CATCH_MARGIN_MS = 100;
  * ever; a loop of 65535 repeats over a few such blocks stays well within it. */
 const MAX_CONTROL_STEPS = 1 << 20;
 
+/* How many blocks a TZX timeline lays out at most, a loop's repeats
+ * included. */
+const MAX_TIMELINE_ENTRIES = 1 << 20;
+
+// Where the walk through a TZX file's blocks starts (see TZXFile.controlState).
+const START_STATE = Object.freeze({ index: 0, loopTo: undefined, repeats: undefined, calls: [] });
+
 function msToString(ms) {
     const secs = Math.round(ms / 1000);
     return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
@@ -39,7 +46,9 @@ function groupSegments(timed) {
         if (cur) { segments.push(cur); cur = null; }
     };
     for (const b of timed) {
-        blockStartMs[b.index] = totalTstates / TSTATES_PER_MS;
+        const startMs = totalTstates / TSTATES_PER_MS;
+        // a block the tape plays more than once starts where it is first played
+        if (blockStartMs[b.index] === undefined) blockStartMs[b.index] = startMs;
         if (b.endsPart) {
             closeSegment();
             continue;
@@ -49,7 +58,7 @@ function groupSegments(timed) {
         if (!cur) {
             cur = {
                 index: b.index,           // block to seek to when this segment is chosen
-                startMs: blockStartMs[b.index],
+                startMs,
                 tstates: 0, bytes: 0, name: '',
             };
         }
@@ -441,12 +450,14 @@ export class TAPFile {
 
         this.nextBlockIndex = 0;
         /* Whether the tape goes round again after its last block, as it
-         * does for the toolbar's player; in the tape recorder it stops at
-         * the end, like a real one. */
+         * does for the toolbar's player, where it stops at the end and Play
+         * or a loader starts it again from the beginning; in the tape
+         * recorder it stops at the end, like a real one. */
         this.wrap = true;
         /* T-states of the next block's pilot tone already past the head,
          * after a seek into the middle of it. */
         this.pilotSkipTstates = 0;
+        this.lastLoadedEndMs = 0;  // see getNextLoadableBlock
 
         this.pulseGenerator = new PulseGenerator((generator) => {
             if (this.blocks.length === 0) return false;
@@ -550,6 +561,8 @@ export class TAPFile {
         }
     }
 
+    /* The next block, going round to the first where the tape does;
+     * lastLoadedEndMs is then where on the timeline it ends. */
     getNextLoadableBlock() {
         if (this.blocks.length === 0) return null;
         // a block loaded in one go takes any pilot skip from a seek with it
@@ -558,9 +571,10 @@ export class TAPFile {
             if (!this.wrap) return null;
             this.nextBlockIndex = 0;
         }
-        const block = this.blocks[this.nextBlockIndex];
-        this.nextBlockIndex = this.wrap ? ((this.nextBlockIndex + 1) % this.blocks.length) : (this.nextBlockIndex + 1);
-        return block;
+        const index = this.nextBlockIndex;
+        this.lastLoadedEndMs = ((index + 1) < this.blocks.length) ? this.blockStartMs[index + 1] : this.totalMs;
+        this.nextBlockIndex = this.wrap ? ((index + 1) % this.blocks.length) : (index + 1);
+        return this.blocks[index];
     }
 
     static isValid(data) {
@@ -996,9 +1010,10 @@ export class TZXFile {
         this.callStack = [];
         this.wrap = true;          // see TAPFile
         this.pilotSkipTstates = 0;
+        this.lastLoadedEndMs = 0;  // see getNextLoadableBlock
 
         this.pulseGenerator = new PulseGenerator((generator) => {
-            const block = this.getNextMeaningfulBlock(false);
+            const block = this.getNextMeaningfulBlock();
             if (!block) return false;
             block.generatePulses(generator, this.nextBlockIndex - 1);
             return true;
@@ -1007,9 +1022,7 @@ export class TZXFile {
         this.buildTimeline();
     }
 
-    /* Per-block timing/size for the cassette-counter UI. Uses linear block order
-     * (loops/jumps are rare and only wrap pilot tones), which is accurate enough
-     * for the segment list. */
+    // Per-block timing/size for the cassette-counter UI.
     blockTiming(block) {
         switch (block.type) {
             case 'StandardSpeedData': {
@@ -1058,11 +1071,40 @@ export class TZXFile {
         }
     }
 
+    /* Lays the blocks out in the order the tape plays them, following its
+     * jumps, loops and calls, so a block in a loop is there once for each
+     * time round. Each entry of `timeline` holds where the walk stands just
+     * before it, for seeking there; `endMsAfter` maps where the walk stands
+     * just after a block that plays to where that block ends. A tape that
+     * goes round for ever is laid out up to where it starts repeating. */
     buildTimeline() {
-        const timed = this.blocks.map((block, index) => {
-            const info = this.blockTiming(block);
-            return { index, ...info };
-        });
+        const saved = this.controlState();
+        this.setControlState(START_STATE);
+        const timed = [];
+        this.timeline = [];
+        this.endMsAfter = new Map();
+        const seen = new Set();
+        let tstates = 0;
+        const add = (index, state) => {
+            const info = this.blockTiming(this.blocks[index]);
+            timed.push({ index, ...info });
+            this.timeline.push({ index, startMs: tstates / TSTATES_PER_MS, state });
+            tstates += info.tstates;
+        };
+        while (this.timeline.length < MAX_TIMELINE_ENTRIES) {
+            const block = this.getNextMeaningfulBlock((index) => add(index, this.controlState()));
+            if (!block) break;
+            const after = this.controlState();
+            const before = { ...after, index: after.index - 1 };
+            const key = TZXFile.stateKey(before);
+            // the tape plays on from here as it already has
+            if (seen.has(key)) break;
+            seen.add(key);
+            add(before.index, before);
+            this.endMsAfter.set(TZXFile.stateKey(after), tstates / TSTATES_PER_MS);
+        }
+        this.setControlState(saved);
+
         const t = groupSegments(timed);
         this.segments = t.segments;
         this.totalMs = t.totalMs;
@@ -1070,13 +1112,12 @@ export class TZXFile {
         this.blockStartMs = t.blockStartMs;
     }
 
-    /* Rewind/fast-forward so the next meaningful block played/loaded is `index`. */
+    /* Rewind/fast-forward so the next meaningful block played/loaded is
+     * `index`, the first time the tape reaches it. */
     seekToBlock(index) {
         if (index < 0 || index >= this.blocks.length) return;
-        this.nextBlockIndex = index;
-        this.loopToBlockIndex = undefined;
-        this.repeatCount = undefined;
-        this.callStack = [];
+        const entry = this.timeline.find(e => e.index === index);
+        this.setControlState(entry ? entry.state : { ...START_STATE, index });
         this.pilotSkipTstates = 0;
         this.pulseGenerator.reset();
     }
@@ -1094,10 +1135,9 @@ export class TZXFile {
     }
 
     /* Where a loader starting at the tape's current position can still
-     * catch `block`: before its pilot tone ends for a block that has one,
-     * otherwise only before it starts. */
-    catchUntilMs(block, index) {
-        const startMs = this.blockStartMs[index];
+     * catch `block`, starting at `startMs`: before its pilot tone ends for a
+     * block that has one, otherwise only before it starts. */
+    catchUntilMs(block, startMs) {
         let toneMs = 0;
         if (block.type === 'StandardSpeedData') toneMs = pilotMs(block.data);
         else if (block.type === 'TurboSpeedData') toneMs = (block.pilotPulseLength * block.pilotPulseCount) / TSTATES_PER_MS;
@@ -1106,18 +1146,15 @@ export class TZXFile {
 
     /* Winds the tape to `ms` from its start, as TAPFile.seekToMs does. */
     seekToMs(ms) {
-        const index = this.blocks.findIndex((block, i) => ms <= this.catchUntilMs(block, i));
-        if (index < 0) {
-            this.nextBlockIndex = this.blocks.length;
-            this.loopToBlockIndex = undefined;
-            this.repeatCount = undefined;
-            this.callStack = [];
-            this.pilotSkipTstates = 0;
-            this.pulseGenerator.reset();
+        const entry = this.timeline.find(e => ms <= this.catchUntilMs(this.blocks[e.index], e.startMs));
+        this.pilotSkipTstates = 0;
+        this.pulseGenerator.reset();
+        if (!entry) {
+            this.setControlState({ ...START_STATE, index: this.blocks.length });
             return;
         }
-        this.seekToBlock(index);
-        const startMs = this.blockStartMs[index];
+        this.setControlState(entry.state);
+        const startMs = entry.startMs;
         if (ms < startMs) {
             this.pulseGenerator.addSegment(new SilenceSegment((startMs - ms) * TSTATES_PER_MS));
         } else {
@@ -1129,15 +1166,10 @@ export class TZXFile {
      * null at the end of the tape. A jump or call outside the tape ends it,
      * and so do control blocks that go round without ever reaching a block
      * that plays. */
-    getNextMeaningfulBlock(wrapAtEnd) {
-        let startedAtZero = (this.nextBlockIndex === 0);
+    getNextMeaningfulBlock(onSkip) {
         for (let steps = 0; steps < MAX_CONTROL_STEPS; steps++) {
             if (this.nextBlockIndex < 0) break;
-            if (this.nextBlockIndex >= this.blocks.length) {
-                if (startedAtZero || !wrapAtEnd) return null; /* have looped around; quit now */
-                this.nextBlockIndex = 0;
-                startedAtZero = true;
-            }
+            if (this.nextBlockIndex >= this.blocks.length) return null;
             var block = this.blocks[this.nextBlockIndex];
             switch (block.type) {
                 case 'JumpToBlock':
@@ -1173,9 +1205,13 @@ export class TZXFile {
                     this.nextBlockIndex = this.callStack.length ? this.callStack.pop() : (this.nextBlockIndex + 1);
                     break;
                 default:
+                    /* a block that plays; any other is skipped, and passed to onSkip */
+                    if (block.generatePulses) {
+                        this.nextBlockIndex++;
+                        return block;
+                    }
+                    if (onSkip) onSkip(this.nextBlockIndex);
                     this.nextBlockIndex++;
-                    /* a block that plays; any other is skipped */
-                    if (block.generatePulses) return block;
             }
         }
         this.nextBlockIndex = this.blocks.length;
@@ -1183,18 +1219,41 @@ export class TZXFile {
         return null;
     }
 
+    /* Where the walk through the blocks stands: the next block to look at,
+     * the loop it is in and the calls it will return from. */
+    controlState() {
+        return { index: this.nextBlockIndex, loopTo: this.loopToBlockIndex, repeats: this.repeatCount, calls: this.callStack.slice() };
+    }
+
+    setControlState(state) {
+        this.nextBlockIndex = state.index;
+        this.loopToBlockIndex = state.loopTo;
+        this.repeatCount = state.repeats;
+        this.callStack = state.calls.slice();
+    }
+
+    static stateKey(state) {
+        return state.index + '/' + state.loopTo + '/' + state.repeats + '/' + state.calls.join(',');
+    }
+
     /* Reads on to the end of the tape and, where the tape goes round, once
-     * more from its start, so a tape with nothing loadable on it gives null. */
+     * more from its start, so a tape with nothing loadable on it gives null.
+     * lastLoadedEndMs is then where on the timeline the block it returns
+     * ends. */
     getNextLoadableBlock() {
         this.pilotSkipTstates = 0;  // see TAPFile
         let mayWrap = this.wrap && (this.nextBlockIndex > 0);
         while (true) {
-            const block = this.getNextMeaningfulBlock(false);
+            const block = this.getNextMeaningfulBlock();
             if (block) {
-                if (block.type == 'StandardSpeedData' || block.type == 'TurboSpeedData') return block.data;
+                if (block.type == 'StandardSpeedData' || block.type == 'TurboSpeedData') {
+                    const endMs = this.endMsAfter.get(TZXFile.stateKey(this.controlState()));
+                    this.lastLoadedEndMs = (endMs !== undefined) ? endMs : (this.blockStartMs[this.nextBlockIndex] ?? this.totalMs);
+                    return block.data;
+                }
             } else {
                 if (!mayWrap) return null;
-                this.nextBlockIndex = 0;
+                this.setControlState(START_STATE);
                 mayWrap = false;
             }
         }

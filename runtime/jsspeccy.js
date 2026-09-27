@@ -850,12 +850,15 @@ class Emulator extends EventEmitter {
         if (!loaders) return;
         return this.openUrl(new URL(loaders[this.tapeAutoLoadMode], scriptUrl), {trackName: false});
     }
-    /* `quiet` (restoring a session) moves the tape without starting a load. */
-    seekTape(blockIndex, quiet) {
+    /* `quiet` (restoring a session) moves the tape without starting a load.
+     * `positionMs`, a part's start, picks which time round a block the tape
+     * plays more than once is sought; otherwise it is the first. */
+    seekTape(blockIndex, quiet, positionMs) {
         this.worker.postMessage({
             message: 'seekTape',
             index: blockIndex,
             quiet: !!quiet,
+            positionMs,
         });
     }
     /* `reason` is passed back with a cassette that leaves the recorder:
@@ -1408,7 +1411,7 @@ window.JSSpeccy = (container, opts) => {
             const items = segs.map((seg, i) => ({ label: seg.label, current: i === currentSeg }));
             ui.showTapePopup('Jump to tape segment', items, (index) => {
                 // The worker's reply starts whatever needs to read the tape.
-                emu.seekTape(segs[index].index);
+                emu.seekTape(segs[index].index, false, segs[index].startMs);
                 emu.focus();
             });
         });

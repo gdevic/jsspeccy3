@@ -985,7 +985,7 @@ function buildPanel(emu, controller, openBox) {
                 if (justLoaded()) return;
                 selectPart(seg);
                 // A game tape's part is loaded as the toolbar's counter does it.
-                if (isOwn) emu.windTape(seg.startMs); else emu.seekTape(seg.index);
+                if (isOwn) emu.windTape(seg.startMs); else emu.seekTape(seg.index, false, seg.startMs);
                 emu.focus();
             });
         });

@@ -714,6 +714,16 @@ const serviceDeck = () => {
     if (moving && (framesSinceDeckStatus === 0)) postTapePosition();
 };
 
+/* A tape that goes round again (the toolbar's player) and has played to its
+ * end starts again from the beginning. */
+const rewindIfRunOut = () => {
+    if (!tape.wrap || !tape.pulseGenerator.isAtEnd()) return;
+    tape.seekToBlock(0);
+    tapePositionTstates = 0;
+    if (core) core.resetTapePulseBuffer();
+    postTapePosition();
+};
+
 /* Start the tape when the core has seen a loader start sampling EAR, and stop it
  * once the loader has gone idle. Only a tape that detection started is stopped
  * by it, so a tape the user set playing keeps running. A cassette holds only
@@ -724,7 +734,8 @@ const serviceLoaderDetection = () => {
     const active = core.takeLoaderActivity() >= LOADER_ACTIVE_READS;
     const portRead = core.takeEarReads() > 0;
     const trapOnly = tape && tape.isCassette && tapeTrapsEnabled;
-    if (startRequested && tape && !trapOnly && !tapeIsPlaying && !autoPlaySuppressed && !tape.pulseGenerator.isAtEnd()) {
+    if (startRequested && tape && !trapOnly && !tapeIsPlaying && !autoPlaySuppressed && (tape.wrap ? (tape.totalMs > 0) : !tape.pulseGenerator.isAtEnd())) {
+        rewindIfRunOut();
         setTapePlaying(true, true);
     } else if (tapeIsPlaying && tapeAutoPlayed) {
         if (active) loaderIdleFrames = 0;
@@ -1017,7 +1028,6 @@ const trapTapeLoad = () => {
     if (deckMoving()) return;
     framesSinceTapeTrap = 0;
     if (!tape.isCassette) tape.catchPlayingBlock();
-    const beforeIndex = tape.nextBlockIndex;
     const fromMs = tapePositionMs();
     const block = tape.getNextLoadableBlock(fromMs);
     if (!block) {
@@ -1035,13 +1045,10 @@ const trapTapeLoad = () => {
         tape.seekToMs(tape.lastLoadedEndMs);
         if (tapeIsPlaying) core.resetTapePulseBuffer();
         postTapePosition();
-    } else if (tape.blockStartMs) {
+    } else {
         // Advance the cassette counter: an instant (trapped) load jumps straight to
-        // the next block's start, or to the end once we wrap past the last block.
-        const afterIndex = tape.nextBlockIndex;
-        tapePositionTstates = (afterIndex > beforeIndex && afterIndex < tape.blockStartMs.length)
-            ? tape.blockStartMs[afterIndex] * TSTATES_PER_MS
-            : tape.totalMs * TSTATES_PER_MS;
+        // the end of the block it read.
+        tapePositionTstates = tape.lastLoadedEndMs * TSTATES_PER_MS;
         /* A later part played in real time carries on from here: in the recorder
          * from where its counter now is, otherwise from the next block, with
          * what was left of any block playing dropped. */
@@ -1072,45 +1079,46 @@ const trapTapeLoad = () => {
     if (expectedBlockType != actualBlockType) {
         success = false;
     } else {
-        if (shouldLoad) {
-            let offset = 1;
-            let loadedBytes = 0;
-            let checksum = actualBlockType;
-            while (loadedBytes < requestedLength) {
-                if (offset >= block.length) {
-                    /* have run out of bytes to load */
-                    success = false;
-                    break;
-                }
-                const byte = block[offset++];
-                loadedBytes++;
-                core.poke(addr, byte);
-                addr = (addr + 1) & 0xffff;
-                checksum ^= byte;
+        let offset = 1;
+        let doneBytes = 0;
+        let checksum = actualBlockType;
+        let lastByte = 0;
+        while (doneBytes < requestedLength) {
+            if (offset >= block.length) {
+                /* have run out of bytes to load */
+                success = false;
+                break;
             }
-
-            // if loading is going right, we should still have a checksum byte left to read
-            success &= (offset < block.length);
-            let lastByte = loadedBytes ? block[offset - 1] : 0;
-            if (success) {
-                const expectedChecksum = block[offset];
-                lastByte = expectedChecksum;
-                checksum ^= expectedChecksum;
-                success = (checksum === 0);
+            const byte = block[offset++];
+            checksum ^= byte;
+            lastByte = byte;
+            if (!shouldLoad && (core.peek(addr) !== byte)) {
+                /* VERIFY stops at the first byte that differs, with IX on it (LD-VERIFY at 0x05BD) */
+                success = false;
+                break;
             }
-
-            /* Leave the registers as LD-BYTES itself does on return: IX past the
-             * last byte stored, DE counting the bytes still wanted, H holding the
-             * running parity (0 on success) and L the last byte read. Loaders run
-             * code from the block they just loaded that picks up from IX, e.g.
-             * Tomahawk's BASIC decrypts itself relative to it. */
-            registerPairs[8] = addr;  /* IX */
-            registerPairs[2] = (requestedLength - loadedBytes) & 0xffff;  /* DE */
-            registerPairs[3] = ((checksum & 0xff) << 8) | lastByte;  /* HL */
-        } else {
-            // VERIFY. TODO: actually verify.
-            success = true;
+            if (shouldLoad) core.poke(addr, byte);
+            doneBytes++;
+            addr = (addr + 1) & 0xffff;
         }
+
+        // if loading is going right, we should still have a checksum byte left to read
+        if (success) success = (offset < block.length);
+        if (success) {
+            const expectedChecksum = block[offset];
+            lastByte = expectedChecksum;
+            checksum ^= expectedChecksum;
+            success = (checksum === 0);
+        }
+
+        /* Leave the registers as LD-BYTES itself does on return: IX past the
+         * last byte stored or verified, DE counting the bytes still wanted, H
+         * holding the running parity (0 on success) and L the last byte read.
+         * Loaders run code from the block they just loaded that picks up from
+         * IX, e.g. Tomahawk's BASIC decrypts itself relative to it. */
+        registerPairs[8] = addr;  /* IX */
+        registerPairs[2] = (requestedLength - doneBytes) & 0xffff;  /* DE */
+        registerPairs[3] = ((checksum & 0xff) << 8) | lastByte;  /* HL */
     }
 
     if (success) {
@@ -1385,13 +1393,16 @@ onmessage = (e) => {
         case 'seekTape':
             if (tape) {
                 autoPlaySuppressed = false;
+                const atPart = Number.isFinite(e.data.positionMs);
+                const toMs = atPart ? e.data.positionMs : (tape.blockStartMs[e.data.index] || 0);
                 if (deckConnected) {
                     // The recorder winds there, and reports the seek on arriving.
-                    windTo(tape.blockStartMs[e.data.index] || 0, { quiet: !!e.data.quiet }, !!e.data.quiet);
+                    windTo(toMs, { quiet: !!e.data.quiet }, !!e.data.quiet);
                     break;
                 }
-                tape.seekToBlock(e.data.index);
-                tapePositionTstates = (tape.blockStartMs[e.data.index] || 0) * TSTATES_PER_MS;
+                if (atPart) tape.seekToMs(toMs);
+                else tape.seekToBlock(e.data.index);
+                tapePositionTstates = toMs * TSTATES_PER_MS;
                 if (core) core.resetTapePulseBuffer();
                 postTapePosition();
                 postTapeSeeked(e.data.quiet);
@@ -1418,6 +1429,7 @@ onmessage = (e) => {
                 pressDeckKey('play');
             } else if (tape) {
                 autoPlaySuppressed = false;
+                rewindIfRunOut();
                 setTapePlaying(true);
             }
             break;
