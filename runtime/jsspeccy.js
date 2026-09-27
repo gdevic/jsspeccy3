@@ -488,11 +488,13 @@ class Emulator extends EventEmitter {
             type,
         });
         this.machineType = type;
+        this.activePokes.clear();  // the new machine starts with its memory cleared
         this.emit('setMachine', type);
     }
 
     reset() {
         this.worker.postMessage({message: 'reset'});
+        this.activePokes.clear();  // the ROM clears memory on reset
     }
 
     /* Puts the standard ('standard') or the alternate ('gw03') ROM in as the
@@ -560,6 +562,7 @@ class Emulator extends EventEmitter {
             this.fileOpenPromiseResolutions[fileID] = (result) => {
                 if (!result.error) {
                     this.machineType = snapshot.model;
+                    this.activePokes.clear();  // memory holds the snapshot's now
                     this.emit('setMachine', snapshot.model);
                 }
                 resolve(result);

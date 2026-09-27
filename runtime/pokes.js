@@ -152,6 +152,9 @@ export function openPokesDialog(ui, emu) {
 
     /* ----- apply / undo a trainer ----- */
 
+    // The byte a poke goes to: through the current paging, or in one RAM bank.
+    const pokeLocation = (p) => ((p.bank & 0x08) ? 'paged' : 'bank' + (p.bank & 0x07)) + ':' + p.address;
+
     async function applyTrainer(game, trainerIndex, userValue) {
         const trainer = game.trainers[trainerIndex];
         const pokes = trainer.pokes.map(p => ({
@@ -165,19 +168,32 @@ export function openPokesDialog(ui, emu) {
         renderApplied();
     }
 
+    /* Unticking puts back, for each byte the trainer poked, what was there
+     * before its first poke to it. Where a trainer ticked later poked the same
+     * byte, that one keeps the byte, and takes over what to put back when it
+     * is unticked in turn. emu.activePokes holds the trainers in the order
+     * they were ticked. */
     async function undoTrainer(game, trainerIndex) {
         const key = trainerKey(game, trainerIndex);
         const active = emu.activePokes.get(key);
         if (!active) return;
-        const restore = active.pokes.map((p, i) => ({
-            bank: p.bank,
-            address: p.address,
-            value: active.originals[i],
-        }));
-        await emu.applyPokes(restore);
+        const entries = [...emu.activePokes.entries()];
+        const later = entries.slice(entries.findIndex(([k]) => k === key) + 1).map(([, a]) => a);
+        const restore = [];
+        active.pokes.forEach((p, i) => {
+            const location = pokeLocation(p);
+            if (active.pokes.findIndex(q => pokeLocation(q) === location) !== i) return;  // not its first poke to the byte
+            const above = later.find(a => a.pokes.some(q => pokeLocation(q) === location));
+            if (above) {
+                above.originals[above.pokes.findIndex(q => pokeLocation(q) === location)] = active.originals[i];
+            } else {
+                restore.push({ bank: p.bank, address: p.address, value: active.originals[i] });
+            }
+        });
+        if (restore.length) await emu.applyPokes(restore);
         emu.activePokes.delete(key);
-        setStatus('Restored: ' + game.trainers[trainerIndex].name + ' — '
-            + restore.map(p => 'POKE ' + p.address + ',' + p.value).join('  •  '));
+        setStatus('Restored: ' + game.trainers[trainerIndex].name
+            + (restore.length ? ' — ' + restore.map(p => 'POKE ' + p.address + ',' + p.value).join('  •  ') : ''));
         renderApplied();
     }
 
