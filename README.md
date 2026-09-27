@@ -22,7 +22,7 @@ A ZX Spectrum emulator for the browser
 * Detects custom tape loaders (Speedlock and other turbo loaders) and plays the tape for them automatically, fast-forwarded when instant loading is on
 * Loads any of the above files from inside a ZIP file
 * Saves and restores the whole session as one file: the running machine, tape, tape recorder cassettes, Microdrive cartridges, printout and settings
-* A portable cassette recorder: SAVE records onto 60-minute cassettes kept in the browser between visits, and LOAD reads them back, with working keys, turning reels and a tape counter in seconds
+* A portable cassette recorder: SAVE records onto 60-minute cassettes kept in the browser between visits, and LOAD reads them back, with working keys, turning reels and a tape counter in seconds; holding Record yourself records the machine's beeper sound too
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
 * Opens games straight from the PlayZX online catalog (~10,800 titles)
@@ -47,11 +47,13 @@ The toolbar button beside the tape eject button connects a portable cassette rec
 
 The keys work as a real recorder's do: Play; Record, which takes Play down with it and springs back on a write-protected tape; Rewind and F Fwd, which build up speed and stop by themselves at either end of the tape; Stop; and Eject, which opens the door and puts your cassette back in the box, keeping its place on the tape. The reels turn as fast as the tape would drive them, the take-up reel slowing as it fills, the counter counts the seconds along the tape from 0000 to 3600, and the red light shows while recording. The motor hums, winding whines as it speeds up, and the keys clunk. The Spectrum's MIC output also reaches its speaker faintly, as on a real 48K, so a SAVE is heard whether the recorder is connected or not.
 
-`SAVE` presses Record and Play by itself, and lets them go again once it is done, recording wherever the tape is. With File → Instant tape loading on, each block goes onto the tape at once and the counter jumps past it; with it off, the ROM saves in real time, border stripes and all, while the tape runs. Recording erases what it goes over, as on a real tape; when it erases an earlier recording, the recorder says what it recorded over and offers to undo it. `LOAD` reads onwards from wherever the tape is, as a real tape is read, and never winds it by itself: wind to the part you want first, with Rewind and F Fwd or by picking the part in the recorder's panel. With nothing on the tape ahead, LOAD waits, and the recorder says so. The ROM's own saving routine is what is caught, so `SAVE "name"`, `SAVE "name" CODE`, `SAVE "name" SCREEN$` and `SAVE "name" DATA`, from 48 BASIC or 128 BASIC or a program calling that routine, are all recorded; a program's own turbo saver is not. A SAVE cut short by BREAK, Stop or the end of the tape leaves a damaged recording, which fails to load with "R Tape loading error".
+`SAVE` presses Record and Play by itself, and lets them go again once it is done, recording wherever the tape is. With File → Instant tape loading on, each block goes onto the tape at once and the counter jumps past it; with it off, the ROM saves in real time, border stripes and all, while the tape runs. Recording erases what it goes over, as on a real tape; when it erases an earlier recording, the recorder says what it recorded over and offers to undo it. `LOAD` reads onwards from wherever the tape is, as a real tape is read, and never winds it by itself: wind to the part you want first, with Rewind and F Fwd or by picking the part in the recorder's panel. With nothing on the tape ahead, LOAD waits, and the recorder says so. The ROM's own saving routine is what is caught, so `SAVE "name"`, `SAVE "name" CODE`, `SAVE "name" SCREEN$` and `SAVE "name" DATA`, from 48 BASIC or 128 BASIC or a program calling that routine, are all recorded; a program's own turbo saver is recorded only while you hold Record yourself, as sound (see below). A SAVE cut short by BREAK, Stop or the end of the tape leaves a damaged recording, which fails to load with "R Tape loading error".
 
-Clicking the recorder's window opens its panel. With a cassette in, it shows a map of the whole tape and a list of the parts on it, each at its place on the counter with its type and size, and the `LOAD` command that reads it back, ready to copy; clicking a part winds the tape to it. The last row is the blank tape after the recordings: wind there to SAVE something new without recording over the rest. The panel also names the cassette, changes its label's colour, write-protects it and saves it to the PC. For a pre-recorded tape, clicking a part loads it, as the toolbar's counter does. An empty recorder's panel offers the cassettes in the box, a new blank one, or a `.tap` or `.tzx` file from the PC.
+Pressing Record yourself also records the machine's sound, as a real recorder does: the Spectrum's MIC socket carries the speaker's signal as well as SAVE's, so game music, `BEEP` and anything else played on the beeper goes onto the tape while Record is held, and Play plays it back through the speaker. The speaker and MIC bits of port 0xFE are recorded alike, as one level that rises and falls with the socket's voltage, and a recording plays back as loud as anything else on tape. Each stretch of sound becomes a part of its own, called Sound, from its first change of level to its last; after five seconds of silence the tape goes on blank and the next sound starts a new part. A stretch too short to count, such as the key clicks while typing `SAVE`, is left off the tape, and a `SAVE` made while Record is held still records its blocks as data, with the sound carrying on after them. Recording over part of a sound recording cuts out only the part recorded over. `LOAD` skips sound as it skips blank tape, but a turbo saver's output recorded this way loads again in real time, with File → Instant tape loading off. Only the beeper reaches the tape: the 128K's sound chip does not.
 
-**File → Tape cassettes…** opens the cassette box, where cassettes are kept. Every cassette lives in the browser's storage (IndexedDB) with its place on the tape, and survives a reload, as does which cassette is in the recorder. The box creates blank C60 cassettes, imports `.tap` and `.tzx` files, imports or saves the whole box as a ZIP file, and for each cassette shows what is on it and can rename it, change its colour, write-protect it, save it to the PC, duplicate it or delete it. A cassette saves as a `.tzx` file whose pauses are the blank tape between its recordings, so it loads in any emulator with every recording at its place, or as a `.tap` file of the recordings one after another. A TZX file with turbo or custom-loader blocks can't become a cassette: open it with File → Open instead, and it plays in the recorder as a pre-recorded tape.
+Clicking the recorder's window opens its panel. With a cassette in, it shows a map of the whole tape and a list of the parts on it, each at its place on the counter with its type and size (a sound recording with its length in seconds), and the `LOAD` command that reads it back, ready to copy; clicking a part winds the tape to it. The last row is the blank tape after the recordings: wind there to SAVE something new without recording over the rest. The panel also names the cassette, changes its label's colour, write-protects it and saves it to the PC. For a pre-recorded tape, clicking a part loads it, as the toolbar's counter does. An empty recorder's panel offers the cassettes in the box, a new blank one, or a `.tap` or `.tzx` file from the PC.
+
+**File → Tape cassettes…** opens the cassette box, where cassettes are kept. Every cassette lives in the browser's storage (IndexedDB) with its place on the tape, and survives a reload, as does which cassette is in the recorder. The box creates blank C60 cassettes, imports `.tap` and `.tzx` files, imports or saves the whole box as a ZIP file, and for each cassette shows what is on it and can rename it, change its colour, write-protect it, save it to the PC, duplicate it or delete it. A cassette saves as a `.tzx` file whose pauses are the blank tape between its recordings, with sound recordings as direct recording blocks sampled at 44.3 kHz, so it loads in any emulator with every recording at its place, or as a `.tap` file of the data recordings one after another, which leaves the sound out. A TZX file with turbo or custom-loader blocks can't become a cassette: open it with File → Open instead, and it plays in the recorder as a pre-recorded tape.
 
 ## ZX Interface 1 and Microdrives
 
@@ -176,7 +178,7 @@ Keys are named `A` to `Z`, `0` to `9`, `ENTER`, `SPACE` (or `BREAK_SPACE`), `CAP
 The tape recorder calls resolve once the emulator has done what they ask, so `emu.tape.status()` then tells how things are. Where the page doesn't offer the recorder (`sandbox`, or `uiEnabled` false), everything but `status`, `parts` and `until` throws.
 
 * `emu.tape.status()` - the recorder now: `{connected, kind, cassette, mode, auto, saving, loading, positionMs, lengthMs, blankFromMs, writeProtect, instantLoading}`, where `kind` is `"cassette"`, `"game"` or `null`, `cassette` is the box's `{id, label, colour, writeProtect}` for your cassette in the recorder, `mode` is the key held down (`"stop"`, `"play"`, `"record"`, `"rewind"` or `"ffwd"`), `auto` is set when a SAVE or a loader pressed it, and `saving` is set while a SAVE records in real time
-* `emu.tape.parts()` - the parts on the tape, as the recorder's panel lists them: `{startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged}`
+* `emu.tape.parts()` - the parts on the tape, as the recorder's panel lists them: `{startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged, sound}`
 * `emu.tape.connect()` and `emu.tape.disconnect()` - connect or disconnect the recorder
 * `emu.tape.newCassette(label)` - put a new blank C60 in the box and in the recorder; resolves to its id in the box
 * `emu.tape.importCassette(data, fileName)` - put a `.tap` or `.tzx` file's bytes in the box as a cassette, and in the recorder; resolves to its id
@@ -190,18 +192,19 @@ The tape recorder calls resolve once the emulator has done what they ask, so `em
 * `emu.tape.data()` - the cassette in the recorder as a `.tzx` file's bytes, what has been recorded so far included, or `null`
 * `emu.tape.until(condition, timeoutMs)` - resolve with the status once `condition(status)` is true, checking every 20ms, or fail after `timeoutMs` (10 seconds unless given)
 
-For example, to SAVE a program onto a new cassette from 48 BASIC:
+For example, to record the sound of `BEEP 1,0` on a new cassette:
 
 ```javascript
 emu.machine.powerOn();
 await new Promise(resolve => setTimeout(resolve, 3000));  // the 48K boots
-await emu.tape.newCassette('demo');
-await emu.keyboard.type('S"demo"\n');  // SAVE "demo", S being SAVE in 48 BASIC
-await new Promise(resolve => setTimeout(resolve, 800));  // "Start tape, then press any key."
-await emu.keyboard.press('ENTER');
-// SAVE presses Record by itself and lets it go once it is done
-await emu.tape.until(s => (s.mode === 'stop') && (emu.tape.parts().length > 0));
-console.log(emu.tape.parts());  // a Program part named "demo"
+await emu.tape.newCassette('beep');
+await emu.tape.press('record');
+await emu.keyboard.press(['CAPS_SHIFT', 'SYMBOL_SHIFT']);  // extended mode
+await emu.keyboard.press(['SYMBOL_SHIFT', 'Z']);           // BEEP
+await emu.keyboard.type('1,0\n');
+await new Promise(resolve => setTimeout(resolve, 2000));
+await emu.tape.press('stop');
+console.log(emu.tape.parts());  // a part whose typeName is "Sound"
 ```
 
 The emulator's version is available, without starting it, as the string `JSSpeccy.version` (e.g. `"3.2.3"`). The bundled `index.html` shows it in the browser tab title.

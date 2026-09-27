@@ -1,14 +1,15 @@
 /*
  * runtime/cassette.js: cassettes for the tape recorder: timing, files and parts.
  *
- * A cassette is a length of tape, CASSETTE_MS long, holding standard-speed
- * blocks, each at the place on the tape where it was recorded, with blank
- * tape between them. A block is kept as TAP-style bytes: the flag byte, the
- * data and the parity byte. On disk and in storage a cassette is a TZX file
- * of standard-speed blocks whose pauses are the blank tape between them, so
- * it loads in any emulator and reads back with every block where it was.
- * There is no DOM here: the worker, the recorder and saved sessions all use
- * it.
+ * A cassette is a length of tape, CASSETTE_MS long, holding blocks, each at
+ * the place on the tape where it was recorded, with blank tape between them.
+ * Most are standard-speed blocks, kept as TAP-style bytes: the flag byte, the
+ * data and the parity byte ({startMs, data}). The rest are sound recordings
+ * ({startMs, sound}, see below). On disk and in storage a cassette is a TZX
+ * file of standard-speed and direct recording blocks whose pauses are the
+ * blank tape between them, so it loads in any emulator and reads back with
+ * every block where it was. There is no DOM here: the worker, the recorder
+ * and saved sessions all use it.
  */
 
 export const TSTATES_PER_MS = 3500;
@@ -37,6 +38,7 @@ const PART_GAP_MS = 5000;
 const TZX_SIGNATURE = 'ZXTape!\x1A';
 const MAX_PAUSE_MS = 65535;
 const MAX_BLOCK_BYTES = 65535;
+const MAX_SOUND_BYTES = 0xffffff;  // a direct recording block's length field is 24 bits
 
 /* Popcount lookup, used to total the 1-bits of a data block so we can compute a
  * block's exact play duration without walking every bit individually. */
@@ -82,6 +84,52 @@ export const pilotMs = (data) => (PILOT_PULSE * pilotPulses(data)) / TSTATES_PER
 /* The last position on the tape from which a loader still catches `block`
  * ({startMs, data}): a moment before its pilot tone ends. */
 export const catchUntilMs = (block) => block.startMs + pilotMs(block.data) - CATCH_MARGIN_MS;
+
+/* A sound recording is what the machine played while the user held Record:
+ * the MIC socket carries the speaker's signal as well as SAVE's, so a real
+ * recorder puts both on the tape. It is kept as a TZX direct recording block
+ * keeps it, the level at the MIC socket one bit a sample, the first in bit 7:
+ * {bits, from, count, tstatesPerSample}, the `count` samples from sample
+ * `from` of `bits`. Pieces of a recording cut up share its `bits`, which
+ * never change under them. */
+export const SOUND_TSTATES_PER_SAMPLE = 79;  // 44.3 kHz, the rate the TZX format gives for 44.1 kHz
+
+export const soundMs = (sound) => (sound.count * sound.tstatesPerSample) / TSTATES_PER_MS;
+
+// The level of sample `i` of `sound`.
+export const soundLevel = (sound, i) => (sound.bits[(sound.from + i) >> 3] >> (7 - ((sound.from + i) & 7))) & 1;
+
+// Samples `start` up to `end` of `sound`.
+export const soundSlice = (sound, start, end) => ({ ...sound, from: sound.from + start, count: end - start });
+
+// Whether the level changes anywhere in `sound`: a stretch where it doesn't is as good as blank tape.
+export function soundChanges(sound) {
+    const first = soundLevel(sound, 0);
+    for (let i = 1; i < sound.count; i++) {
+        if (soundLevel(sound, i) !== first) return true;
+    }
+    return false;
+}
+
+// The samples of `sound` packed from bit 7 of the first byte, as a direct recording block holds them.
+function packSound(sound) {
+    const out = new Uint8Array((sound.count + 7) >> 3);
+    const first = sound.from >> 3;
+    const shift = sound.from & 7;
+    if (shift === 0) {
+        out.set(sound.bits.subarray(first, first + out.length));
+    } else {
+        for (let i = 0; i < out.length; i++) {
+            out[i] = (sound.bits[first + i] << shift) | ((sound.bits[first + i + 1] || 0) >> (8 - shift));
+        }
+    }
+    const spare = (out.length * 8) - sound.count;
+    if (out.length) out[out.length - 1] &= 0xff << spare;
+    return out;
+}
+
+// Where a block, standard-speed or sound, ends on the tape.
+export const blockEndMs = (block) => block.startMs + (block.sound ? soundMs(block.sound) : blockMs(block.data));
 
 /* Positions on the tape are fractions of a millisecond that pass through
  * T-state counts and TZX pauses in whole milliseconds, so two that should be
@@ -153,24 +201,39 @@ export function loadCommand(header) {
 /* What is on a cassette, as parts: a header with the data block it
  * introduces, or a block standing alone. Each part is {index (its first
  * block), blockIndices, startMs, endMs, name, typeName, length (data bytes),
- * loadCommand (or null), damaged}. A part is damaged when a block fails its
- * parity check, the data doesn't match its header's length, or the header's
- * data block is missing. */
+ * loadCommand (or null), damaged, sound}. A part is damaged when a block
+ * fails its parity check, the data doesn't match its header's length, or the
+ * header's data block is missing. A sound recording is a part of its own,
+ * with no name and no data bytes. */
 export function describeParts(blocks) {
     const parts = [];
-    const endOf = (block) => block.startMs + blockMs(block.data);
     for (let i = 0; i < blocks.length; i++) {
         const block = blocks[i];
+        if (block.sound) {
+            parts.push({
+                index: i,
+                blockIndices: [i],
+                startMs: block.startMs,
+                endMs: blockEndMs(block),
+                name: '',
+                typeName: 'Sound',
+                length: 0,
+                loadCommand: null,
+                damaged: false,
+                sound: true,
+            });
+            continue;
+        }
         const header = parseHeader(block.data);
         if (header) {
             const next = blocks[i + 1];
-            const hasData = next && next.data.length && (next.data[0] !== 0x00)
-                && ((next.startMs - endOf(block)) <= PART_GAP_MS);
+            const hasData = next && next.data && next.data.length && (next.data[0] !== 0x00)
+                && ((next.startMs - blockEndMs(block)) <= PART_GAP_MS);
             parts.push({
                 index: i,
                 blockIndices: hasData ? [i, i + 1] : [i],
                 startMs: block.startMs,
-                endMs: hasData ? endOf(next) : endOf(block),
+                endMs: hasData ? blockEndMs(next) : blockEndMs(block),
                 name: header.name,
                 typeName: header.typeName,
                 length: header.length,
@@ -184,7 +247,7 @@ export function describeParts(blocks) {
                 index: i,
                 blockIndices: [i],
                 startMs: block.startMs,
-                endMs: endOf(block),
+                endMs: blockEndMs(block),
                 name: '',
                 typeName: (block.data.length && (block.data[0] === 0x00)) ? 'Header' : 'Headerless',
                 length: Math.max(0, block.data.length - 2),
@@ -199,7 +262,7 @@ export function describeParts(blocks) {
 // Where the blank tape after the last recording begins.
 export function blankFromMs(blocks) {
     let endMs = 0;
-    for (const block of blocks) endMs = Math.max(endMs, block.startMs + blockMs(block.data));
+    for (const block of blocks) endMs = Math.max(endMs, blockEndMs(block));
     return endMs;
 }
 
@@ -259,6 +322,7 @@ function parseTZX(bytes) {
     const need = (count) => { if ((pos + count) > bytes.length) throw damaged(); };
     const u8 = () => { need(1); return bytes[pos++]; };
     const u16 = () => { need(2); const v = bytes[pos] | (bytes[pos + 1] << 8); pos += 2; return v; };
+    const u24 = () => { need(3); const v = bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16); pos += 3; return v; };
     const u32 = () => { need(4); const v = (bytes[pos] | (bytes[pos + 1] << 8) | (bytes[pos + 2] << 16)) + (bytes[pos + 3] * 0x1000000); pos += 4; return v; };
     const skip = (count) => { need(count); pos += count; };
     while (pos < bytes.length) {
@@ -274,6 +338,22 @@ function parseTZX(bytes) {
                     blocks.push({ startMs, data });
                     startMs += blockMs(data);
                 }
+                startMs += pause;
+                break;
+            }
+            case 0x15: {
+                const tstatesPerSample = u16();
+                const pause = u16();
+                const lastBits = u8();
+                const length = u24();
+                need(length);
+                const count = length ? (((length - 1) * 8) + (((lastBits >= 1) && (lastBits <= 8)) ? lastBits : 8)) : 0;
+                if (count && tstatesPerSample) {
+                    const sound = { bits: bytes.slice(pos, pos + length), from: 0, count, tstatesPerSample };
+                    blocks.push({ startMs, sound });
+                    startMs += soundMs(sound);
+                }
+                pos += length;
                 startMs += pause;
                 break;
             }
@@ -304,8 +384,9 @@ function parseTZX(bytes) {
     return { blocks, label: label || '' };
 }
 
-/* Reads a .tap or .tzx file as a cassette: {blocks: [{startMs, data}],
- * label}. Throws with a message for the user when it cannot be one. */
+/* Reads a .tap or .tzx file as a cassette: {blocks: [{startMs, data} or
+ * {startMs, sound}], label}. Throws with a message for the user when it
+ * cannot be one. */
 export function parseCassetteFile(buffer) {
     const bytes = new Uint8Array(buffer);
     let cassette;
@@ -328,42 +409,71 @@ function textBlock(text) {
     return [0x30, chars.length, ...chars];
 }
 
-/* Writes a cassette as a TZX file. Every block is a standard-speed block
- * whose pause is the blank tape up to the next one, and blank tape longer
- * than a pause can hold, or before the first block, is written as pause
- * blocks. Each gap is rounded against the position a reader will work out
- * for the block, so rounding never adds up over a long tape. `label`, if
+/* Writes a cassette as a TZX file. A standard-speed block is a standard
+ * speed data block and a sound recording a direct recording block, split
+ * over more than one when it is too long for a block to hold. The last block
+ * of each has for its pause the blank tape up to the next one, and blank
+ * tape longer than a pause can hold, or before the first block, is written as
+ * pause blocks. Each gap is rounded against the position a reader will work
+ * out for the block, so rounding never adds up over a long tape. `label`, if
  * given, goes in as a text description, first. */
 export function writeCassetteTZX({ blocks, label }) {
-    const out = [];
-    for (let i = 0; i < TZX_SIGNATURE.length; i++) out.push(TZX_SIGNATURE.charCodeAt(i));
-    out.push(1, 20);
-    if (label) out.push(...textBlock(label));
+    const chunks = [];
+    const put = (...bytes) => chunks.push(Uint8Array.from(bytes));
+    put(...Array.from(TZX_SIGNATURE, c => c.charCodeAt(0)), 1, 20);
+    if (label) put(...textBlock(label));
     const pauses = (ms) => {
         while (ms > 0) {
             const pause = Math.min(ms, MAX_PAUSE_MS);
-            out.push(0x20, pause & 0xff, pause >> 8);
+            put(0x20, pause & 0xff, pause >> 8);
             ms -= pause;
         }
     };
+    const putSound = (sound, pause) => {
+        const bits = packSound(sound);
+        const rate = sound.tstatesPerSample;
+        for (let pos = 0; pos < bits.length; pos += MAX_SOUND_BYTES) {
+            const part = bits.subarray(pos, pos + MAX_SOUND_BYTES);
+            const last = (pos + part.length) === bits.length;
+            const used = last ? (sound.count - ((pos + part.length - 1) * 8)) : 8;
+            const partPause = last ? pause : 0;
+            put(0x15, rate & 0xff, rate >> 8, partPause & 0xff, partPause >> 8, used,
+                part.length & 0xff, (part.length >> 8) & 0xff, part.length >> 16);
+            chunks.push(part);
+        }
+    };
+    blocks = blocks.filter(block => !block.sound || block.sound.count);
     let readerMs = blocks.length ? Math.max(0, Math.round(blocks[0].startMs)) : 0;
     pauses(readerMs);
     blocks.forEach((block, i) => {
-        const data = (block.data.length > MAX_BLOCK_BYTES) ? block.data.subarray(0, MAX_BLOCK_BYTES) : block.data;
-        const duration = blockMs(data);
+        const data = block.sound ? null
+            : ((block.data.length > MAX_BLOCK_BYTES) ? block.data.subarray(0, MAX_BLOCK_BYTES) : block.data);
+        const duration = block.sound ? soundMs(block.sound) : blockMs(data);
         const next = blocks[i + 1];
         const gap = next ? Math.max(0, Math.round(next.startMs - (readerMs + duration))) : TAP_GAP_MS;
         const pause = Math.min(gap, MAX_PAUSE_MS);
-        out.push(0x10, pause & 0xff, pause >> 8, data.length & 0xff, data.length >> 8);
-        for (let j = 0; j < data.length; j++) out.push(data[j]);
+        if (block.sound) {
+            putSound(block.sound, pause);
+        } else {
+            put(0x10, pause & 0xff, pause >> 8, data.length & 0xff, data.length >> 8);
+            chunks.push(data);
+        }
         if (next) pauses(gap - pause);
         readerMs += duration + gap;
     });
-    return new Uint8Array(out);
+    const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
+    let pos = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, pos);
+        pos += chunk.length;
+    }
+    return out;
 }
 
-// Writes a cassette's blocks as a TAP file, one after another.
+/* Writes a cassette's blocks as a TAP file, one after another. A TAP file
+ * holds only data, so sound recordings are left out. */
 export function writeCassetteTAP(blocks) {
+    blocks = blocks.filter(block => !block.sound);
     const size = blocks.reduce((total, block) => total + 2 + Math.min(block.data.length, MAX_BLOCK_BYTES), 0);
     const out = new Uint8Array(size);
     let pos = 0;

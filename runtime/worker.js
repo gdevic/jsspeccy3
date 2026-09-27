@@ -1,7 +1,7 @@
 import { FRAME_BUFFER_SIZE } from './constants.js';
 import { TAPFile, TZXFile, CassetteTape } from './tape.js';
 import { setCartridgeName } from './mdr.js';
-import { blockMs, bytesThatFit, headerName, gameTapeLengthMs } from './cassette.js';
+import { blockMs, bytesThatFit, headerName, gameTapeLengthMs, SOUND_TSTATES_PER_SAMPLE } from './cassette.js';
 
 let core = null;
 let memory = null;
@@ -9,6 +9,7 @@ let memoryData = null;
 let workerFrameData = null;
 let registerPairs = null;
 let tapePulses = null;
+let soundEdges = null;
 
 let stopped = false;
 let tape = null;
@@ -52,6 +53,22 @@ let nothingAheadAt = null;        // the position the last "nothing ahead" hint 
 let deckJump = null;              // an instant SAVE or LOAD's jump along the tape, for the UI to show
 let pendingDeckSound = null;      // {kind, time}: a key's sound, made when the next frame runs
 let inFrame = false;              // a trap is being handled, part way through a frame
+
+/* The machine's sound going onto a cassette while the user holds Record, as
+ * a real recorder takes whatever is at the MIC socket (see setSoundRecording
+ * in the core). The level changes are gathered, placed where the tape was at
+ * the time, into a take: a sound recording from the first change to the
+ * last, in soundTake while it goes on. A take ends once the level has held
+ * still for SOUND_GAP_MS, the tape going on blank, and one with fewer than
+ * SOUND_MIN_EDGES changes, such as the key clicks while typing SAVE, is left
+ * off the tape. A take long enough to keep is put on the tape as it grows,
+ * every SOUND_SYNC_FRAMES, in place of the last put there. */
+let soundCapturing = false;       // the core is noting level changes
+let soundTake = null;             // {startT, lastT, edges, level, count, bits, block}, positions in tape T-states
+let framesSinceSoundSync = 0;
+const SOUND_GAP_MS = 5000;
+const SOUND_MIN_EDGES = 64;
+const SOUND_SYNC_FRAMES = 25;
 
 const DECK_AUTO_RELEASE_FRAMES = 75;  // ~1.5s after the last block of a SAVE
 const DECK_STATUS_FRAMES = 4;         // status posts while the tape moves
@@ -226,6 +243,7 @@ const postDeckHint = (kind, details) => {
  * recorded on since the last time, or always if `force`. */
 const flushCassette = (force) => {
     if (!tape || !tape.isCassette) return;
+    syncSoundTake();
     if (!cassetteDirty && !force) return;
     cassetteDirty = false;
     framesSinceCassetteFlush = 0;
@@ -241,29 +259,104 @@ const flushCassette = (force) => {
 };
 
 /* Brings the recording tape up to `toT` T-states into the frame, wiping it
- * as it goes past the head. Stops at the end of the tape. */
+ * as it goes past the head, and recording the machine's sound onto it if
+ * it is going there. Stops at the end of the tape. */
 const advanceRecording = (toT) => {
     if (!deckConnected || (deckMode !== 'record') || !tape || !tape.isCassette || (toT <= movedUntilT)) {
         movedUntilT = Math.max(movedUntilT, toT);
         return;
     }
+    const fromT = movedUntilT;
     const fromMs = tapePositionMs();
     const toMs = Math.min(tape.lengthMs, fromMs + ((toT - movedUntilT) / TSTATES_PER_MS));
     movedUntilT = toT;
     noteErased(tape.erase(fromMs, toMs));
     tapePositionTstates = toMs * TSTATES_PER_MS;
+    if (soundCapturing) takeSoundEdges(fromT, fromMs * TSTATES_PER_MS, toMs * TSTATES_PER_MS);
 };
 
 /* Notes what a recording erased, by the names in its headers; a block
- * without one counts once, as '', unless its header went too. */
+ * without one, sound recordings included, counts once, as '', unless its
+ * header went too. */
 const noteErased = (blocks) => {
     if (!blocks.length) return;
     cassetteDirty = true;
     for (const block of blocks) {
-        const name = (block.data[0] === 0x00) ? headerName(block.data) : '';
+        const name = (block.data && (block.data[0] === 0x00)) ? headerName(block.data) : '';
         if (!erasedNames.includes(name)) erasedNames.push(name);
     }
     postTapeInfo();
+};
+
+/* Whether the machine's sound goes onto the tape: while the user holds
+ * Record, but not while a SAVE is recording a block in real time. */
+const updateSoundCapture = () => {
+    const on = deckConnected && (deckMode === 'record') && !deckAuto && !pendingSave && !!tape && tape.isCassette;
+    if (on === soundCapturing) return;
+    soundCapturing = on;
+    if (core) core.setSoundRecording(on);
+    if (!on) endSoundTake();
+};
+
+/* Takes the level changes the core has noted, since the machine was at
+ * fromT in the frame and the tape at fromTapeT (T-states along it), into
+ * the take. The tape has since got to toTapeT, and a change the machine made
+ * at the very end of the frame is placed there. */
+const takeSoundEdges = (fromT, fromTapeT, toTapeT) => {
+    const count = core.getSoundEdgeCount();
+    for (let i = 0; i < count; i++) {
+        soundEdge(Math.min(toTapeT, fromTapeT + Math.max(0, soundEdges[i] - fromT)));
+    }
+    core.clearSoundEdges();
+};
+
+// A change of level at `atT` along the tape: it starts a take, or carries one on.
+const soundEdge = (atT) => {
+    if (soundTake && ((atT - soundTake.lastT) >= (SOUND_GAP_MS * TSTATES_PER_MS))) endSoundTake();
+    const take = soundTake;
+    if (!take) {
+        soundTake = { startT: atT, lastT: atT, edges: 1, level: 1, count: 0, bits: new Uint8Array(4096), block: null };
+        return;
+    }
+    fillSoundTake(take, Math.floor((atT - take.startT) / SOUND_TSTATES_PER_SAMPLE));
+    take.level ^= 1;
+    take.lastT = atT;
+    take.edges++;
+};
+
+/* Fills the take's samples up to `end` with the level it has held since
+ * its last change. What of the take is on the tape shares its buffer, but
+ * only the samples before `count`, which this never changes. */
+const fillSoundTake = (take, end) => {
+    if (end <= take.count) return;
+    if ((end >> 3) >= take.bits.length) {
+        const bits = new Uint8Array(Math.max(take.bits.length * 2, (end >> 3) + 1));
+        bits.set(take.bits);
+        take.bits = bits;
+    }
+    if (take.level) {
+        for (let i = take.count; i < end; i++) take.bits[i >> 3] |= 0x80 >> (i & 7);
+    }
+    take.count = end;
+};
+
+// Puts the take on the tape as it is so far, if it is long enough to keep.
+const syncSoundTake = () => {
+    framesSinceSoundSync = 0;
+    const take = soundTake;
+    if (!take || !tape || !tape.isCassette || (take.edges < SOUND_MIN_EDGES) || !take.count) return;
+    if (take.block && (take.block.sound.count === take.count)) return;
+    const sound = { bits: take.bits, from: 0, count: take.count, tstatesPerSample: SOUND_TSTATES_PER_SAMPLE };
+    take.block = tape.putSound(take.startT / TSTATES_PER_MS, sound, take.block);
+    cassetteDirty = true;
+    postTapeInfo();
+};
+
+// The take is over: it stays on the tape if it is long enough to keep.
+const endSoundTake = () => {
+    if (!soundTake) return;
+    syncSoundTake();
+    soundTake = null;
 };
 
 /* Presses Record (and Play with it). A recording erases as it goes, so the
@@ -278,17 +371,20 @@ const engageRecord = (auto) => {
     undoBlocks = tape.snapshotBlocks();
     erasedNames = [];
     updateCoreTapeState();
+    updateSoundCapture();
     postMotor();
     updateDeckSound();
 };
 
 /* The keys come up after recording: whatever was being SAVEd in real time
- * ends where the tape stopped, and the cassette goes back to the UI. */
+ * ends where the tape stopped, so does the machine's sound, and the cassette
+ * goes back to the UI. */
 const endRecording = () => {
     if (pendingSave) finishPendingSave(null);
     deckMode = 'stop';
     deckAuto = false;
     deckReleaseFrames = 0;
+    updateSoundCapture();
     tape.seekToMs(tapePositionMs());
     flushCassette(false);
     if (erasedNames.length) {
@@ -482,6 +578,7 @@ const finishPendingSave = (sent) => {
         flushCassette(false);
         postTapeInfo();
     }
+    updateSoundCapture();
     if (deckAuto && (deckMode === 'record')) deckReleaseFrames = DECK_AUTO_RELEASE_FRAMES;
     if (deckConnected) postDeckStatus();
 };
@@ -512,6 +609,8 @@ const trapTapeSave = () => {
     advanceRecording(tNow);
     // A block still being recorded in real time is over once SA-BYTES starts another.
     if (pendingSave) finishPendingSave(null);
+    // The block goes onto the tape in place of the machine's sound, which carries on after it.
+    endSoundTake();
     const flag = registerPairs[0] >> 8;
     const start = registerPairs[8];  /* IX */
     const length = registerPairs[2];  /* DE */
@@ -567,6 +666,7 @@ const trapTapeSave = () => {
             recordStopMs: null,
         };
         if (returnSP !== null) core.setSaveReturnTrap(true);
+        updateSoundCapture();
     }
     postDeckStatus();
 };
@@ -590,6 +690,7 @@ const serviceDeck = () => {
     if (tape && (deckMode === 'record')) {
         advanceRecording(frameCycles);
         if (pendingSave) checkPendingSave();
+        if (soundTake && (++framesSinceSoundSync >= SOUND_SYNC_FRAMES)) syncSoundTake();
         if (tapePositionMs() >= tape.lengthMs) {
             if (pendingSave) pendingSave.recordStopMs = tape.lengthMs;
             endRecording();
@@ -680,6 +781,7 @@ const loadCore = (baseUrl) => {
         workerFrameData = memoryData.subarray(core.FRAME_BUFFER, FRAME_BUFFER_SIZE);
         registerPairs = new Uint16Array(core.memory.buffer, core.REGISTERS, 12);
         tapePulses = new Uint16Array(core.memory.buffer, core.TAPE_PULSES, core.TAPE_PULSES_LENGTH);
+        soundEdges = new Uint32Array(core.memory.buffer, core.SOUND_EDGES, core.SOUND_EDGES_LENGTH);
         // the tape recorder may have been connected before the core was ready
         core.setSaveTraps(deckConnected);
 
@@ -856,6 +958,9 @@ const takeSnapshot = () => {
 
     const ayRegisters = [];
     for (let reg = 0; reg < 16; reg++) ayRegisters.push(core.getAYRegister(reg));
+
+    // the sound being recorded goes in the cassette as far as it has got
+    syncSoundTake();
 
     const drives = [];
     for (let d = 0; d < 8; d++) {

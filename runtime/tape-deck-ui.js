@@ -943,9 +943,10 @@ function buildPanel(emu, controller, openBox) {
         }
         segments.forEach((seg) => {
             const size = (seg.length !== undefined) ? `${seg.length} bytes` : `${Math.round((seg.bytes || 0) / 1024)}K`;
-            const detail = isOwn ? `${seg.typeName} · ${size} · ${Math.max(1, Math.round(seg.durationMs / 1000))} s`
-                : `${Math.max(1, Math.round(seg.durationMs / 1000))} s`;
-            const r = row(seg.startMs, isOwn ? (seg.name || '(no name)') : (seg.name || seg.label.split('  @')[0]), detail, seg.damaged);
+            const seconds = `${Math.max(1, Math.round(seg.durationMs / 1000))} s`;
+            const detail = (isOwn && !seg.sound) ? `${seg.typeName} · ${size} · ${seconds}` : seconds;
+            const name = seg.sound ? seg.typeName : (isOwn ? (seg.name || '(no name)') : (seg.name || seg.label.split('  @')[0]));
+            const r = row(seg.startMs, name, detail, seg.damaged);
             r.dataset.start = String(seg.startMs);
             r.dataset.end = String(seg.startMs + seg.durationMs);
             r.addEventListener('click', () => {

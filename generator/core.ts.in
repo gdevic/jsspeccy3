@@ -70,6 +70,14 @@ export const AUDIO_BUFFER_LEFT:usize = (&audioBufferLeft);
 #alloc audioBufferRight[1024]: f32
 export const AUDIO_BUFFER_RIGHT:usize = (&audioBufferLeft);
 
+/* The level changes at the MIC socket while the tape records sound, by
+T-state in the frame (see setSoundRecording). Kept straight after the audio
+buffers so it stays on a multiple of 4, and long enough for an OUT on every
+instruction of a frame. */
+#alloc soundEdges[8192]: u32
+export const SOUND_EDGES:usize = (&soundEdges);
+export const SOUND_EDGES_LENGTH:u32 = 8192;
+
 #alloc tapePulses[10000]: u16
 export const TAPE_PULSES:usize = (&tapePulses);
 export const TAPE_PULSES_LENGTH:usize = 10000;
@@ -343,6 +351,10 @@ let speakerState:u8 = 0;
 let micState:u8 = 0;  // the MIC output, bit 3 of port 0xfe, faintly heard in the speaker
 let micIn:f32 = 0.0;  // its level going into the speaker, and coming out after the DC is taken off
 let micOut:f32 = 0.0;
+let socketBits:u8 = 0;  // bits 4 and 3 of the last write to port 0xfe, as bits 1 and 0
+let soundRecording:bool = false;
+let soundLevel:u8 = 0;  // the level being recorded
+let soundEdgeCount:u32 = 0;
 let selectedAYRegister:u8 = 0;
 let floatingBusValue:u8 = 0xff;
 let currentTapeTime:u32 = 0;  // time at which tape pulse pointer was last updated
@@ -595,6 +607,23 @@ export function setTapePulseBufferState(writeIndex: u16, tstateCount:u32):void {
     tapePulseWriteIndex = writeIndex;
     tapePulseBufferTstateCount = tstateCount;
 }
+/* Sound going onto the tape: while `on`, each change of level at the MIC
+socket is noted at SOUND_EDGES. The speaker bit (4) and the MIC bit (3) both
+drive the socket, the speaker's much harder; both count the same here, the
+level going up as the socket's voltage rises and down as it falls, so a
+change of either, or of both together, is heard. */
+export function setSoundRecording(on:bool):void {
+    soundRecording = on;
+    soundLevel = socketBits >> 1;
+    soundEdgeCount = 0;
+}
+export function getSoundEdgeCount():u32 {
+    return soundEdgeCount;
+}
+export function clearSoundEdges():void {
+    soundEdgeCount = 0;
+}
+
 export function resetTapePulseBuffer():void {
     // Discard any buffered pulses so the tape can restart cleanly after a seek.
     tapePulseReadIndex = 0;
@@ -1220,6 +1249,15 @@ export function writePort(addr:u16, val:u8):void {
         borderColour = val & 0x07;
         speakerState = (val & 0x10) >> 4;
         micState = (val & 0x08) >> 3;
+        const bits:u8 = (val >> 3) & 0x03;
+        if (soundRecording && (bits != socketBits)) {
+            const level:u8 = (bits > socketBits) ? 1 : 0;
+            if ((level != soundLevel) && (soundEdgeCount < SOUND_EDGES_LENGTH)) {
+                soundEdges[soundEdgeCount++] = t;
+                soundLevel = level;
+            }
+        }
+        socketBits = bits;
     } else if (!(addr & 0x8002)) {
         /* 128/+2 paging */
         if (!pagingLocked) {

@@ -1,7 +1,7 @@
 import {
     TSTATES_PER_MS, CASSETTE_MS, dataBlockTstates, headerName, pilotMs, blockMs, catchUntilMs,
     counterText, describeParts, blankFromMs, parseCassetteFile, writeCassetteTZX, pilotPulses, bytesThatFit,
-    TAPE_TOLERANCE_MS,
+    TAPE_TOLERANCE_MS, blockEndMs, soundLevel, soundSlice, soundChanges,
 } from './cassette.js';
 
 /* A pause at least this long (ms) after a block ends the current tape "segment"
@@ -150,6 +150,26 @@ class SilenceSegment {
     getNextPulseLength() {
         this.emitted = true;
         return this.tstates;
+    }
+}
+
+/* A sound recording (see runtime/cassette.js) from sample `fromSample` on:
+ * each run of samples at one level is a pulse. */
+class SoundSegment {
+    constructor(sound, fromSample) {
+        this.sound = sound;
+        this.index = fromSample;
+    }
+    isFinished() {
+        return this.index >= this.sound.count;
+    }
+    getNextPulseLength() {
+        const level = soundLevel(this.sound, this.index);
+        let end = this.index + 1;
+        while ((end < this.sound.count) && (soundLevel(this.sound, end) === level)) end++;
+        const samples = end - this.index;
+        this.index = end;
+        return samples * this.sound.tstatesPerSample;
     }
 }
 
@@ -864,18 +884,35 @@ export class TZXFile {
 
 
 /* A cassette in the tape recorder (see runtime/cassette.js): standard-speed
- * blocks at their places along the tape, with blank tape between them, that
- * SAVE records onto. It fills the worker's tape slot as TAPFile and TZXFile
- * do, but never goes round again: a loader reads onwards from wherever the
- * tape is, and finds nothing past the last block. */
+ * blocks and sound recordings at their places along the tape, with blank
+ * tape between them, that SAVE and the machine's sound record onto. It fills
+ * the worker's tape slot as TAPFile and TZXFile do, but never goes round
+ * again: a loader reads onwards from wherever the tape is, and finds nothing
+ * past the last block. A sound recording plays but is never loaded. */
 // A block at its place on a cassette, with where it ends worked out once.
-const placed = (startMs, data) => ({ startMs, data, endMs: startMs + blockMs(data) });
+const placed = (block) => ({ ...block, endMs: blockEndMs(block) });
+
+/* What is left of the sound recording `block` once fromMs to toMs is
+ * wiped: the pieces either side, each kept only if it still has sound in
+ * it, since one without is as good as blank tape. */
+function soundLeft(block, fromMs, toMs) {
+    const sound = block.sound;
+    const sampleMs = sound.tstatesPerSample / TSTATES_PER_MS;
+    const pieces = [];
+    const beforeEnd = Math.min(sound.count, Math.floor((fromMs - block.startMs) / sampleMs));
+    if (beforeEnd > 0) pieces.push({ startMs: block.startMs, sound: soundSlice(sound, 0, beforeEnd) });
+    const afterStart = Math.max(0, Math.ceil((toMs - block.startMs) / sampleMs));
+    if (afterStart < sound.count) {
+        pieces.push({ startMs: block.startMs + (afterStart * sampleMs), sound: soundSlice(sound, afterStart, sound.count) });
+    }
+    return pieces.filter(piece => soundChanges(piece.sound)).map(placed);
+}
 
 export class CassetteTape {
     constructor(data, opts) {
         opts = opts || {};
         this.isCassette = true;
-        this.blocks = parseCassetteFile(data).blocks.map(block => placed(block.startMs, block.data));  // [{startMs, data, endMs}]
+        this.blocks = parseCassetteFile(data).blocks.map(placed);  // [{startMs, data or sound, endMs}]
         this.lengthMs = CASSETTE_MS;
         this.writeProtect = !!opts.writeProtect;
         this.wrap = false;
@@ -891,23 +928,25 @@ export class CassetteTape {
     buildTimeline() {
         this.blocks.sort((a, b) => a.startMs - b.startMs);
         this.segments = describeParts(this.blocks).map((part) => {
-            const size = (part.length < 1024) ? (part.length + 'B') : (Math.round(part.length / 1024) + 'K');
+            const durationMs = part.endMs - part.startMs;
+            const size = part.sound ? (Math.max(1, Math.round(durationMs / 1000)) + ' s')
+                : ((part.length < 1024) ? (part.length + 'B') : (Math.round(part.length / 1024) + 'K'));
             return {
                 ...part,
-                durationMs: part.endMs - part.startMs,
+                durationMs,
                 label: (part.name || part.typeName) + '  @' + counterText(part.startMs)
-                    + '  (' + part.typeName + ', ' + size + (part.damaged ? ', damaged' : '') + ')',
+                    + '  (' + (part.sound ? '' : (part.typeName + ', ')) + size + (part.damaged ? ', damaged' : '') + ')',
             };
         });
         this.blockStartMs = this.blocks.map(block => block.startMs);
         this.totalMs = this.lengthMs;
-        this.totalBytes = this.blocks.reduce((total, block) => total + block.data.length, 0);
+        this.totalBytes = this.blocks.reduce((total, block) => total + (block.data ? block.data.length : 0), 0);
         this.blankFromMs = blankFromMs(this.blocks);
     }
 
-    // The first block a loader starting at `ms` can still catch, or -1.
+    // The first block a loader starting at `ms` can still catch, or -1: a sound recording is never one.
     blockAheadIndex(ms) {
-        return this.blocks.findIndex(block => ms <= catchUntilMs(block));
+        return this.blocks.findIndex(block => !block.sound && (ms <= catchUntilMs(block)));
     }
 
     seekToMs(ms) {
@@ -924,7 +963,8 @@ export class CassetteTape {
     /* Queues the tape from cursorMs on, a stretch at a time: blank tape up to
      * the next block, then the block, from part way through its pilot tone
      * if the tape starts there. A block whose tone has gone by can no longer
-     * be read, so the rest of it plays as blank tape. */
+     * be read, so the rest of it plays as blank tape. A sound recording plays
+     * from wherever the tape is in it. */
     generatePulses(generator) {
         if (this.cursorMs >= this.lengthMs) return false;
         const index = this.blocks.findIndex(block => this.cursorMs < block.endMs);
@@ -941,7 +981,10 @@ export class CassetteTape {
             this.cursorMs = block.startMs;
             return true;
         }
-        if (this.cursorMs <= catchUntilMs(block)) {
+        if (block.sound) {
+            const sampleMs = block.sound.tstatesPerSample / TSTATES_PER_MS;
+            generator.addSegment(new SoundSegment(block.sound, Math.floor((this.cursorMs - block.startMs) / sampleMs)));
+        } else if (this.cursorMs <= catchUntilMs(block)) {
             const intoTstates = (this.cursorMs - block.startMs) * TSTATES_PER_MS;
             generator.addSegment(new ToneSegment(2168, Math.max(1, pilotPulses(block.data) - Math.floor(intoTstates / 2168))));
             generator.addSegment(new PulseSequenceSegment([667, 735]));
@@ -967,15 +1010,22 @@ export class CassetteTape {
     }
 
     /* Wipes the tape from fromMs to toMs: every block with any of its length
-     * there goes, since what is left of it can't be read. A block only
-     * touching the range, to within TAPE_TOLERANCE_MS, stays. Returns them. */
+     * there goes, since what is left of it can't be read, but a sound
+     * recording only loses that stretch (see soundLeft). A block only
+     * touching the range, to within TAPE_TOLERANCE_MS, stays. Returns the
+     * blocks wiped or cut. */
     erase(fromMs, toMs) {
         if (toMs <= fromMs) return [];
         const erased = [];
         const kept = [];
         for (const block of this.blocks) {
             const overlaps = (block.startMs < (toMs - TAPE_TOLERANCE_MS)) && (block.endMs > (fromMs + TAPE_TOLERANCE_MS));
-            (overlaps ? erased : kept).push(block);
+            if (!overlaps) {
+                kept.push(block);
+                continue;
+            }
+            erased.push(block);
+            if (block.sound) kept.push(...soundLeft(block, fromMs, toMs));
         }
         if (erased.length) {
             this.blocks = kept;
@@ -986,8 +1036,19 @@ export class CassetteTape {
 
     // Puts a block recorded at startMs onto (already blank) tape.
     insertRecorded(startMs, data) {
-        this.blocks.push(placed(startMs, data));
+        this.blocks.push(placed({ startMs, data }));
         this.buildTimeline();
+    }
+
+    /* Puts the sound recording `sound` at startMs onto (already blank) tape,
+     * in place of `replacing`, if given: a shorter take of the same recording,
+     * put there while it was still going. Returns the block. */
+    putSound(startMs, sound, replacing) {
+        if (replacing) this.blocks = this.blocks.filter(block => block !== replacing);
+        const block = placed({ startMs, sound });
+        this.blocks.push(block);
+        this.buildTimeline();
+        return block;
     }
 
     /* Records `data` at startMs in one go, over whatever was there, cut

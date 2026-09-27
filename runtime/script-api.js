@@ -126,8 +126,8 @@ export function createTapeApi(emu, deck) {
         status,
         // The parts on the tape, as the recorder's panel lists them.
         parts() {
-            return (emu.tapeSegments || []).map(({ startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged }) => (
-                { startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged: !!damaged }
+            return (emu.tapeSegments || []).map(({ startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged, sound }) => (
+                { startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged: !!damaged, sound: !!sound }
             ));
         },
         async connect() { await needDeck().setConnected(true); await settled(); },
