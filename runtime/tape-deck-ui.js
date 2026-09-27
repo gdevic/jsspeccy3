@@ -112,7 +112,7 @@ const DOOR = { x: 8, y: 50, w: 116, h: 76 };  // hinged along its bottom edge
 const WIN = { x: 18, y: 61, w: 96, h: 44 };
 const HUB_L = { x: 46, y: 86 }, HUB_R = { x: 86, y: 86 };
 const HUB_HOLE_R = 7.2;
-const PACK_HUB = 6.2, PACK_FULL = 15;  // a pack of tape's radius, empty to full
+const PACK_HUB = 6.2, PACK_FULL = 22;  // a pack of tape's radius, empty to full
 const KEY_X = 6, KEY_Y = 157, KEY_W = 18.8, KEY_PITCH = 20, KEY_H = 14;
 const KEYS = [
     { key: 'record', label: 'Record' },
