@@ -33,6 +33,35 @@ function extractMemoryBlock(data, fileOffset, isCompressed, unpackedLength) {
     }
 }
 
+/* The machines a version 2 or 3 .z80 file names in byte 34, as the machine
+ * each loads as: the nearest one emulated, which runs its software. The
+ * TC2068 and TS2068 lay their memory out differently, and are left out. */
+const Z80_V2_MACHINES = {
+    0: { model: 48 },
+    1: { model: 48, interface1: true },
+    2: { model: 48 },  // SamRam
+    3: { model: 128 },
+    4: { model: 128, interface1: true },
+};
+const Z80_V3_MACHINES = {
+    0: { model: 48 },
+    1: { model: 48, interface1: true },
+    2: { model: 48 },  // SamRam
+    3: { model: 48 },  // with an MGT interface
+    4: { model: 128 },
+    5: { model: 128, interface1: true },
+    6: { model: 128 },  // with an MGT interface
+    7: { model: 128 },  // +3
+    8: { model: 128 },  // +3, as some files mistakenly give it
+    9: { model: 5 },  // Pentagon 128K
+    10: { model: 128 },  // Scorpion
+    11: { model: 48 },  // Didaktik Kompakt
+    12: { model: 128 },  // +2
+    13: { model: 128 },  // +2A
+    14: { model: 48 },  // TC2048
+};
+const Z80_FRAME_TSTATES = { 48: 69888, 128: 70908, 5: 71680 };
+
 export function parseZ80File(data) {
     const file = new DataView(data);
 
@@ -83,17 +112,26 @@ export function parseZ80File(data) {
         const isVersion2 = (additionalHeaderLength == 23);
         snapshot.registers.PC = file.getUint16(32, true);
         const machineId = file.getUint8(34);
-        const is48K = (isVersion2 ? machineId < 3 : machineId < 4);
-        snapshot.model = (is48K ? 48 : 128);
+        const machine = isVersion2 ? Z80_V2_MACHINES[machineId] : Z80_V3_MACHINES[machineId];
+        if (!machine) throw "Unsupported machine type in Z80 snapshot: " + machineId;
+        /* Byte 37 bit 7 turns a 48K into a 16K and a 128K into a +2, which
+        run the same software as the machines they are loaded as. */
+        snapshot.model = machine.model;
+        const is48K = (machine.model == 48);
         if (!is48K) {
             snapshot.ulaState.pagingFlags = file.getUint8(35);
         }
-        const tstateChunkSize = (is48K ? 69888 : 70908) / 4;
-        snapshot.tstates = (
-            (((file.getUint8(57) + 1) % 4) + 1) * tstateChunkSize
-            - (file.getUint16(55, true) + 1)
-        );
-        if (snapshot.tstates >= tstateChunkSize * 4) snapshot.tstates = 0;
+        if (machine.interface1) snapshot.interface1Paged = (file.getUint8(36) == 0xff);
+        // Only a version 3 header (54 or 55 bytes) holds the T-state counter.
+        snapshot.tstates = 0;
+        if (!isVersion2) {
+            const tstateChunkSize = Z80_FRAME_TSTATES[machine.model] / 4;
+            const tstates = (
+                (((file.getUint8(57) + 1) % 4) + 1) * tstateChunkSize
+                - (file.getUint16(55, true) + 1)
+            );
+            if ((tstates >= 0) && (tstates < tstateChunkSize * 4)) snapshot.tstates = tstates;
+        }
 
         let offset = 32 + additionalHeaderLength;
 
@@ -308,19 +346,17 @@ export function parseSZXFile(data) {
             case 'B128':
                 snapshot.betadiskPaged = !!(file.getUint32(offset, true) & 0x0004);
                 break;
-            case 'RAMP':
+            case 'RAMP': {
                 const isCompressed = file.getUint16(offset + 0, true) & 0x0001;
                 const pageNumber = file.getUint8(offset + 2);
-                if (isCompressed) {
-                    const compressedLength = blockLen - 3;
-                    const compressed = new Uint8Array(data, offset + 3, compressedLength);
-                    const pageData = pako.inflate(compressed);
-                    snapshot.memoryPages[pageNumber] = pageData;
-                } else {
-                    const pageData = new Uint8Array(data, offset + 3, 0x4000);
-                    snapshot.memoryPages[pageNumber] = pageData;
-                }
+                if (pageNumber > 7) throw "Invalid SZX file: RAM page " + pageNumber;
+                const pageData = isCompressed
+                    ? pako.inflate(new Uint8Array(data, offset + 3, blockLen - 3))
+                    : new Uint8Array(data, offset + 3, 0x4000);
+                if (pageData.length != 0x4000) throw "Invalid SZX file: RAM page " + pageNumber + " is not 16K";
+                snapshot.memoryPages[pageNumber] = pageData;
                 break;
+            }
             // default:
             //     console.log('skipping block', blockId);
         }
@@ -328,9 +364,9 @@ export function parseSZXFile(data) {
         offset += blockLen;
     }
 
+    if (!snapshot.registers) throw "Invalid SZX file: no Z80R block";
+    if (!snapshot.ulaState) throw "Invalid SZX file: no SPCR block";
     return snapshot;
-
-
 }
 
 /* Writes a snapshot, in the structure the parsers above produce, as an SZX

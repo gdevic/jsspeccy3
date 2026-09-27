@@ -895,16 +895,32 @@ const servicePrinter = () => {
     postMessage({ message: 'printerOutput', rows, paper: core.getPrinterPaper(), motor }, [rows.buffer]);
 };
 
+const SNAPSHOT_REGISTERS = ['AF', 'BC', 'DE', 'HL', 'AF_', 'BC_', 'DE_', 'HL_', 'IX', 'IY', 'SP', 'IR', 'PC'];
+
+/* Throws if `snapshot` can't be loaded whole, so that one which can't
+ * leaves the machine as it was rather than half changed. */
+const checkSnapshot = (snapshot) => {
+    if (![48, 128, 5].includes(snapshot.model)) throw 'Unsupported machine: ' + snapshot.model;
+    if (!snapshot.registers || !SNAPSHOT_REGISTERS.every(r => Number.isInteger(snapshot.registers[r]))) {
+        throw 'The snapshot has no complete set of registers';
+    }
+    if (!snapshot.ulaState) throw 'The snapshot has no border or paging state';
+    for (const page in snapshot.memoryPages) {
+        if (!/^[0-7]$/.test(page) || (snapshot.memoryPages[page].length !== 0x4000)) {
+            throw 'The snapshot has an invalid RAM page: ' + page;
+        }
+    }
+};
+
 const loadSnapshot = (snapshot) => {
+    checkSnapshot(snapshot);
     core.setMachineType(snapshot.model);
     for (let page in snapshot.memoryPages) {
         loadMemoryPage(page, snapshot.memoryPages[page]);
     }
-    ['AF', 'BC', 'DE', 'HL', 'AF_', 'BC_', 'DE_', 'HL_', 'IX', 'IY', 'SP', 'IR'].forEach(
-        (r, i) => {
-            registerPairs[i] = snapshot.registers[r];
-        }
-    )
+    SNAPSHOT_REGISTERS.slice(0, 12).forEach((r, i) => {
+        registerPairs[i] = snapshot.registers[r];
+    });
     core.setPC(snapshot.registers.PC);
     core.setIFF1(snapshot.registers.iff1);
     core.setIFF2(snapshot.registers.iff2);

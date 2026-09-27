@@ -549,16 +549,21 @@ class Emulator extends EventEmitter {
     }
 
     loadSnapshot(snapshot) {
-        this.machineType = snapshot.model;
         const fileID = this.nextFileOpenID++;
         this.worker.postMessage({
             message: 'loadSnapshot',
             id: fileID,
             snapshot,
         })
-        this.emit('setMachine', snapshot.model);
-        return new Promise((resolve, reject) => {
-            this.fileOpenPromiseResolutions[fileID] = resolve;
+        // The machine changes only if the worker takes the snapshot.
+        return new Promise((resolve) => {
+            this.fileOpenPromiseResolutions[fileID] = (result) => {
+                if (!result.error) {
+                    this.machineType = snapshot.model;
+                    this.emit('setMachine', snapshot.model);
+                }
+                resolve(result);
+            };
         });
     }
 
