@@ -8,6 +8,9 @@ export class CanvasRenderer {
         this.imageData = this.ctx.getImageData(0, 0, 320, 240);
         this.pixels = new Uint32Array(this.imageData.data.buffer);
         this.flashPhase = 0;
+        /* The bitmap bytes of the picture last shown, 32 to a pixel row from
+         * the top, for recognising its characters (see char-picker.js). */
+        this.screenBitmap = new Uint8Array(32 * 192);
 
         this.palette = new Uint32Array([
             /* RGBA dark */
@@ -70,6 +73,7 @@ export class CanvasRenderer {
             for (let x = 0; x < 32; x++) {
                 let bitmap = frameBytes[bufferPtr++];
                 const attr = frameBytes[bufferPtr++];
+                this.screenBitmap[(y * 32) + x] = bitmap;
                 let ink, paper;
                 if ((attr & 0x80) && (this.flashPhase & 0x10)) {
                     // reverse ink and paper

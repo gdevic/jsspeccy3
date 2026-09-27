@@ -178,5 +178,7 @@ export function createKeyboardOverlay(emu, imageUrl) {
         show() { container.style.display = 'block'; },
         hide() { container.style.display = 'none'; },
         isVisible() { return container.style.display !== 'none'; },
+        // Lets a latched CAPS SHIFT or SYMBOL SHIFT go, as the next key clicked would.
+        releaseShifts: clearLatched,
     };
 }

@@ -1,5 +1,6 @@
 import EventEmitter from 'events';
 
+import { CharPicker } from './char-picker.js';
 import playIcon from './icons/play.svg';
 import closeIcon from './icons/close.svg';
 
@@ -439,6 +440,9 @@ export class UIController extends EventEmitter {
             this.screenOff = null;
         });
 
+        // Clicking a character on the screen recognises it (see char-picker.js).
+        this.charPicker = new CharPicker(this, emulator);
+
         /* The menu bar, toolbar and on-screen keyboard are built and toggled after
          * this point, each time changing where the canvas sits inside the
          * container, so re-centre the overlays whenever the container resizes,
@@ -735,6 +739,7 @@ export class UIController extends EventEmitter {
         if (this.uiEnabled && this.allowUIHiding && !this.uiIsHidden) {
             this.uiIsHidden = true;
             this.appContainer.style.cursor = 'none';
+            this.canvas.style.cursor = '';  // the character picker's pointing hand too
             this.menuBar.hide();
             this.toolbar.hide();
         }
@@ -849,6 +854,7 @@ export class UIController extends EventEmitter {
         return !!this._tapePopup;
     }
     unload() {
+        this.charPicker.close();
         window.removeEventListener('scroll', this.onPageScroll);
         window.removeEventListener('resize', this.onWindowResize);
         if (this.uiEnabled) {

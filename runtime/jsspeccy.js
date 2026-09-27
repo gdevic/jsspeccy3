@@ -105,6 +105,7 @@ class Emulator extends EventEmitter {
         this.lastTapeOpenID = null;
         this.startupOpened = Promise.resolve();
         this.rom48Variant = 'standard';  // which 48K ROM is in page 10: 'standard' or 'gw03'
+        this.romFont = null;  // the 48K ROM's character set, codes 32 to 127 (see char-picker.js)
         this.nextSnapshotID = 0;
         this.snapshotResolutions = {};
 
@@ -397,6 +398,7 @@ class Emulator extends EventEmitter {
     async loadRom(url, page) {
         const response = await fetch(new URL(url, scriptUrl));
         const data = new Uint8Array(await response.arrayBuffer());
+        if (page === 10) this.romFont = data.slice(0x3D00, 0x4000);
         this.worker.postMessage({
             message: 'loadMemory',
             data,
@@ -1451,6 +1453,8 @@ window.JSSpeccy = (container, opts) => {
          * toolbar next to the fullscreen button; hidden in fullscreen. */
         const keyboard = createKeyboardOverlay(emu, new URL('zx_keyboard.png', scriptUrl).href);
         ui.appContainer.appendChild(keyboard.element);
+        // A character typed from the screen (see char-picker.js) is a key typed after a latched shift.
+        ui.on('typeCharacter', () => keyboard.releaseShifts());
         let keyboardWanted = true;   // shown by default
         const keyboardButton = ui.toolbar.addButton(
             keyboardIcon,
