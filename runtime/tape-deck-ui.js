@@ -1406,6 +1406,7 @@ export function createTapeDeck(ui, emu) {
         if (!show) {
             closePanel();
             hideBubble();
+            ui.makeRoomOnLeft(element);
         }
         if (show && !was) {
             reposition();
@@ -1430,6 +1431,7 @@ export function createTapeDeck(ui, emu) {
         leads.setAttribute('width', (RIBBON_W * scale) / fit);
         element.style.top = (bottom - (DECK_H * fit)) + 'px';
         element.style.transform = `scale(${fit})`;
+        ui.makeRoomOnLeft(element);
         positionPanel();
         positionBubble();
     }

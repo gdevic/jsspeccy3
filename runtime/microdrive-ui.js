@@ -1041,6 +1041,7 @@ export function createMicrodriveDock(ui, emu) {
         element.style.display = show ? 'block' : 'none';
         fsIndicator.style.display = (controller.state.connected && fullscreen) ? 'flex' : 'none';
         if (!show) closePanel();
+        ui.makeRoomOnLeft(element);
     }
 
     function reposition() {
@@ -1052,6 +1053,7 @@ export function createMicrodriveDock(ui, emu) {
         const bar = ui.toolbar.elem;
         element.style.top = (bar.offsetTop + (bar.offsetHeight / 2) - (RIBBON_PLUG_Y * scale)) + 'px';
         element.style.transform = `scale(${scale})`;
+        ui.makeRoomOnLeft(element);
         positionPanel();
     }
     if (window.ResizeObserver) new ResizeObserver(reposition).observe(ui.appContainer);

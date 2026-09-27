@@ -377,6 +377,7 @@ export class UIController extends EventEmitter {
         container.appendChild(this.appContainer);
         this.appContainer.style.position = 'relative';
         this.appContainer.style.outline = 'none';
+        this.leftSide = new Set();  // see makeRoomOnLeft
 
         if (this.uiEnabled) {
             this.menuBar = new MenuBar(this.appContainer);
@@ -456,6 +457,17 @@ export class UIController extends EventEmitter {
         this.allowUIHiding = true;
         this.hideUITimeout = null;
         this.ignoreNextMouseMove = false;
+
+        /* Where the emulator last left the page's horizontal scroll, and
+         * whether the visitor has moved it since (see keepCentred). */
+        this.pageScrollX = window.scrollX;
+        this.pageScrolled = false;
+        this.onPageScroll = () => {
+            if (window.scrollX !== this.pageScrollX) this.pageScrolled = true;
+        };
+        this.onWindowResize = () => { this.keepCentred(); };
+        window.addEventListener('scroll', this.onPageScroll);
+        window.addEventListener('resize', this.onWindowResize);
 
         /* state changes when entering / exiting fullscreen */
         const fullscreenMouseMove = () => {
@@ -560,6 +572,7 @@ export class UIController extends EventEmitter {
         this.setCompactUI(displayWidth < 640);
         this.centerStartButton();
         this.emit('setZoom', factor);
+        this.keepCentred();
     }
 
     /* Keeps the start button centred on the display, and the switched-off
@@ -585,6 +598,44 @@ export class UIController extends EventEmitter {
                 width: this.canvas.offsetWidth + 'px', height: canvasHeight + 'px',
             });
         }
+    }
+
+    /* The tape recorder and the Microdrives stand out past the container's
+     * left edge (anchored there with `right: 100%`), where a page can't be
+     * scrolled to, so the container gets margins as wide as the widest of
+     * them. They go on both sides, so a page that centres the container
+     * still centres it where it did; only once the window is too narrow to
+     * show them does it move over, and the page then scrolls to them as it
+     * does to the printer on the right. Called with the element whenever its
+     * size or visibility changes; a hidden one takes no room. */
+    makeRoomOnLeft(element) {
+        this.leftSide.add(element);
+        const reach = Math.max(0, ...[...this.leftSide].map(e => e.getBoundingClientRect().width));
+        const margin = Math.ceil(reach) + 'px';
+        this.appContainer.style.marginLeft = margin;
+        this.appContainer.style.marginRight = margin;
+        this.keepCentred();
+    }
+
+    /* While the page scrolls sideways, it is kept scrolled so the display
+     * sits in the middle of the window, and the recorder and the Microdrives
+     * on the left and the printer on the right go out of view equally: after
+     * a zoom (the emulator's or the browser's), a resize of the window, or
+     * the recorder or the Microdrives coming or going. Once the visitor
+     * moves the page's scroll bar it stays where they put it, until
+     * everything fits across the window again. */
+    keepCentred() {
+        if (this.isFullscreen) return;
+        const page = document.scrollingElement || document.documentElement;
+        if (page.scrollWidth <= page.clientWidth) {
+            this.pageScrolled = false;
+        } else if (!this.pageScrolled) {
+            const box = this.appContainer.getBoundingClientRect();
+            const middle = window.scrollX + box.left + (box.width / 2);
+            window.scrollTo({ left: middle - (page.clientWidth / 2), behavior: 'instant' });
+        }
+        // A change of layout can move the scroll too; that is not the visitor.
+        this.pageScrollX = window.scrollX;
     }
 
     /* The switched-off TV: dark glass, darker towards the corners, with a
@@ -798,6 +849,8 @@ export class UIController extends EventEmitter {
         return !!this._tapePopup;
     }
     unload() {
+        window.removeEventListener('scroll', this.onPageScroll);
+        window.removeEventListener('resize', this.onWindowResize);
         if (this.uiEnabled) {
             this.dialog.remove();
         }
