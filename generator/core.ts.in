@@ -63,6 +63,7 @@ overflowSubTable = [0, FLAG_V, 0, 0, 0, 0, FLAG_V, 0];
 #alloc screenEvents[36000]: u32
 
 #alloc keyStates[8]: u8
+#alloc joystickKeyStates[8]: u8
 
 // NB needs to start at an offset that's a multiple of 4
 #alloc audioBufferLeft[1024]: f32
@@ -1545,6 +1546,16 @@ export function keyUp(row:u8, mask:u8):void {
     keyStates[row] = keyStates[row] | mask;
 }
 
+/* The Cursor and Sinclair joysticks close the same lines as the keys they
+stand for, wired in parallel with them, so each has its own matrix: letting
+go of one leaves a key held on the other down. */
+export function joystickKeyDown(row:u8, mask:u8):void {
+    joystickKeyStates[row] = joystickKeyStates[row] & ~mask;
+}
+export function joystickKeyUp(row:u8, mask:u8):void {
+    joystickKeyStates[row] = joystickKeyStates[row] | mask;
+}
+
 export function setKempstonState(state:u8):void {
     kempstonState = state;
 }
@@ -1803,7 +1814,7 @@ function pollKeyboard(addr:u8):u8 {
     for (let row:u8 = 0; row < 8; row++) {
         if (!(addr & (1<<row))) {
             /* scan this row */
-            result &= keyStates[row];
+            result &= keyStates[row] & joystickKeyStates[row];
         }
     }
     return result;
@@ -2217,4 +2228,5 @@ setMachineType(48);
 
 for (let i=0; i < 8; i++) {
     keyStates[i] = 0xff;
+    joystickKeyStates[i] = 0xff;
 }

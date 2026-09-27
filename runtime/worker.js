@@ -1271,6 +1271,12 @@ onmessage = (e) => {
         case 'keyUp':
             core.keyUp(e.data.row, e.data.mask);
             break;
+        case 'joystickKeyDown':
+            core.joystickKeyDown(e.data.row, e.data.mask);
+            break;
+        case 'joystickKeyUp':
+            core.joystickKeyUp(e.data.row, e.data.mask);
+            break;
         case 'setKempstonState':
             core.setKempstonState(e.data.state);
             break;

@@ -10,6 +10,7 @@
  * this side keeps the printout and measures the paper.
  */
 
+import JSZip from 'jszip';
 import { DOCK_SCALE, RIBBON_PLUG_Y } from './microdrive-ui.js';
 import closeIcon from './icons/close.svg';
 import mouseWheelIcon from './icons/mouse-wheel.svg';
@@ -101,12 +102,13 @@ function paintRow(data, offset, row, index) {
     }
 }
 
-/* The printout as a PNG, at twice its dot size when that stays a sensible
- * size. Longer than a canvas can be, it keeps the most recent part. */
-function printoutBlob(rows) {
-    const MAX_ROWS = 32000;
-    const first = Math.max(0, rows.length - MAX_ROWS);
-    const count = rows.length - first;
+// The most rows one PNG holds; a canvas can be no taller.
+const PNG_MAX_ROWS = 32000;
+
+/* Up to PNG_MAX_ROWS of the printout from row `first` as a PNG, at twice its
+ * dot size when that stays a sensible size. */
+function printoutBlob(rows, first) {
+    const count = Math.min(rows.length - first, PNG_MAX_ROWS);
     const src = el('canvas', {}, { width: PAPER_DOTS, height: count });
     const ctx = src.getContext('2d');
     const img = ctx.createImageData(PAPER_DOTS, count);
@@ -843,14 +845,28 @@ export function createPrinter(ui, emu) {
             persist(true);
             refreshPanel();
         },
+        /* The whole printout as a PNG, or, longer than one PNG holds, as a
+         * ZIP of PNGs that follow on from each other, the first at the top. */
         async save() {
             unfold();
             if (!printout.length) return;
-            const blob = await printoutBlob(printout);
-            if (!blob) return;
+            const parts = [];
+            for (let first = 0; first < printout.length; first += PNG_MAX_ROWS) {
+                const part = await printoutBlob(printout, first);
+                if (!part) return;
+                parts.push(part);
+            }
             const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, '').replace('T', '-');
+            let blob = parts[0];
+            let fileName = `zx-printout-${stamp}.png`;
+            if (parts.length > 1) {
+                const zip = new JSZip();
+                parts.forEach((part, i) => zip.file(`zx-printout-${stamp}-${String(i + 1).padStart(2, '0')}.png`, part));
+                blob = await zip.generateAsync({ type: 'blob' });
+                fileName = `zx-printout-${stamp}.zip`;
+            }
             const url = URL.createObjectURL(blob);
-            const a = el('a', { display: 'none' }, { href: url, download: `zx-printout-${stamp}.png` });
+            const a = el('a', { display: 'none' }, { href: url, download: fileName });
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -994,8 +1010,9 @@ export function createPrinter(ui, emu) {
                 scroll: pullTarget,
             };
         },
+        // the most recent part of the printout, where it is too long for one picture
         sessionPicture(rows) {
-            return rows.length ? printoutBlob(rows) : Promise.resolve(null);
+            return rows.length ? printoutBlob(rows, Math.max(0, rows.length - PNG_MAX_ROWS)) : Promise.resolve(null);
         },
         sessionRestore(session) {
             releaseFeed();

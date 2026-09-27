@@ -91,7 +91,6 @@ const KEY_CODES = {
     13: SPECCY.ENTER,
 
     16: SPECCY.CAPS_SHIFT, /* caps */
-    192: SPECCY.CAPS_SHIFT, /* backtick as caps - because firefox screws up a load of key codes when pressing shift */
     90: SPECCY.Z,
     88: SPECCY.X,
     67: SPECCY.C,
@@ -109,6 +108,22 @@ const KEY_CODES = {
     39: caps(SPECCY.EIGHT), /* right arrow */
     40: caps(SPECCY.SIX), /* down arrow */
 
+    /* the numeric keypad's digits */
+    96: SPECCY.ZERO,
+    97: SPECCY.ONE,
+    98: SPECCY.TWO,
+    99: SPECCY.THREE,
+    100: SPECCY.FOUR,
+    101: SPECCY.FIVE,
+    102: SPECCY.SIX,
+    103: SPECCY.SEVEN,
+    104: SPECCY.EIGHT,
+    105: SPECCY.NINE,
+};
+
+/* The key typing a character, for a key whose code isn't in KEY_CODES.
+ * Kept apart from KEY_CODES, where "8" would find key code 8, Backspace. */
+const KEY_CHARS = {
     /* symbol keys */
     '-': sym(SPECCY.J),
     '_': sym(SPECCY.ZERO),
@@ -128,9 +143,20 @@ const KEY_CODES = {
     '@': sym(SPECCY.TWO),
     '#': sym(SPECCY.THREE),
 };
-KEY_CODES[String.fromCharCode(0x2264)] = sym(SPECCY.Q); // LESS_THAN_EQUAL symbol (≤)
-KEY_CODES[String.fromCharCode(0x2265)] = sym(SPECCY.E); // GREATER_THAN_EQUAL symbol (≥)
-KEY_CODES[String.fromCharCode(0x2260)] = sym(SPECCY.W); // NOT_EQUAL symbol (≠)
+KEY_CHARS[String.fromCharCode(0x2264)] = sym(SPECCY.Q); // LESS_THAN_EQUAL symbol (≤)
+KEY_CHARS[String.fromCharCode(0x2265)] = sym(SPECCY.E); // GREATER_THAN_EQUAL symbol (≥)
+KEY_CHARS[String.fromCharCode(0x2260)] = sym(SPECCY.W); // NOT_EQUAL symbol (≠)
+
+/* The key left of 1 (backtick on a US layout, ` ¬ on a UK one) is a second
+ * Caps Shift. It is found by its place on the keyboard, not its key code,
+ * which on a UK layout belongs to the ' @ key. */
+const CAPS_SHIFT_CODE = 'Backquote';
+
+const CTRL_KEY_CODE = 17;  // Symbol Shift (see BaseKeyboardHandler.guardClose)
+const preventClose = (evt) => {
+    evt.preventDefault();
+    evt.returnValue = '';
+};
 
 const DIGIT_NAMES = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
 
@@ -146,13 +172,13 @@ export function speccyKeyByName(name) {
 
 /* The keys pressed together to type `ch`: a letter (a capital with Caps
  * Shift), a digit, a space, a newline for Enter, or a symbol typed with
- * Symbol Shift as on the PC keyboard (see KEY_CODES). Null for a character
+ * Symbol Shift as on the PC keyboard (see KEY_CHARS). Null for a character
  * no key types. */
 export function speccyKeysForChar(ch) {
     if ((ch === '\n') || (ch === '\r')) return [SPECCY.ENTER];
     if (/^[a-z0-9 ]$/.test(ch)) return [speccyKeyByName((ch === ' ') ? 'SPACE' : ch)];
     if (/^[A-Z]$/.test(ch)) return [SPECCY.CAPS_SHIFT, SPECCY[ch]];
-    const key = KEY_CODES[ch];
+    const key = Object.prototype.hasOwnProperty.call(KEY_CHARS, ch) ? KEY_CHARS[ch] : null;
     return (key && key.sym) ? [SPECCY.SYMBOL_SHIFT, key] : null;
 }
 
@@ -162,6 +188,7 @@ export class BaseKeyboardHandler {
         this.worker = worker;
         this.rootElement = rootElement;  // where we attach keyboard event listeners
         this.eventsAreBound = false;
+        this.closeGuarded = false;  // see guardClose
 
         this.keypressHandler = (evt) => {
             if (!evt.metaKey) evt.preventDefault();
@@ -201,6 +228,19 @@ export class BaseKeyboardHandler {
         for (let row = 0; row < 8; row++) {
             this.worker.postMessage({ message: 'keyUp', row, mask: 0x1f });
         }
+        this.guardClose(false);
+        if (this.onReleaseAll) this.onReleaseAll();
+    }
+
+    /* Ctrl is Symbol Shift, and the browser keeps Ctrl+W (close the tab)
+     * for itself, beyond preventDefault. While Ctrl is held the page asks
+     * before it is closed, so Symbol Shift + W can't lose the machine, or
+     * a recording or cartridge not yet kept, by accident. */
+    guardClose(held) {
+        if (held === this.closeGuarded) return;
+        this.closeGuarded = held;
+        if (held) window.addEventListener('beforeunload', preventClose);
+        else window.removeEventListener('beforeunload', preventClose);
     }
 
     setRootElement(newRootElement) {
@@ -237,11 +277,12 @@ export class StandardKeyboardHandler extends BaseKeyboardHandler {
         this.seenKeyCodes = {};
 
         this.keydownHandler = (evt) => {
-            let keyInfo = KEY_CODES[evt.keyCode];
+            if (evt.keyCode === CTRL_KEY_CODE) this.guardClose(true);
+            let keyInfo = (evt.code === CAPS_SHIFT_CODE) ? SPECCY.CAPS_SHIFT : KEY_CODES[evt.keyCode];
             if (keyInfo) {
                 this.keyDown(keyInfo);
             } else {
-                keyInfo = KEY_CODES[evt.key];
+                keyInfo = Object.prototype.hasOwnProperty.call(KEY_CHARS, evt.key) ? KEY_CHARS[evt.key] : null;
                 if (keyInfo) {
                     const lastKeyInfo = this.seenKeyCodes[evt.keyCode];
                     if (lastKeyInfo && lastKeyInfo !== keyInfo) {
@@ -255,7 +296,8 @@ export class StandardKeyboardHandler extends BaseKeyboardHandler {
         };
 
         this.keyupHandler = (evt) => {
-            const keyInfo = KEY_CODES[evt.keyCode];
+            if (evt.keyCode === CTRL_KEY_CODE) this.guardClose(false);
+            const keyInfo = (evt.code === CAPS_SHIFT_CODE) ? SPECCY.CAPS_SHIFT : KEY_CODES[evt.keyCode];
             if (keyInfo) {
                 this.keyUp(keyInfo);
             } else {

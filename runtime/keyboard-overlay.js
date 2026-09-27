@@ -117,6 +117,15 @@ export function createKeyboardOverlay(emu, imageUrl) {
         setLatched('caps', false);
         setLatched('sym', false);
     };
+    // The emulator let every key go (on pause, or focus leaving): the latches are up already.
+    emu.on('keysReleased', () => {
+        capsLatched = false;
+        symLatched = false;
+        if (capsEl) dim(capsEl, null);
+        if (symEl) dim(symEl, null);
+    });
+    // With the keyboard turned off (the keyboardEnabled option), the keys do nothing.
+    const enabled = () => emu.keyboardEnabled;
 
     for (const key of KEY_LAYOUT) {
         const el = document.createElement('div');
@@ -140,6 +149,7 @@ export function createKeyboardOverlay(emu, imageUrl) {
             // Single click toggles this shift's sticky latch.
             el.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
+                if (!enabled()) return;
                 setLatched(which, !(isCaps ? capsLatched : symLatched));
             });
         } else {
@@ -148,6 +158,7 @@ export function createKeyboardOverlay(emu, imageUrl) {
             let tSym = false;
             el.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
+                if (!enabled()) return;
                 try { el.setPointerCapture(e.pointerId); } catch (_) {}
                 held = true;
                 emu.keyDown(key.row, key.mask);   // any latched shift is already down -> combo

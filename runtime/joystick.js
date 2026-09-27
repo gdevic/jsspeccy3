@@ -195,10 +195,11 @@ export class JoystickHandler {
         this.lastState = state;
     }
 
+    // on the joystick's own lines, which are wired in parallel with the keys
     sendKey(speccyKey, downNotUp) {
         if (!speccyKey) return;
         this.worker.postMessage({
-            message: downNotUp ? 'keyDown' : 'keyUp',
+            message: downNotUp ? 'joystickKeyDown' : 'joystickKeyUp',
             row: speccyKey.row,
             mask: speccyKey.mask,
         });

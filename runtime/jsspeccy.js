@@ -88,6 +88,8 @@ class Emulator extends EventEmitter {
             this.keyboardHandler = (opts.keyboardMap == 'recreated')
                 ? new RecreatedZXSpectrumHandler(this.worker, opts.keyboardEventRoot || document)
                 : new StandardKeyboardHandler(this.worker, opts.keyboardEventRoot || document);
+            // every key let go at once (pause, focus leaving), which the on-screen keyboard's latches follow
+            this.keyboardHandler.onReleaseAll = () => this.emit('keysReleased');
         }
         this.joystickEnabled = ('joystickEnabled' in opts) ? opts.joystickEnabled : true;
         this.joystickType = opts.joystickType || 'kempston';
