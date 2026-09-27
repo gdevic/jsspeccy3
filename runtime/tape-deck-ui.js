@@ -1690,6 +1690,29 @@ export function createTapeDeck(ui, emu) {
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
         openBox,
 
+        /* For a page's script (see runtime/script-api.js): the recorder and
+         * the cassette box, worked as the toolbar, the panel and the box work
+         * them. A new or imported cassette goes into the box and the
+         * recorder, and resolves to its id in the box. */
+        setConnected(connected) { return controller.setConnected(connected); },
+        newCassette(label) { return controller.insertNew(blankCassette(), label || '', undefined); },
+        importCassette(data, fileName) {
+            const imported = cassetteFromFile(data, fileName || '');
+            return controller.insertNew(imported.data, imported.label, undefined);
+        },
+        insertFromBox(id) { return controller.insertFromBox(id); },
+        eject() { controller.eject(); },
+        cassettes() { return store.list(); },
+        cassetteInRecorder() {
+            const c = controller.state.cassette;
+            return (c && (emu.tapeKind === 'cassette')) ? controller.keepMeta(c) : null;
+        },
+        currentData() { return controller.currentData(); },
+        setWriteProtect(value) {
+            const c = controller.state.cassette;
+            return c ? controller.setWriteProtect(c.id, !!value) : Promise.resolve();
+        },
+
         /* For a saved session: the whole cassette box, whether the recorder
          * is connected, and which cassette of yours is in it (or waiting in
          * it while it is off). `live` is the cassette in the recorder as the

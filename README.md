@@ -153,6 +153,56 @@ For additional JavaScript hackery, the return value of the JSSpeccy function cal
 * `emu.loadSnapshotFromStruct(snapshot)` - load a snapshot from the given data structure; the data format is currently undocumented but runtime/snapshot.js should give you a decent idea of it...
 * `emu.onReady(callback)` - call the given callback once the emulator is fully initialised
 * `emu.exit()` - immediately stop the emulator and remove it from the document
+* `emu.machine` - the machine's power and pause, worked from a script (see below)
+* `emu.keyboard` - the Spectrum's keyboard, pressed from a script (see below)
+* `emu.tape` - the tape recorder and the cassette box, worked from a script (see below)
+
+### Scripting the machine, the keyboard and the tape recorder
+
+`emu.machine`, `emu.keyboard` and `emu.tape` do from code what a user does with the machine, the keys and the recorder, to drive tests or a demo. The machine starts switched off unless the `autoStart` option is set, so a script switches it on first and gives it time to boot. It runs only while its page is visible, since browsers hold back animation frames from a hidden page.
+
+* `emu.machine.state()` - `"off"`, `"running"` or `"paused"`
+* `emu.machine.powerOn()` - switch the machine on and run it, as the play button over the screen does; returns the new state
+* `emu.machine.powerOff()` - switch the machine off: it stops, showing a switched-off screen; returns the new state
+* `emu.machine.pause()` and `emu.machine.resume()` - pause a running machine, and run a paused one again, as the toolbar's pause button does; `resume` throws for a machine that is switched off
+
+Keys are named `A` to `Z`, `0` to `9`, `ENTER`, `SPACE` (or `BREAK_SPACE`), `CAPS_SHIFT` and `SYMBOL_SHIFT`, in any case; where a method takes keys, it takes one name or an array of names held together. Methods that take time return a promise. Every key is held for 80ms and let go for 120ms before the next, long enough for the ROM to take each one, the same key twice included; `opts` can set `holdMs` and `gapMs`.
+
+* `emu.keyboard.press(keys, opts)` - hold the keys down together, then let them go, e.g. `press(['CAPS_SHIFT', 'SYMBOL_SHIFT'])` for extended mode
+* `emu.keyboard.type(text, opts)` - type `text` a character at a time: letters (a capital with Caps Shift), digits, spaces, `\n` for Enter, and the symbols the PC keyboard types with Symbol Shift, such as `"`, `,` and `;`; text with a character no key types is refused before any key goes down
+* `emu.keyboard.keyDown(keys)` and `emu.keyboard.keyUp(keys)` - hold keys down, and let them go, for as long as the script wants
+* `emu.keyboard.releaseAll()` - let every key go
+
+The tape recorder calls resolve once the emulator has done what they ask, so `emu.tape.status()` then tells how things are. Where the page doesn't offer the recorder (`sandbox`, or `uiEnabled` false), everything but `status`, `parts` and `until` throws.
+
+* `emu.tape.status()` - the recorder now: `{connected, kind, cassette, mode, auto, saving, loading, positionMs, lengthMs, blankFromMs, writeProtect, instantLoading}`, where `kind` is `"cassette"`, `"game"` or `null`, `cassette` is the box's `{id, label, colour, writeProtect}` for your cassette in the recorder, `mode` is the key held down (`"stop"`, `"play"`, `"record"`, `"rewind"` or `"ffwd"`), `auto` is set when a SAVE or a loader pressed it, and `saving` is set while a SAVE records in real time
+* `emu.tape.parts()` - the parts on the tape, as the recorder's panel lists them: `{startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged}`
+* `emu.tape.connect()` and `emu.tape.disconnect()` - connect or disconnect the recorder
+* `emu.tape.newCassette(label)` - put a new blank C60 in the box and in the recorder; resolves to its id in the box
+* `emu.tape.importCassette(data, fileName)` - put a `.tap` or `.tzx` file's bytes in the box as a cassette, and in the recorder; resolves to its id
+* `emu.tape.cassettes()` - the cassettes in the box, without their bytes
+* `emu.tape.insert(id)` - put the box's cassette `id` in the recorder
+* `emu.tape.press(key)` - press one of the recorder's keys: `"play"`, `"record"`, `"rewind"`, `"ffwd"`, `"stop"` or `"eject"`
+* `emu.tape.windTo(positionMs, opts)` - wind the tape to a place, as picking a part in the panel does, or at once with `{quiet: true}`; resolves when it is there
+* `emu.tape.undo()` - take back the last recording that recorded over something
+* `emu.tape.setWriteProtect(value)` - write-protect the cassette in the recorder, or allow recording on it
+* `emu.tape.setInstantLoading(value)` - turn File → Instant tape loading on or off
+* `emu.tape.data()` - the cassette in the recorder as a `.tzx` file's bytes, what has been recorded so far included, or `null`
+* `emu.tape.until(condition, timeoutMs)` - resolve with the status once `condition(status)` is true, checking every 20ms, or fail after `timeoutMs` (10 seconds unless given)
+
+For example, to SAVE a program onto a new cassette from 48 BASIC:
+
+```javascript
+emu.machine.powerOn();
+await new Promise(resolve => setTimeout(resolve, 3000));  // the 48K boots
+await emu.tape.newCassette('demo');
+await emu.keyboard.type('S"demo"\n');  // SAVE "demo", S being SAVE in 48 BASIC
+await new Promise(resolve => setTimeout(resolve, 800));  // "Start tape, then press any key."
+await emu.keyboard.press('ENTER');
+// SAVE presses Record by itself and lets it go once it is done
+await emu.tape.until(s => (s.mode === 'stop') && (emu.tape.parts().length > 0));
+console.log(emu.tape.parts());  // a Program part named "demo"
+```
 
 The emulator's version is available, without starting it, as the string `JSSpeccy.version` (e.g. `"3.2.3"`). The bundled `index.html` shows it in the browser tab title.
 

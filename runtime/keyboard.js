@@ -132,6 +132,30 @@ KEY_CODES[String.fromCharCode(0x2264)] = sym(SPECCY.Q); // LESS_THAN_EQUAL symbo
 KEY_CODES[String.fromCharCode(0x2265)] = sym(SPECCY.E); // GREATER_THAN_EQUAL symbol (≥)
 KEY_CODES[String.fromCharCode(0x2260)] = sym(SPECCY.W); // NOT_EQUAL symbol (≠)
 
+const DIGIT_NAMES = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
+
+/* The Spectrum key called `name`, in any case: a name from SPECCY ('A',
+ * 'ENTER', 'CAPS_SHIFT', 'SYMBOL_SHIFT', 'BREAK_SPACE'), a digit ('0' to
+ * '9'), or 'SPACE'. Null for no such key. */
+export function speccyKeyByName(name) {
+    const upper = String(name).toUpperCase();
+    if (/^[0-9]$/.test(upper)) return SPECCY[DIGIT_NAMES[Number(upper)]];
+    if (upper === 'SPACE') return SPECCY.BREAK_SPACE;
+    return Object.prototype.hasOwnProperty.call(SPECCY, upper) ? SPECCY[upper] : null;
+}
+
+/* The keys pressed together to type `ch`: a letter (a capital with Caps
+ * Shift), a digit, a space, a newline for Enter, or a symbol typed with
+ * Symbol Shift as on the PC keyboard (see KEY_CODES). Null for a character
+ * no key types. */
+export function speccyKeysForChar(ch) {
+    if ((ch === '\n') || (ch === '\r')) return [SPECCY.ENTER];
+    if (/^[a-z0-9 ]$/.test(ch)) return [speccyKeyByName((ch === ' ') ? 'SPACE' : ch)];
+    if (/^[A-Z]$/.test(ch)) return [SPECCY.CAPS_SHIFT, SPECCY[ch]];
+    const key = KEY_CODES[ch];
+    return (key && key.sym) ? [SPECCY.SYMBOL_SHIFT, key] : null;
+}
+
 
 export class BaseKeyboardHandler {
     constructor(worker, rootElement) {

@@ -16,6 +16,7 @@ import { validateMDRFile } from './mdr.js';
 import { createMicrodriveDock } from './microdrive-ui.js';
 import { createPrinter } from './printer-ui.js';
 import { createTapeDeck } from './tape-deck-ui.js';
+import { createMachineApi, createKeyboardApi, createTapeApi } from './script-api.js';
 import { isSessionFile, buildSessionFile, readSessionFile, confirmRestore, chooseSaveTarget, writeSaveTarget } from './session.js';
 
 import sessionSaveIcon from './icons/session-save.svg';
@@ -1040,6 +1041,7 @@ window.JSSpeccy = (container, opts) => {
         sandbox: opts.sandbox,
         uiEnabled: uiEnabled,
     });
+    let tapeDeck = null;  // the tape recorder, where the UI offers one
     if (uiEnabled) {
         ui.on('setZoom', (factor) => {
             saveDisplay(factor === 'fullscreen' ? { zoom: ui.zoom, fullscreen: true } : { zoom: factor, fullscreen: false });
@@ -1370,7 +1372,6 @@ window.JSSpeccy = (container, opts) => {
          * tape buttons above work its keys, whatever tape is in goes into it,
          * and SAVE records onto a cassette of your own (see
          * runtime/tape-deck-ui.js). Hidden in fullscreen, like the docks. */
-        let tapeDeck = null;
         if (!opts.sandbox) {
             tapeDeck = createTapeDeck(ui, emu);
             const tapeDeckButton = ui.toolbar.addButton(tapeRecorderIcon, {label: 'Connect tape recorder'}, () => {
@@ -1775,6 +1776,9 @@ window.JSSpeccy = (container, opts) => {
         },
         onReady: (callback) => { emu.onReady(callback); },
         exit: () => {exit();},
+        machine: createMachineApi(emu),
+        keyboard: createKeyboardApi(emu),
+        tape: createTapeApi(emu, tapeDeck),
     };
 };
 
