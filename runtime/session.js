@@ -230,6 +230,7 @@ export async function readSessionFile(zip) {
     if (recorder && typeof recorder === 'object') {
         const cassettes = [];
         const ids = new Set();
+        const givenIds = new Map();  // id in the manifest -> id here
         for (const c of (Array.isArray(recorder.cassettes) ? recorder.cassettes : [])) {
             if (!c || typeof c !== 'object') continue;
             const raw = await need(c.file, 'arraybuffer');
@@ -239,9 +240,16 @@ export async function readSessionFile(zip) {
             } catch (e) {
                 throw new Error('A cassette in the session, ' + c.file + ', is damaged.');
             }
-            // an id seen already is the manifest's mistake: the later one is a cassette of its own
-            const id = (typeof c.id === 'string' && c.id && !ids.has(c.id)) ? c.id : null;
-            if (id) ids.add(id);
+            /* An empty id, or one seen already (the manifest's mistake), is
+             * replaced by a made-up one, which the box doesn't take as its
+             * own; the recorder's cassette is found by the id the manifest
+             * gives it, the first cassette with that id. */
+            let id = (typeof c.id === 'string' && c.id && !ids.has(c.id)) ? c.id : null;
+            for (let n = cassettes.length; !id; n++) {
+                if (!ids.has('unsaved-' + n) && !recorder.cassettes.some(other => other && other.id === ('unsaved-' + n))) id = 'unsaved-' + n;
+            }
+            ids.add(id);
+            if ((typeof c.id === 'string') && !givenIds.has(c.id)) givenIds.set(c.id, id);
             cassettes.push({
                 id,
                 label: typeof c.label === 'string' ? c.label.slice(0, 24) : '',
@@ -257,7 +265,7 @@ export async function readSessionFile(zip) {
             });
         }
         // the cassette in the recorder, by its id; one the session doesn't hold counts as none
-        const cassette = (typeof recorder.cassette === 'string' && cassettes.some(c => c.id === recorder.cassette)) ? recorder.cassette : null;
+        const cassette = (typeof recorder.cassette === 'string' && givenIds.has(recorder.cassette)) ? givenIds.get(recorder.cassette) : null;
         tapeRecorder = { connected: !!recorder.connected, parked: !!recorder.parked && !!cassette, cassette, cassettes };
     }
 

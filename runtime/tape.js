@@ -561,6 +561,11 @@ export class TAPFile {
         }
     }
 
+    // Where on the timeline the next block to play starts; null past the last one.
+    nextBlockStartMs() {
+        return (this.nextBlockIndex < this.blocks.length) ? this.blockStartMs[this.nextBlockIndex] : null;
+    }
+
     /* The next block, going round to the first where the tape does;
      * lastLoadedEndMs is then where on the timeline it ends. */
     getNextLoadableBlock() {
@@ -596,6 +601,8 @@ export class TAPFile {
 
 export class TZXFile {
     static isValid(data) {
+        // the signature and the version, 10 bytes, come before any block
+        if (data.byteLength < 10) return false;
         const tzx = new DataView(data);
 
         const signature = "ZXTape!\x1A";
@@ -1083,6 +1090,7 @@ export class TZXFile {
         const timed = [];
         this.timeline = [];
         this.endMsAfter = new Map();
+        this.startMsAt = new Map();  // where the walk stands just before a block that plays -> where it starts
         const seen = new Set();
         let tstates = 0;
         const add = (index, state) => {
@@ -1100,6 +1108,7 @@ export class TZXFile {
             // the tape plays on from here as it already has
             if (seen.has(key)) break;
             seen.add(key);
+            this.startMsAt.set(key, tstates / TSTATES_PER_MS);
             add(before.index, before);
             this.endMsAfter.set(TZXFile.stateKey(after), tstates / TSTATES_PER_MS);
         }
@@ -1234,6 +1243,19 @@ export class TZXFile {
 
     static stateKey(state) {
         return state.index + '/' + state.loopTo + '/' + state.repeats + '/' + state.calls.join(',');
+    }
+
+    /* Where on the timeline the next block to play starts, the time round
+     * the tape has got to; null past the last one. */
+    nextBlockStartMs() {
+        const saved = this.controlState();
+        let ms = null;
+        if (this.getNextMeaningfulBlock()) {
+            const after = this.controlState();
+            ms = this.startMsAt.get(TZXFile.stateKey({ ...after, index: after.index - 1 })) ?? null;
+        }
+        this.setControlState(saved);
+        return ms;
     }
 
     /* Reads on to the end of the tape and, where the tape goes round, once

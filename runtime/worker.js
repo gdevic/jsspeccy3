@@ -389,7 +389,10 @@ const endRecording = () => {
     flushCassette(false);
     if (erasedNames.length) {
         const names = erasedNames.filter(Boolean);
-        postDeckHint('recordedOver', { names: names.length ? names : [''], canUndo: !!undoBlocks });
+        const details = { names: names.length ? names : [''], canUndo: !!undoBlocks };
+        // With the cassette on its way out, the hint follows its eject, which would clear it.
+        if (releasingTape) recordedOverAfterEject = details;
+        else postDeckHint('recordedOver', details);
     } else {
         undoBlocks = null;
     }
@@ -536,15 +539,26 @@ const pressDeckKey = (key) => {
 /* Takes the tape out of the slot, or makes way for another: a cassette is
  * posted back with where it was left and why it went (`reason`: 'eject',
  * 'replaced', or 'parked' when the recorder is switched off). */
+/* Set while releaseTape stops the deck: a recording it ends reports what it
+ * recorded over after the cassette has gone, not before. */
+let releasingTape = false;
+let recordedOverAfterEject = null;
+
 const releaseTape = (reason) => {
     if (!tape) return;
     // A recording ended by the cassette leaving can't be undone: the undo goes with it.
     undoBlocks = null;
+    releasingTape = true;
     stopDeck();
+    releasingTape = false;
     if (tape.isCassette) {
         flushCassette(false);
         postMessage({ message: 'cassetteEjected', token: cassetteToken, seq: cassetteSeq, positionMs: tapePositionMs(), reason });
         cassetteToken = null;
+    }
+    if (recordedOverAfterEject) {
+        postDeckHint('recordedOver', recordedOverAfterEject);
+        recordedOverAfterEject = null;
     }
     erasedNames = [];
     if (reason !== 'parked') deckSound(3);
@@ -754,6 +768,7 @@ const postTapeInfo = () => {
         totalBytes: tape.totalBytes,
         positionMs: tapePositionTstates / TSTATES_PER_MS,
         blockIndex: tape.nextBlockIndex,
+        nextBlockMs: nextBlockMs(),
         kind: tape.isCassette ? 'cassette' : 'game',
         lengthMs: tapeLengthMs(),
         blankFromMs: tape.isCassette ? tape.blankFromMs : tape.totalMs,
@@ -773,11 +788,15 @@ const postTapeSeeked = (quiet) => {
     });
 };
 
+// Where on the tape's timeline the next block starts, for a tape that can say; null otherwise.
+const nextBlockMs = () => ((tape && tape.nextBlockStartMs) ? tape.nextBlockStartMs() : null);
+
 const postTapePosition = () => {
     postMessage({
         message: 'tapePosition',
         positionMs: tapePositionTstates / TSTATES_PER_MS,
         blockIndex: tape ? tape.nextBlockIndex : 0,
+        nextBlockMs: nextBlockMs(),
     });
     framesSincePositionPost = 0;
 };

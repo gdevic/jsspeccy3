@@ -118,6 +118,7 @@ class Emulator extends EventEmitter {
         this.tapeTotalBytes = 0;
         this.tapePositionMs = 0;
         this.tapeBlockIndex = 0; // block the tape is parked on: what the next load reads
+        this.tapeNextBlockMs = null;  // where on the timeline that block starts, where the tape can say
         this.tapeFile = null;    // {name, data} of the loaded tape, for saving a session
         /* The tape recorder (see runtime/tape-deck-ui.js). While it is
          * connected, the tape slot is the recorder: tapeKind says what is in
@@ -293,6 +294,7 @@ class Emulator extends EventEmitter {
                     this.tapeTotalBytes = e.data.totalBytes || 0;
                     this.tapePositionMs = e.data.positionMs || 0;
                     this.tapeBlockIndex = e.data.blockIndex || 0;
+                    this.tapeNextBlockMs = e.data.nextBlockMs ?? null;
                     this.tapeKind = e.data.kind || null;
                     this.tapeLengthMs = e.data.lengthMs || 0;
                     this.tapeBlankFromMs = e.data.blankFromMs || 0;
@@ -302,6 +304,7 @@ class Emulator extends EventEmitter {
                 case 'tapePosition':
                     this.tapePositionMs = e.data.positionMs || 0;
                     this.tapeBlockIndex = e.data.blockIndex || 0;
+                    this.tapeNextBlockMs = e.data.nextBlockMs ?? null;
                     this.emit('tapePosition');
                     break;
                 case 'tapeSeeked':
@@ -324,6 +327,7 @@ class Emulator extends EventEmitter {
                     this.tapeTotalBytes = 0;
                     this.tapePositionMs = 0;
                     this.tapeBlockIndex = 0;
+                    this.tapeNextBlockMs = null;
                     this.tapeIsPlaying = false;
                     this.tapeKind = null;
                     this.tapeLengthMs = 0;
@@ -682,42 +686,33 @@ class Emulator extends EventEmitter {
         const cleanName = filename.toLowerCase();
         const name = displayName || baseName(filename);
         if (cleanName.endsWith('.z80')) {
-            return arrayBuffer => {
+            return async arrayBuffer => {
                 const z80file = parseZ80File(arrayBuffer);
                 return this.loadSnapshot(z80file);
             };
         } else if (cleanName.endsWith('.szx')) {
-            return arrayBuffer => {
+            return async arrayBuffer => {
                 const szxfile = parseSZXFile(arrayBuffer);
                 return this.loadSnapshot(szxfile);
             };
         } else if (cleanName.endsWith('.sna')) {
-            return arrayBuffer => {
+            return async arrayBuffer => {
                 const snafile = parseSNAFile(arrayBuffer);
                 return this.loadSnapshot(snafile);
             };
         } else if (cleanName.endsWith('.tap')) {
-            return arrayBuffer => {
-                if (!TAPFile.isValid(arrayBuffer)) {
-                    alert('Invalid TAP file');
-                } else {
-                    return this.openTAPFile(arrayBuffer, { name });
-                }
+            return async arrayBuffer => {
+                if (!TAPFile.isValid(arrayBuffer)) throw 'Invalid TAP file';
+                return this.openTAPFile(arrayBuffer, { name });
             };
         } else if (cleanName.endsWith('.tzx')) {
-            return arrayBuffer => {
-                if (!TZXFile.isValid(arrayBuffer)) {
-                    alert('Invalid TZX file');
-                } else {
-                    return this.openTZXFile(arrayBuffer, { name });
-                }
+            return async arrayBuffer => {
+                if (!TZXFile.isValid(arrayBuffer)) throw 'Invalid TZX file';
+                return this.openTZXFile(arrayBuffer, { name });
             };
         } else if (cleanName.endsWith('.mdr')) {
             return async arrayBuffer => {
-                if (!validateMDRFile(arrayBuffer)) {
-                    alert('Invalid Microdrive cartridge (.mdr) file');
-                    return { mediaType: 'microdrive' };
-                }
+                if (!validateMDRFile(arrayBuffer)) throw 'Invalid Microdrive cartridge (.mdr) file';
                 if (this.listenerCount('microdriveImageOpened') > 0) {
                     // Something's tracking cartridges (the cartridge box UI) -
                     // hand it off rather than guessing where it should go.
@@ -1451,11 +1446,16 @@ window.JSSpeccy = (container, opts) => {
             /* Mark the part the next load will read, which is the block the
              * tape is parked on, not where the counter sits: once a whole tape
              * has loaded the counter stays at the end while the tape itself has
-             * wrapped back round to the first block. */
+             * wrapped back round to the first block. Where the tape says where
+             * on its timeline that block starts, the part is found by that,
+             * which tells apart the times round a loop; otherwise by the
+             * block. */
+            const nextMs = emu.tapeNextBlockMs;
             const block = emu.tapeBlockIndex;
             let currentSeg = 0;
             for (let i = 0; i < segs.length; i++) {
-                if (segs[i].index <= block) currentSeg = i;
+                const reached = (nextMs !== null) ? (segs[i].startMs <= nextMs + 0.5) : (segs[i].index <= block);
+                if (reached) currentSeg = i;
             }
             const items = segs.map((seg, i) => ({ label: seg.label, current: i === currentSeg }));
             ui.showTapePopup('Jump to tape segment', items, (index) => {
