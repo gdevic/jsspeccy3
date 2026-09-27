@@ -22,6 +22,8 @@ import JSZip from 'jszip';
 import * as mdr from './mdr.js';
 import * as store from './microdrive-store.js';
 import { boxCopyMovedOn } from './session.js';
+import { openDialog, h, button, confirmButton } from './dialog.js';
+import { makeMovable } from './movable.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -536,7 +538,7 @@ function buildDrivePanel(emu, controller, driveIndex) {
         position: 'absolute', width: '300px', background: '#1c1e22', color: '#eee',
         border: '1px solid #444', borderRadius: '8px', boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
         fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px', zIndex: '120',
-        overflow: 'hidden',
+        overflow: 'hidden', display: 'flex', flexDirection: 'column',
     });
     const footerStyle = {
         display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px',
@@ -583,11 +585,14 @@ function buildDrivePanel(emu, controller, driveIndex) {
     header.append(title, wpBtn, closeBtn);
 
     /* ---------- a loaded drive ---------- */
-    const loaded = el('div');
+    // what the drive shows, the one or the other, filling the panel below its header
+    const part = { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: '0' };
+    const loaded = el('div', part);
 
     const body = el('div', { display: 'flex', gap: '10px', padding: '10px' });
     const ring = buildRing(120);
     ring.element.style.flexShrink = '0';
+    ring.element.style.alignSelf = 'flex-start';
     const fileList = el('div', { flex: '1', minWidth: '0', maxHeight: '160px', overflowY: 'auto' });
     body.append(ring.element, fileList);
 
@@ -637,7 +642,7 @@ function buildDrivePanel(emu, controller, driveIndex) {
     loaded.append(body, blankNotice, cmdRow, loadedFooter);
 
     /* ---------- an empty drive ---------- */
-    const empty = el('div');
+    const empty = el('div', part);
     const listHeading = el('div', { padding: '8px 10px 2px', color: '#aaa' });
     const list = el('div', { maxHeight: '180px', overflowY: 'auto', padding: '4px 6px' });
     const emptyFooter = el('div', footerStyle);
@@ -754,8 +759,8 @@ function buildDrivePanel(emu, controller, driveIndex) {
 
     function refresh() {
         const d = controller.state.drives[driveIndex];
-        loaded.style.display = d ? 'block' : 'none';
-        empty.style.display = d ? 'none' : 'block';
+        loaded.style.display = d ? 'flex' : 'none';
+        empty.style.display = d ? 'none' : 'flex';
         wpBtn.style.display = d ? '' : 'none';
         if (!d) {
             title.textContent = `Drive ${driveIndex + 1} is empty`;
@@ -803,7 +808,9 @@ function buildDrivePanel(emu, controller, driveIndex) {
     }
 
     return {
-        element: panel, refresh, tick,
+        element: panel, header, refresh, tick,
+        // what takes up the height of a resized panel: the tape's files, or the box's cartridges
+        stretch: [body, fileList, list],
         set onClose(fn) { onClose = fn; },
     };
 }
@@ -814,45 +821,29 @@ function buildDrivePanel(emu, controller, driveIndex) {
  * create, import and export them, and name, colour, copy, save or delete
  * each one. Using a cartridge happens at a drive (see buildDrivePanel). */
 function openCartridgeBox(ui, emu, controller) {
-    const wasRunning = emu.isRunning;
-    emu.pause();
-    const body = ui.showDialog();
-    body.innerHTML = '';
-
-    const origHideDialog = ui.hideDialog;
-    let closed = false;
-    function close() {
-        if (closed) return;
-        closed = true;
-        delete ui.hideDialog;
-        origHideDialog.call(ui);
-        if (wasRunning) emu.start();
-        emu.focus();
-    }
-    ui.hideDialog = function () { close(); };
-
-    const root = el('div', { fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' });
-    body.appendChild(root);
-    root.appendChild(el('h2', { margin: '4px 0 4px 0', fontSize: '18px' }, { textContent: 'Microdrive cartridges' }));
-    root.appendChild(el('div', { color: '#666', fontSize: '90%', marginBottom: '10px' }, {
-        textContent: 'Your cartridge box. To use a cartridge, click an empty Microdrive'
+    const dialog = openDialog(ui, emu, {
+        id: 'cartridgeBox', title: 'Microdrive cartridges',
+        subtitle: 'Your cartridge box. To use a cartridge, click an empty Microdrive'
             + (controller.state.connected ? '.' : ' (connect the Microdrives from the toolbar first).'),
-    }));
-
-    const toolbar = el('div', { display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' });
-    const newBtn = el('button', { padding: '6px 10px' }, { textContent: 'New cartridge…' });
-    const importBtn = el('button', { padding: '6px 10px' }, { textContent: 'Import .mdr…' });
-    const importBoxBtn = el('button', { padding: '6px 10px' }, { textContent: 'Import box (.zip)…' });
-    const exportBoxBtn = el('button', { padding: '6px 10px' }, { textContent: 'Save whole box to PC (.zip)' });
-    const fileInput = el('input', { display: 'none' }, { type: 'file', accept: '.mdr' });
-    const zipInput = el('input', { display: 'none' }, { type: 'file', accept: '.zip' });
-    toolbar.append(newBtn, importBtn, importBoxBtn, exportBoxBtn, fileInput, zipInput);
-    root.appendChild(toolbar);
-
-    const grid = el('div', {
-        display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px',
+        width: 780, height: 580,
     });
-    root.appendChild(grid);
+
+    const toolbar = h('div', 'jsd-bar');
+    const newBtn = button('New cartridge…', { variant: 'primary', title: 'A blank cartridge, or one formatted with a name' });
+    const importBtn = button('Import .mdr…', { icon: openIcon, title: 'A cartridge file from your PC' });
+    const spacer = h('div', 'jsd-grow');
+    const importBoxBtn = button('Import box…', { title: 'Cartridges from a box saved as a .zip' });
+    const exportBoxBtn = button('Save box to PC', { title: 'Every cartridge in the box, as one .zip' });
+    const fileInput = h('input', '', { type: 'file', accept: '.mdr' });
+    const zipInput = h('input', '', { type: 'file', accept: '.zip' });
+    fileInput.style.display = 'none';
+    zipInput.style.display = 'none';
+    toolbar.append(newBtn, importBtn, spacer, importBoxBtn, exportBoxBtn, fileInput, zipInput);
+
+    const scroll = h('div', 'jsd-scroll');
+    const grid = h('div', 'jsd-grid');
+    scroll.appendChild(grid);
+    dialog.body.append(toolbar, scroll);
 
     // Rendering awaits storage, so overlapping calls could interleave their
     // cards; each builds off-screen and only the latest one is shown.
@@ -862,22 +853,13 @@ function openCartridgeBox(ui, emu, controller) {
         const cards = document.createDocumentFragment();
         const cartridges = await store.list();
         if (cartridges.length === 0) {
-            cards.appendChild(el('div', { color: '#666', gridColumn: '1 / -1' }, { textContent: 'No cartridges yet - create or import one.' }));
+            const none = h('div', 'jsd-empty');
+            none.style.gridColumn = '1 / -1';
+            none.appendChild(h('b', '', { textContent: 'The box is empty' }));
+            none.appendChild(document.createTextNode('Create a new cartridge, or import an .mdr file from your PC.'));
+            cards.appendChild(none);
         }
         for (const meta of cartridges) {
-            const card = el('div', {
-                border: '1px solid #ccc', borderRadius: '6px', padding: '8px', background: '#fafafa',
-            });
-            const top = el('div', { display: 'flex', alignItems: 'center', gap: '6px' });
-            const swatch = el('div', {
-                width: '14px', height: '14px', borderRadius: '3px', background: meta.colour, border: '1px solid #999',
-                flexShrink: '0', cursor: 'pointer',
-            }, { title: 'Cartridge colour (click to change)' });
-            swatch.addEventListener('click', async () => {
-                const i = store.CARTRIDGE_COLOURS.indexOf(meta.colour);
-                await controller.setColour(meta.id, store.CARTRIDGE_COLOURS[(i + 1) % store.CARTRIDGE_COLOURS.length]);
-                renderGrid();
-            });
             // The name is read off the tape itself (the stored label is only
             // a copy, corrected here if it has drifted).
             const record = await store.get(meta.id);
@@ -886,13 +868,23 @@ function openCartridgeBox(ui, emu, controller) {
             const split = record ? mdr.splitMDRFile(record.data) : null;
             const parsed = split ? mdr.parse(split.data, split.writeProtect) : null;
             const writeProtect = split ? split.writeProtect : false;
-            const label = el('input', { flex: '1', minWidth: '0', border: '1px solid transparent', font: 'inherit', background: 'transparent' }, {
+            const insertedIn = controller.driveOf(meta.id);
+
+            const card = h('div', 'jsd-card' + ((insertedIn >= 0) ? ' current' : ''));
+            const top = h('div', 'jsd-card-top');
+            const swatch = h('div', 'jsd-swatch', { title: 'Cartridge colour (click to change)' });
+            swatch.style.background = meta.colour;
+            swatch.addEventListener('click', async () => {
+                const i = store.CARTRIDGE_COLOURS.indexOf(meta.colour);
+                await controller.setColour(meta.id, store.CARTRIDGE_COLOURS[(i + 1) % store.CARTRIDGE_COLOURS.length]);
+                renderGrid();
+            });
+            const label = h('input', 'jsd-label', {
                 value: name || '', maxLength: 10, placeholder: (name === null) ? 'Blank cartridge' : '',
                 disabled: (name === null) || writeProtect,
-                title: (name === null) ? 'Format it in a drive to name it' : 'Cartridge name',
+                title: (name === null) ? 'Format it in a drive to name it' : 'Cartridge name (click to change)',
             });
             label.addEventListener('keydown', (e) => { if (e.key === 'Enter') label.blur(); });
-            const insertedIn = controller.driveOf(meta.id);
             label.addEventListener('change', async () => {
                 if (insertedIn >= 0) {
                     controller.rename(insertedIn, label.value);
@@ -903,63 +895,81 @@ function openCartridgeBox(ui, emu, controller) {
                 }
             });
             top.append(swatch, label);
+            if (writeProtect) top.appendChild(h('span', 'jsd-badge warn', { textContent: 'Protected', title: 'Write-protected: nothing can be saved on it' }));
             card.appendChild(top);
 
-            const status = [];
+            if (insertedIn >= 0) {
+                const badges = h('div');
+                badges.appendChild(h('span', 'jsd-badge accent', { textContent: `In drive ${insertedIn + 1}` }));
+                card.appendChild(badges);
+            }
+            let status;
             if (parsed && parsed.formatted) {
                 const n = parsed.files.length;
-                status.push(`${n} file${n === 1 ? '' : 's'}, ${parsed.freeK}K free`);
+                status = `${n} file${n === 1 ? '' : 's'}, ${parsed.freeK}K free`;
             } else {
-                status.push('Unformatted');
+                status = 'Unformatted';
             }
-            if (writeProtect) status.push('write-protected');
-            if (insertedIn >= 0) status.push(`in drive ${insertedIn + 1}`);
-            card.appendChild(el('div', { color: '#555', fontSize: '90%', marginTop: '4px' }, { textContent: status.join(' · ') }));
-            card.appendChild(el('div', { color: '#888', fontSize: '85%', marginBottom: '4px' }, { textContent: `Modified ${fmtDate(meta.modified)}` }));
+            card.appendChild(h('div', 'jsd-row-meta', { textContent: status }));
+            card.appendChild(h('div', 'jsd-faint', { textContent: `Modified ${fmtDate(meta.modified)}` }));
 
-            const actions = el('div', { display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '6px' });
-            const saveBtn = el('button', {}, { textContent: 'Save to PC' });
+            const actions = h('div', 'jsd-card-actions');
+            const saveBtn = button('Save to PC', { small: true, title: 'The cartridge as an .mdr file' });
             saveBtn.addEventListener('click', async () => {
                 const record = await store.get(meta.id);
                 if (record) downloadBytes(record.data, (record.label || 'cartridge').replace(/[^\w-]+/g, '_') + '.mdr', saveBtn);
             });
-            const dupBtn = el('button', {}, { textContent: 'Duplicate' });
+            const dupBtn = button('Duplicate', { small: true });
             dupBtn.addEventListener('click', async () => { await store.duplicate(meta.id); renderGrid(); });
-            const delBtn = el('button', { color: '#a00' }, { textContent: 'Delete' });
-            delBtn.addEventListener('click', () => {
-                if (delBtn.dataset.confirm) {
-                    controller.remove(meta.id).then(renderGrid);
-                } else {
-                    delBtn.dataset.confirm = '1';
-                    delBtn.textContent = (insertedIn >= 0) ? 'Eject & delete?' : 'Really delete?';
-                    setTimeout(() => { delBtn.dataset.confirm = ''; delBtn.textContent = 'Delete'; }, 3000);
-                }
-            });
-            actions.append(saveBtn, dupBtn, delBtn);
+            const delBtn = confirmButton('Delete', (insertedIn >= 0) ? 'Eject & delete?' : 'Really delete?',
+                () => controller.remove(meta.id).then(renderGrid), { small: true });
+            const row = h('div', 'jsd-card-row');
+            row.append(saveBtn, dupBtn, h('div', 'jsd-grow'), delBtn);
+            actions.appendChild(row);
             card.appendChild(actions);
             cards.appendChild(card);
         }
-        if (generation === renderGeneration) grid.replaceChildren(cards);
+        if (generation === renderGeneration) {
+            grid.replaceChildren(cards);
+            dialog.aside.textContent = cartridges.length + (cartridges.length === 1 ? ' cartridge' : ' cartridges');
+        }
     }
 
-    newBtn.addEventListener('click', async () => {
-        const nameCard = el('div', { padding: '10px', border: '1px solid #ccc', borderRadius: '6px', marginBottom: '10px', background: '#fff' });
-        const nameInput = el('input', { marginRight: '6px' }, { placeholder: 'Name (blank = unformatted)', maxLength: 10 });
-        const lenSelect = el('select', { marginRight: '6px' });
-        lenSelect.appendChild(el('option', {}, { value: '254', textContent: 'Standard (254 sectors, ~127K)' }));
-        lenSelect.appendChild(el('option', {}, { value: '180', textContent: 'Realistic (~180 sectors, ~90K)' }));
-        const createBtn = el('button', {}, { textContent: 'Create' });
+    // The form for a new cartridge, over the grid while it is open.
+    let nameCard = null;
+    newBtn.addEventListener('click', () => {
+        if (nameCard) {
+            nameCard.querySelector('input').focus();
+            return;
+        }
+        nameCard = h('div', 'jsd-panel');
+        const nameInput = h('input', 'jsd-input', { placeholder: 'Name (leave blank for an unformatted one)', maxLength: 10 });
+        nameInput.style.flex = '1 1 220px';
+        const lenSelect = h('select', 'jsd-input');
+        lenSelect.appendChild(h('option', '', { value: '254', textContent: 'Standard: 254 sectors, about 127K' }));
+        lenSelect.appendChild(h('option', '', { value: '180', textContent: 'Realistic: about 180 sectors, 90K' }));
+        const createBtn = button('Create', { variant: 'primary' });
         createBtn.title = 'A named cartridge comes formatted with that name; without one it is blank, like a new cartridge out of the box.';
-        createBtn.addEventListener('click', async () => {
+        const cancelBtn = button('Cancel', { variant: 'ghost' });
+        const closeForm = () => {
+            nameCard.remove();
+            nameCard = null;
+        };
+        const create = async () => {
             const blocks = parseInt(lenSelect.value, 10);
             const name = nameInput.value;
             const data = name ? mdr.quickFormat(blocks, name) : mdr.createBlank(blocks);
             await store.create({ label: mdr.cartridgeName(data) || '', data: data.buffer });
-            nameCard.remove();
+            closeForm();
+            dialog.setStatus(name ? `Created and formatted "${mdr.cartridgeName(data)}".` : 'Created a blank cartridge.', 'ok');
             renderGrid();
-        });
-        nameCard.append(nameInput, lenSelect, createBtn);
-        root.insertBefore(nameCard, grid);
+        };
+        createBtn.addEventListener('click', create);
+        cancelBtn.addEventListener('click', closeForm);
+        nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') create(); });
+        nameCard.append(nameInput, lenSelect, createBtn, cancelBtn);
+        scroll.insertBefore(nameCard, grid);
+        scroll.scrollTop = 0;
         nameInput.focus();
     });
 
@@ -969,8 +979,12 @@ function openCartridgeBox(ui, emu, controller) {
         fileInput.value = '';
         if (!file) return;
         const buf = await readFileAsArrayBuffer(file);
-        if (!mdr.validateMDRFile(buf)) { alert('Invalid Microdrive cartridge (.mdr) file'); return; }
+        if (!mdr.validateMDRFile(buf)) {
+            dialog.setStatus(file.name + ' is not a Microdrive cartridge (.mdr) file.', 'error');
+            return;
+        }
         await store.create({ label: mdr.cartridgeName(buf) || '', data: buf });
+        dialog.setStatus('Imported ' + file.name + '.', 'ok');
         renderGrid();
     });
 
@@ -993,7 +1007,13 @@ function openCartridgeBox(ui, emu, controller) {
         const file = zipInput.files[0];
         zipInput.value = '';
         if (!file) return;
-        const zip = await JSZip.loadAsync(await readFileAsArrayBuffer(file));
+        let zip;
+        try {
+            zip = await JSZip.loadAsync(await readFileAsArrayBuffer(file));
+        } catch (e) {
+            dialog.setStatus(file.name + ' is not a ZIP file.', 'error');
+            return;
+        }
         let manifest = null;
         const manifestEntry = zip.file('manifest.json');
         if (manifestEntry) {
@@ -1001,12 +1021,15 @@ function openCartridgeBox(ui, emu, controller) {
         }
         const entries = [];
         zip.forEach((path, f) => { if (!f.dir && path.toLowerCase().endsWith('.mdr')) entries.push([path, f]); });
+        let added = 0;
         for (const [path, f] of entries) {
             const buf = await f.async('arraybuffer');
             if (!mdr.validateMDRFile(buf)) continue;
-            const info = manifest && manifest.cartridges.find(c => c.file === path);
+            const info = manifest && Array.isArray(manifest.cartridges) && manifest.cartridges.find(c => c.file === path);
             await store.create({ label: mdr.cartridgeName(buf) || '', colour: info && info.colour, data: buf });
+            added++;
         }
+        dialog.setStatus(`Imported ${added} of ${entries.length} cartridge${entries.length === 1 ? '' : 's'} from ${file.name}.`, added ? 'ok' : 'error');
         renderGrid();
     });
 
@@ -1057,7 +1080,7 @@ export function createMicrodriveDock(ui, emu) {
     }
 
     function positionPanel() {
-        if (!openPanel) return;
+        if (!openPanel || openPanel.mover.place()) return;
         // Opens just above the drive it belongs to, left edges aligned, so
         // it's plain which drive it is about. The drive's on-screen box
         // already includes the dock's scale transform.
@@ -1076,6 +1099,9 @@ export function createMicrodriveDock(ui, emu) {
         closePanel();
         openPanel = buildDrivePanel(emu, controller, drive);
         openPanel.onClose = closePanel;
+        openPanel.mover = makeMovable(openPanel.element, openPanel.header, ui.appContainer, {
+            id: 'drive' + (drive + 1), resize: { minWidth: 260, minHeight: 160, stretch: openPanel.stretch }, onReset: positionPanel,
+        });
         openPanelDrive = drive;
         ui.appContainer.appendChild(openPanel.element);
         openPanel.refresh();

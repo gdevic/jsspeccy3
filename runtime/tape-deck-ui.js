@@ -24,6 +24,8 @@ import * as cassette from './cassette.js';
 import * as store from './cassette-store.js';
 import { boxCopyMovedOn } from './session.js';
 import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W } from './microdrive-ui.js';
+import { openDialog, h, button, confirmButton } from './dialog.js';
+import { makeMovable } from './movable.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -749,6 +751,7 @@ function buildPanel(emu, controller, openBox) {
         position: 'absolute', width: '300px', background: '#1c1e22', color: '#eee',
         border: '1px solid #444', borderRadius: '8px', boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
         fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px', zIndex: '120', overflow: 'hidden',
+        display: 'flex', flexDirection: 'column',
     });
     const footerStyle = {
         display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 10px',
@@ -780,19 +783,24 @@ function buildPanel(emu, controller, openBox) {
     const swatch = el('div', {
         width: '14px', height: '14px', borderRadius: '3px', border: '1px solid #000', flexShrink: '0', cursor: 'pointer',
     }, { title: 'Label colour (click to change)' });
+    swatch.dataset.noDrag = '';  // a click, not a hold on the title bar (see movable.js)
     const title = el('div', {
-        flex: '1', minWidth: '0', fontSize: '13px', fontWeight: 'bold',
+        flex: '0 1 auto', minWidth: '0', fontSize: '13px', fontWeight: 'bold',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
     });
+    // As wide as the label, so the rest of the title bar is left to drag the panel by.
     const nameInput = el('input', {
-        flex: '1', minWidth: '0', fontSize: '13px', fontWeight: 'bold', color: '#fff', background: 'transparent',
+        flex: '0 1 auto', minWidth: '0', fontSize: '13px', fontWeight: 'bold', color: '#fff', background: 'transparent',
         border: '1px solid transparent', borderRadius: '3px', padding: '1px 3px', font: 'inherit',
     }, { type: 'text', maxLength: 24, placeholder: 'Unnamed cassette', title: 'Cassette label (click to change)' });
     nameInput.style.fontWeight = 'bold';
+    const fitName = () => { nameInput.size = Math.max(3, (nameInput.value || nameInput.placeholder).length); };
     keepKeys(nameInput);
+    nameInput.addEventListener('input', fitName);
     nameInput.addEventListener('focus', () => { nameInput.style.border = '1px solid #555'; nameInput.style.background = '#111'; });
     nameInput.addEventListener('blur', () => { nameInput.style.border = '1px solid transparent'; nameInput.style.background = 'transparent'; });
     nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') nameInput.blur(); });
+    const spacer = el('div', { flex: '1', alignSelf: 'stretch' });
     const wpBtn = el('button', {
         border: 'none', background: '#333', color: '#ccc', borderRadius: '4px',
         padding: '3px 6px', cursor: 'pointer', fontSize: '11px', flexShrink: '0',
@@ -802,12 +810,16 @@ function buildPanel(emu, controller, openBox) {
     closeBtn.style.filter = 'invert(1)';
     closeBtn.firstChild.style.height = '14px';
     closeBtn.title = 'Close';
-    header.append(swatch, title, nameInput, wpBtn, closeBtn);
+    header.append(swatch, title, nameInput, spacer, wpBtn, closeBtn);
 
     /* ---------- a tape in the recorder ---------- */
-    const loaded = el('div');
-    const MAP_W = 278, MAP_H = 26;
-    const map = svgEl('svg', { width: MAP_W, height: MAP_H, viewBox: `0 0 ${MAP_W} ${MAP_H}` });
+    // what the recorder shows, the one or the other, filling the panel below its header
+    const part = { display: 'flex', flexDirection: 'column', flex: '1 1 auto', minHeight: '0' };
+    const loaded = el('div', part);
+    // the map is as wide as the panel, less its margins (see fitMap)
+    const MAP_H = 26;
+    let mapW = 278;
+    const map = svgEl('svg', { width: mapW, height: MAP_H, viewBox: `0 0 ${mapW} ${MAP_H}` });
     Object.assign(map.style, { display: 'block', margin: '8px 10px 2px', cursor: 'pointer' });
     const mapDefs = svgEl('defs');
     const hatch = svgEl('pattern', { id: 'tdhatch', width: 4, height: 4, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' });
@@ -815,7 +827,8 @@ function buildPanel(emu, controller, openBox) {
     hatch.appendChild(svgEl('rect', { width: 2, height: 4, fill: '#c44' }));
     mapDefs.appendChild(hatch);
     map.appendChild(mapDefs);
-    map.appendChild(svgEl('rect', { x: 0, y: 4, width: MAP_W, height: 12, rx: 2, fill: '#101113', stroke: '#333', 'stroke-width': 1 }));
+    const mapTrack = svgEl('rect', { x: 0, y: 4, width: mapW, height: 12, rx: 2, fill: '#101113', stroke: '#333', 'stroke-width': 1 });
+    map.appendChild(mapTrack);
     const mapParts = svgEl('g');
     const mapTicks = svgEl('g');
     const headMark = svgEl('g');
@@ -860,7 +873,7 @@ function buildPanel(emu, controller, openBox) {
     loaded.append(map, mapLegend, list, cmdRow, notice, loadedFooter);
 
     /* ---------- an empty recorder ---------- */
-    const empty = el('div');
+    const empty = el('div', part);
     const listHeading = el('div', { padding: '8px 10px 2px', color: '#aaa' });
     const boxList = el('div', { maxHeight: '180px', overflowY: 'auto', padding: '4px 6px' });
     const emptyFooter = el('div', footerStyle);
@@ -938,8 +951,8 @@ function buildPanel(emu, controller, openBox) {
         mapParts.replaceChildren();
         mapTicks.replaceChildren();
         for (const seg of segments) {
-            const x = (seg.startMs / lengthMs) * MAP_W;
-            const w = Math.max(1.5, (seg.durationMs / lengthMs) * MAP_W);
+            const x = (seg.startMs / lengthMs) * mapW;
+            const w = Math.max(1.5, (seg.durationMs / lengthMs) * mapW);
             const r = svgEl('rect', {
                 x, y: 5, width: w, height: 10, rx: 1,
                 fill: seg.damaged ? 'url(#tdhatch)' : colourForName(seg.name || seg.typeName || seg.label || ''),
@@ -952,7 +965,7 @@ function buildPanel(emu, controller, openBox) {
         const minutes = lengthMs / 60000;
         const step = (minutes >= 30) ? 5 : 1;
         for (let m = step; m < minutes; m += step) {
-            const x = (m / minutes) * MAP_W;
+            const x = (m / minutes) * mapW;
             mapTicks.appendChild(svgEl('line', { x1: x, y1: 17, x2: x, y2: (m % (step * 2)) ? 19 : 21, stroke: '#555', 'stroke-width': 1 }));
         }
         mapLegend.replaceChildren(
@@ -1047,8 +1060,8 @@ function buildPanel(emu, controller, openBox) {
     let emptyShown = false;
     function refresh() {
         const kind = emu.tapeKind;
-        loaded.style.display = kind ? 'block' : 'none';
-        empty.style.display = kind ? 'none' : 'block';
+        loaded.style.display = kind ? 'flex' : 'none';
+        empty.style.display = kind ? 'none' : 'flex';
         const c = own();
         swatch.style.display = c ? '' : 'none';
         wpBtn.style.display = c ? '' : 'none';
@@ -1068,6 +1081,7 @@ function buildPanel(emu, controller, openBox) {
         if (c) {
             swatch.style.background = c.colour;
             if (document.activeElement !== nameInput) nameInput.value = c.label || '';
+            fitName();
             wpBtn.style.background = c.writeProtect ? '#a33' : '#333';
             wpBtn.style.color = c.writeProtect ? '#fff' : '#ccc';
             wpBtn.title = c.writeProtect ? 'Write-protected: the tabs are out. Click to cover the holes.' : 'Write protect: break out the tabs';
@@ -1093,7 +1107,7 @@ function buildPanel(emu, controller, openBox) {
     function tick(positionMs) {
         if (!emu.tapeKind) return;
         const lengthMs = emu.tapeLengthMs || cassette.CASSETTE_MS;
-        headMark.setAttribute('transform', `translate(${clamp(positionMs / lengthMs, 0, 1) * MAP_W} 0)`);
+        headMark.setAttribute('transform', `translate(${clamp(positionMs / lengthMs, 0, 1) * mapW} 0)`);
         let current = null;
         for (const row of list.children) {
             if (row.dataset.end !== undefined && positionMs < Number(row.dataset.end)) { current = row; break; }
@@ -1105,8 +1119,22 @@ function buildPanel(emu, controller, openBox) {
         }
     }
 
+    // The map fills the panel's width, less its 10-pixel margins and border.
+    function fitMap() {
+        const width = panel.clientWidth - 20;
+        if ((width <= 0) || (width === mapW)) return;
+        mapW = width;
+        map.setAttribute('width', mapW);
+        map.setAttribute('viewBox', `0 0 ${mapW} ${MAP_H}`);
+        mapTrack.setAttribute('width', mapW);
+        if (emu.tapeKind) refresh();
+    }
+    if (window.ResizeObserver) new ResizeObserver(fitMap).observe(panel);
+
     return {
-        element: panel, refresh, tick,
+        element: panel, header, refresh, tick,
+        // the lists that take up the height of a resized panel
+        stretch: [list, boxList],
         setHint(h) { hint = h; refresh(); },
         refreshBox() { if (!emu.tapeKind) loadBoxList(); },
         set onClose(fn) { onClose = fn; },
@@ -1126,44 +1154,31 @@ const recordedOverText = (names) => {
  * export them, and name, colour, protect, copy, save or delete each one.
  * Using a cassette happens at the recorder. */
 function openCassetteBox(ui, emu, controller) {
-    const wasRunning = emu.isRunning;
-    emu.pause();
-    const body = ui.showDialog();
-    body.innerHTML = '';
-
-    const origHideDialog = ui.hideDialog;
-    let closed = false;
-    function close() {
-        if (closed) return;
-        closed = true;
-        delete ui.hideDialog;
-        origHideDialog.call(ui);
-        unsubscribe();
-        if (wasRunning) emu.start();
-        emu.focus();
-    }
-    ui.hideDialog = function () { close(); };
-
-    const root = el('div', { fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' });
-    body.appendChild(root);
-    root.appendChild(el('h2', { margin: '4px 0 4px 0', fontSize: '18px' }, { textContent: 'Tape cassettes' }));
-    root.appendChild(el('div', { color: '#666', fontSize: '90%', marginBottom: '10px' }, {
-        textContent: 'Your cassette box. Each is a blank 60-minute cassette to SAVE onto, or a tape imported from your PC. To use one, put it in the tape recorder'
+    const dialog = openDialog(ui, emu, {
+        id: 'cassetteBox', title: 'Tape cassettes',
+        subtitle: 'Blank 60-minute cassettes to SAVE onto, and tapes imported from your PC. To use one, put it in the tape recorder'
             + (controller.state.connected ? '.' : ' (connect it from the toolbar).'),
-    }));
+        width: 820, height: 620,
+        onClose: () => unsubscribe(),
+    });
+    const close = dialog.close;
 
-    const toolbar = el('div', { display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' });
-    const newBtn = el('button', { padding: '6px 10px' }, { textContent: 'New blank C60' });
-    const importBtn = el('button', { padding: '6px 10px' }, { textContent: 'Import .tap/.tzx…' });
-    const importBoxBtn = el('button', { padding: '6px 10px' }, { textContent: 'Import box (.zip)…' });
-    const exportBoxBtn = el('button', { padding: '6px 10px' }, { textContent: 'Save whole box to PC (.zip)' });
-    const fileInput = el('input', { display: 'none' }, { type: 'file', accept: '.tap,.tzx', multiple: true });
-    const zipInput = el('input', { display: 'none' }, { type: 'file', accept: '.zip' });
-    toolbar.append(newBtn, importBtn, importBoxBtn, exportBoxBtn, fileInput, zipInput);
-    root.appendChild(toolbar);
+    const toolbar = h('div', 'jsd-bar');
+    const newBtn = button('New blank C60', { variant: 'primary', title: 'A blank 60-minute cassette to SAVE onto' });
+    const importBtn = button('Import .tap/.tzx…', { icon: openIcon, title: 'Tape files from your PC, each as a cassette' });
+    const spacer = h('div', 'jsd-grow');
+    const importBoxBtn = button('Import box…', { title: 'Cassettes from a box saved as a .zip' });
+    const exportBoxBtn = button('Save box to PC', { title: 'Every cassette in the box, as one .zip' });
+    const fileInput = h('input', '', { type: 'file', accept: '.tap,.tzx', multiple: true });
+    const zipInput = h('input', '', { type: 'file', accept: '.zip' });
+    fileInput.style.display = 'none';
+    zipInput.style.display = 'none';
+    toolbar.append(newBtn, importBtn, spacer, importBoxBtn, exportBoxBtn, fileInput, zipInput);
 
-    const grid = el('div', { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: '10px' });
-    root.appendChild(grid);
+    const scroll = h('div', 'jsd-scroll');
+    const grid = h('div', 'jsd-grid');
+    scroll.appendChild(grid);
+    dialog.body.append(toolbar, scroll);
 
     // Rendering awaits storage, so each render builds off-screen and only the latest is shown.
     let renderGeneration = 0;
@@ -1173,7 +1188,11 @@ function openCassetteBox(ui, emu, controller) {
         const cards = document.createDocumentFragment();
         const cassettes = await store.list();
         if (cassettes.length === 0) {
-            cards.appendChild(el('div', { color: '#666', gridColumn: '1 / -1' }, { textContent: 'No cassettes yet - make a blank one or import a tape.' }));
+            const none = h('div', 'jsd-empty');
+            none.style.gridColumn = '1 / -1';
+            none.appendChild(h('b', '', { textContent: 'The box is empty' }));
+            none.appendChild(document.createTextNode('Make a blank cassette to SAVE onto, or import a tape from your PC.'));
+            cards.appendChild(none);
         }
         for (const meta of cassettes) {
             const record = await store.get(meta.id);
@@ -1187,76 +1206,75 @@ function openCassetteBox(ui, emu, controller) {
             const inRecorder = controller.inRecorder(meta.id);
             const waiting = !inRecorder && controller.state.cassette && controller.state.cassette.id === meta.id;
 
-            const card = el('div', { border: '1px solid #ccc', borderRadius: '6px', padding: '8px', background: '#fafafa' });
-            const top = el('div', { display: 'flex', alignItems: 'center', gap: '6px' });
-            const swatch = el('div', {
-                width: '14px', height: '14px', borderRadius: '3px', background: meta.colour, border: '1px solid #999',
-                flexShrink: '0', cursor: 'pointer',
-            }, { title: 'Label colour (click to change)' });
+            const card = h('div', 'jsd-card' + (inRecorder ? ' current' : ''));
+            const top = h('div', 'jsd-card-top');
+            const swatch = h('div', 'jsd-swatch', { title: 'Label colour (click to change)' });
+            swatch.style.background = meta.colour;
             swatch.addEventListener('click', async () => {
                 const i = store.CASSETTE_COLOURS.indexOf(meta.colour);
                 await controller.setColour(meta.id, store.CASSETTE_COLOURS[(i + 1) % store.CASSETTE_COLOURS.length]);
                 renderGrid();
             });
-            const label = el('input', { flex: '1', minWidth: '0', border: '1px solid transparent', font: 'inherit', background: 'transparent' }, {
-                value: meta.label || '', maxLength: 24, placeholder: 'Unnamed cassette', title: 'Cassette label',
+            const label = h('input', 'jsd-label', {
+                value: meta.label || '', maxLength: 24, placeholder: 'Unnamed cassette', title: 'Cassette label (click to change)',
             });
-            for (const type of ['keydown', 'keyup', 'keypress']) label.addEventListener(type, (e) => e.stopPropagation());
             label.addEventListener('keydown', (e) => { if (e.key === 'Enter') label.blur(); });
             label.addEventListener('change', () => controller.rename(meta.id, label.value.trim()));
             top.append(swatch, label);
+            if (meta.writeProtect) top.appendChild(h('span', 'jsd-badge warn', { textContent: 'Protected', title: 'Write-protected: SAVE cannot record on it' }));
             card.appendChild(top);
+
+            const badges = h('div');
+            if (inRecorder) badges.appendChild(h('span', 'jsd-badge accent', { textContent: 'In the recorder' }));
+            else if (waiting) badges.appendChild(h('span', 'jsd-badge', { textContent: 'In the recorder, switched off' }));
+            if (badges.childNodes.length) card.appendChild(badges);
 
             const status = [];
             status.push(parts.length ? `${parts.length} part${parts.length === 1 ? '' : 's'}, blank from ${cassette.counterText(blankFrom)}` : 'Blank');
             status.push(`counter at ${cassette.counterText(inRecorder ? emu.tapePositionMs : (meta.positionMs || 0))}`);
-            if (meta.writeProtect) status.push('write-protected');
-            if (inRecorder) status.push('in the recorder');
-            else if (waiting) status.push('in the recorder, switched off');
-            card.appendChild(el('div', { color: '#555', fontSize: '90%', marginTop: '4px' }, { textContent: status.join(' · ') }));
+            card.appendChild(h('div', 'jsd-row-meta', { textContent: status.join(' · ') }));
             if (parts.length) {
                 const names = parts.slice(0, 4).map(p => p.name || p.typeName).join(', ') + ((parts.length > 4) ? ', …' : '');
-                card.appendChild(el('div', { color: '#777', fontSize: '85%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, { textContent: names }));
+                const list = h('div', 'jsd-faint jsd-mono', { textContent: names, title: parts.map(p => p.name || p.typeName).join('\n') });
+                Object.assign(list.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                card.appendChild(list);
             }
-            card.appendChild(el('div', { color: '#888', fontSize: '85%', marginBottom: '4px' }, { textContent: `Modified ${fmtDate(meta.modified)}` }));
+            card.appendChild(h('div', 'jsd-faint', { textContent: `Modified ${fmtDate(meta.modified)}` }));
 
-            const actions = el('div', { display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '6px' });
+            const actions = h('div', 'jsd-card-actions');
+            const useRow = h('div', 'jsd-card-row');
+            const saveRow = h('div', 'jsd-card-row');
             if (!inRecorder) {
-                const insertBtn = el('button', {}, { textContent: 'Put in recorder' });
+                const insertBtn = button('Put in recorder', { small: true, variant: 'accent' });
                 insertBtn.addEventListener('click', async () => { await controller.insertFromBox(meta.id); close(); });
-                actions.appendChild(insertBtn);
+                useRow.appendChild(insertBtn);
             }
-            const wpBtn = el('button', {}, { textContent: meta.writeProtect ? 'Allow recording' : 'Write-protect' });
+            const wpBtn = button(meta.writeProtect ? 'Allow recording' : 'Write-protect', { small: true });
             wpBtn.addEventListener('click', async () => { await controller.setWriteProtect(meta.id, !meta.writeProtect); renderGrid(); });
-            const tzxBtn = el('button', {}, { textContent: 'Save .tzx' });
-            tzxBtn.title = 'The whole cassette, every recording at its place on the tape';
+            const tzxBtn = button('.tzx', { small: true, title: 'Save to PC as .tzx: the whole cassette, every recording at its place on the tape' });
             tzxBtn.addEventListener('click', async () => {
                 const r = await store.get(meta.id);
                 if (r) downloadBytes(cassette.relabel(r.data, r.label), safeFileName(r.label, 'cassette') + '.tzx', tzxBtn);
             });
-            const tapBtn = el('button', {}, { textContent: 'Save .tap' });
-            tapBtn.title = 'The recordings one after another, without the blank tape between them';
+            const tapBtn = button('.tap', { small: true, title: 'Save to PC as .tap: the recordings one after another, without the blank tape between them' });
             tapBtn.addEventListener('click', async () => {
                 const r = await store.get(meta.id);
                 if (r) downloadBytes(cassette.writeCassetteTAP(cassette.parseCassetteFile(r.data).blocks), safeFileName(r.label, 'cassette') + '.tap', tapBtn);
             });
-            const dupBtn = el('button', {}, { textContent: 'Duplicate' });
+            const dupBtn = button('Duplicate', { small: true });
             dupBtn.addEventListener('click', async () => { await store.duplicate(meta.id); renderGrid(); });
-            const delBtn = el('button', { color: '#a00' }, { textContent: 'Delete' });
-            delBtn.addEventListener('click', () => {
-                if (delBtn.dataset.confirm) {
-                    controller.remove(meta.id).then(renderGrid);
-                } else {
-                    delBtn.dataset.confirm = '1';
-                    delBtn.textContent = inRecorder ? 'Eject & delete?' : 'Really delete?';
-                    setTimeout(() => { delBtn.dataset.confirm = ''; delBtn.textContent = 'Delete'; }, 3000);
-                }
-            });
-            actions.append(wpBtn, tzxBtn, tapBtn, dupBtn, delBtn);
+            const delBtn = confirmButton('Delete', inRecorder ? 'Eject & delete?' : 'Really delete?',
+                () => controller.remove(meta.id).then(renderGrid), { small: true });
+            useRow.append(wpBtn, dupBtn);
+            saveRow.append(h('span', 'jsd-faint', { textContent: 'Save to PC' }), tzxBtn, tapBtn, h('div', 'jsd-grow'), delBtn);
+            actions.append(useRow, saveRow);
             card.appendChild(actions);
             cards.appendChild(card);
         }
-        if (generation === renderGeneration) grid.replaceChildren(cards);
+        if (generation === renderGeneration) {
+            grid.replaceChildren(cards);
+            dialog.aside.textContent = cassettes.length + (cassettes.length === 1 ? ' cassette' : ' cassettes');
+        }
     }
     const unsubscribe = controller.onChange(() => renderGrid());
     // The cassette in the recorder may hold recordings not yet in the box: they go in first.
@@ -1264,10 +1282,11 @@ function openCassetteBox(ui, emu, controller) {
         emu.flushCassette();
         await emu.barrier();
     })();
-    const notStored = () => alert('This browser isn’t letting the emulator keep cassettes, so the cassette box can’t take any.');
+    const notStored = () => dialog.setStatus('This browser isn’t letting the emulator keep cassettes, so the cassette box can’t take any.', 'error');
 
     newBtn.addEventListener('click', async () => {
         if (!(await store.create({ label: '', data: blankCassette(), positionMs: 0 }))) notStored();
+        else dialog.setStatus('Added a blank cassette.', 'ok');
         renderGrid();
     });
 
@@ -1275,14 +1294,19 @@ function openCassetteBox(ui, emu, controller) {
     fileInput.addEventListener('change', async () => {
         const files = Array.from(fileInput.files);
         fileInput.value = '';
+        const failed = [];
+        let added = 0;
         for (const file of files) {
             try {
                 const { data, label } = cassetteFromFile(await readFileAsArrayBuffer(file), file.name);
                 if (!(await store.create({ label, data, positionMs: 0 }))) { notStored(); break; }
+                added++;
             } catch (err) {
-                alert(file.name + ': ' + ((err && err.message) || err));
+                failed.push(file.name + ': ' + ((err && err.message) || err));
             }
         }
+        if (failed.length) dialog.setStatus(failed.join('; '), 'error');
+        else if (added) dialog.setStatus(`Imported ${added} tape${added === 1 ? '' : 's'}.`, 'ok');
         renderGrid();
     });
 
@@ -1309,7 +1333,7 @@ function openCassetteBox(ui, emu, controller) {
         try {
             zip = await JSZip.loadAsync(await readFileAsArrayBuffer(file));
         } catch (e) {
-            alert(file.name + ' is not a ZIP file.');
+            dialog.setStatus(file.name + ' is not a ZIP file.', 'error');
             return;
         }
         let manifest = null;
@@ -1319,19 +1343,21 @@ function openCassetteBox(ui, emu, controller) {
         }
         const entries = [];
         zip.forEach((path, f) => { if (!f.dir && /\.(tap|tzx)$/i.test(path)) entries.push([path, f]); });
+        let added = 0;
         for (const [path, f] of entries) {
             try {
                 const imported = cassetteFromFile(await f.async('arraybuffer'), path);
                 const saved = manifest && Array.isArray(manifest.cassettes) && manifest.cassettes.find(c => c.file === path);
-                await store.create({
+                if (await store.create({
                     label: (saved && typeof saved.label === 'string') ? saved.label : imported.label,
                     colour: saved && saved.colour,
                     writeProtect: !!(saved && saved.writeProtect),
                     positionMs: (saved && Number.isFinite(saved.positionMs)) ? clamp(saved.positionMs, 0, cassette.CASSETTE_MS) : 0,
                     data: imported.data,
-                });
+                })) added++;
             } catch (err) { /* a tape that can't be a cassette is left out */ }
         }
+        dialog.setStatus(`Imported ${added} of ${entries.length} cassette${entries.length === 1 ? '' : 's'} from ${file.name}.`, added ? 'ok' : 'error');
         renderGrid();
     });
 
@@ -1418,7 +1444,7 @@ export function createTapeDeck(ui, emu) {
         panel = null;
     }
     function positionPanel() {
-        if (!panel) return;
+        if (!panel || panel.mover.place()) return;
         // Beside the recorder, on its left if there is room there, so the
         // reels stay in view while it winds; otherwise over the display.
         const box = art.element.getBoundingClientRect();
@@ -1432,6 +1458,9 @@ export function createTapeDeck(ui, emu) {
         if (panel) { closePanel(); return; }
         panel = buildPanel(emu, controller, () => openBox());
         panel.onClose = closePanel;
+        panel.mover = makeMovable(panel.element, panel.header, ui.appContainer, {
+            id: 'recorder', resize: { minWidth: 260, minHeight: 180, stretch: panel.stretch }, onReset: positionPanel,
+        });
         ui.appContainer.appendChild(panel.element);
         panel.refresh();
         positionPanel();

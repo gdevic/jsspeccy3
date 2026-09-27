@@ -26,6 +26,7 @@ import { parseSZXFile, writeSZXFile } from './snapshot.js';
 import { TAPFile, TZXFile } from './tape.js';
 import { validateMDRFile } from './mdr.js';
 import { CASSETTE_MS, parseCassetteFile, writeCassetteTZX, relabel } from './cassette.js';
+import { makeMovable } from './movable.js';
 
 const MANIFEST = 'session.json';
 const FORMAT = 'jsspeccy-session';
@@ -330,7 +331,7 @@ export function confirmRestore(ui, session) {
     return new Promise((resolve) => {
         const card = document.createElement('div');
         Object.assign(card.style, {
-            position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)',
+            position: 'absolute',
             width: '300px', maxWidth: '90%', background: '#1c1e22', color: '#eee',
             border: '1px solid #444', borderRadius: '8px', boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
             fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px', zIndex: '130', overflow: 'hidden',
@@ -392,6 +393,13 @@ export function confirmRestore(ui, session) {
             });
         }
         ui.appContainer.appendChild(card);
+        // In the middle of the emulator, unless it has been dragged elsewhere before.
+        const centre = () => Object.assign(card.style, {
+            left: Math.round((ui.appContainer.clientWidth - card.offsetWidth) / 2) + 'px',
+            top: Math.round((ui.appContainer.clientHeight - card.offsetHeight) / 2) + 'px',
+        });
+        const mover = makeMovable(card, header, ui.appContainer, { id: 'restoreSession', onReset: centre });
+        if (!mover.place()) centre();
         restore.focus();
     });
 }

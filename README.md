@@ -29,6 +29,7 @@ A ZX Spectrum emulator for the browser
 * Any display size from 100% to 400%, set with a slider that catches on the whole and half sizes, and fullscreen; the menu bar and toolbar are compact below 200%, and the chosen size is remembered for the next visit
 * A switched-off TV screen until the machine is started, which then powers on like a picture tube
 * Click a character on the screen to see which ROM character it is and the keys that type it, and double-click it to type it
+* The File menu's dialogs open in a light window over the paused machine, dragged by its title bar, resized from its corner and maximized with a double-click; each opens again where it was left, at the size it had, remembered in this browser only (not in saved sessions), and Escape closes it; the tape recorder's, Microdrives' and printer's panels, and the card asking before a session is restored, can be dragged by their title bar too, and the recorder's and Microdrives' resized from their corner; each opens again where it was left, and a double-click on its title bar puts it back
 
 ## Implementation notes
 
@@ -40,7 +41,7 @@ The **File → Pokes…** menu item opens a cheat browser over a committed catal
 
 ## PlayZX game catalog
 
-The **File → PlayZX open…** menu item browses the PlayZX catalog of ZX Spectrum tape images and loads one straight into the emulator. The **All** tab walks the catalog by initial letter, then by title, then lists the individual releases under that title (publisher, year, playing time, and any variation note). The **Search** tab is a live query box: plain text matches a title prefix, a leading space matches a publisher prefix, a leading `=` is spliced in as a raw SQL condition over the `Name, Pub, Year, Duration, Variation, Rating` columns, and a trailing `?` picks one match at random (two characters minimum, 100 results maximum). The menu item only appears when the page is served from a host the PlayZX server will mint a download session for, since everywhere else the browsing would work and every download would be refused; see `PLAYZX_HOSTS` in `runtime/playzx-session.js`.
+The **File → PlayZX open…** menu item browses the PlayZX catalog of ZX Spectrum tape images and loads one straight into the emulator. The **Browse A-Z** tab walks the catalog by initial letter, then by title, then lists the individual releases under that title (publisher, year, playing time, and any variation note). The **Search** tab is a live query box: plain text matches a title prefix, a leading space matches a publisher prefix, a leading `=` is spliced in as a raw SQL condition over the `Name, Pub, Year, Duration, Variation, Rating` columns, and a trailing `?` picks one match at random (two characters minimum, 100 results maximum); the arrow keys pick a result, and Enter or a double-click loads it. The menu item only appears when the page is served from a host the PlayZX server will mint a download session for, since everywhere else the browsing would work and every download would be refused; see `PLAYZX_HOSTS` in `runtime/playzx-session.js`.
 
 ## Tape recorder
 

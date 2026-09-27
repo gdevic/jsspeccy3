@@ -1,8 +1,8 @@
 import EventEmitter from 'events';
 
 import { CharPicker } from './char-picker.js';
+import { DialogFrame } from './dialog.js';
 import playIcon from './icons/play.svg';
-import closeIcon from './icons/close.svg';
 
 
 export class MenuBar {
@@ -365,26 +365,6 @@ export class UIController extends EventEmitter {
         this.teardown = this.teardownController.signal;
         this.observers = [];
 
-        /* build UI elements */
-        if (this.uiEnabled) {
-            this.dialog = document.createElement('div');
-            this.dialog.style.display = 'none';
-            container.appendChild(this.dialog);
-            const dialogCloseButton = document.createElement('button');
-            dialogCloseButton.innerHTML = closeIcon;
-            dialogCloseButton.style.float = 'right';
-            dialogCloseButton.style.border = 'none';
-            dialogCloseButton.firstChild.style.height = '20px';
-            dialogCloseButton.firstChild.style.verticalAlign = 'middle';
-            this.dialog.appendChild(dialogCloseButton);
-            dialogCloseButton.addEventListener('click', () => {
-                this.hideDialog();
-            })
-            this.dialogBody = document.createElement('div');
-            this.dialogBody.style.clear = 'both';
-            this.dialog.appendChild(this.dialogBody);
-        }
-
         this.appContainer = document.createElement('div');
         container.appendChild(this.appContainer);
         this.appContainer.style.position = 'relative';
@@ -400,6 +380,8 @@ export class UIController extends EventEmitter {
 
         if (this.uiEnabled) {
             this.toolbar = new Toolbar(this.appContainer);
+            // the File menu's dialogs open in it (see dialog.js)
+            this.dialogFrame = new DialogFrame(this.appContainer, this.teardown);
         }
 
         /* Until the machine first starts there is no picture, so the display
@@ -764,25 +746,14 @@ export class UIController extends EventEmitter {
             this.toolbar.show();
         }
     }
-    showDialog() {
-        this.dialog.style.display = 'block';
-        this.dialog.style.position = 'absolute';
-        this.dialog.style.backgroundColor = '#eee';
-        this.dialog.style.zIndex = '100';
-        this.dialog.style.width = '75%';
-        this.dialog.style.height = '80%';
-        this.dialog.style.left = '12%';
-        this.dialog.style.top = '10%';
-        this.dialog.style.overflow = 'scroll';  // TODO: less hacky scrolling that doesn't hide the close button
-        this.dialogBody.style.paddingLeft = '8px';
-        this.dialogBody.style.paddingRight = '8px';
-        this.dialogBody.style.paddingBottom = '8px';
-
-        return this.dialogBody;
+    /* Opens the dialog window, empty, and returns it; see DialogFrame.show
+     * for `opts`. Dialogs open through openDialog in dialog.js. */
+    showDialog(opts) {
+        this.dialogFrame.show(opts || {});
+        return this.dialogFrame;
     }
     hideDialog() {
-        this.dialog.style.display = 'none';
-        this.dialogBody.innerHTML = '';
+        if (this.dialogFrame) this.dialogFrame.hide();
     }
     /* Small popup listbox anchored above the toolbar, used by the cassette
      * counter to list a tape's segments. `items` is an array of {label, current}
@@ -877,9 +848,6 @@ export class UIController extends EventEmitter {
         this.observers.forEach(observer => observer.disconnect());
         window.removeEventListener('scroll', this.onPageScroll);
         window.removeEventListener('resize', this.onWindowResize);
-        if (this.uiEnabled) {
-            this.dialog.remove();
-        }
         this.appContainer.remove();
     }
 }

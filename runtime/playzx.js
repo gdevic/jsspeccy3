@@ -13,6 +13,7 @@ import pako from 'pako';
 import { TAPFile, TZXFile } from './tape.js';
 import { playzxDecrypt, playzxSignRequest, makeNonce } from './playzx-crypto.js';
 import { getSession, invalidateSession } from './playzx-session.js';
+import { openDialog, h, button } from './dialog.js';
 
 // Resolved against the jsspeccy script URL, like pokes-db.js.
 const scriptUrl =
@@ -27,25 +28,17 @@ const SEARCH_DEBOUNCE_MS = 150;
 const MAX_RESULTS = 100;
 const DATA_URL = 'https://baltazarstudios.com/PlayZX/v2/data.php';
 
-const INPUT_BG = '#ffffff';
-const INPUT_BG_PUB = '#ffffcc';     // leading space: searching by publisher
-const INPUT_BG_SQL = '#ccffff';     // leading '=': raw SQL condition
-
 const NETWORK_ERROR = 'Network error , please try again.';
 const UNSUPPORTED_ERROR = "This image format isn't supported by the emulator.";
 
 const HELP_HTML =
-    'Search by <b>name</b>, or start with a <b>space</b> to search by <b>publisher</b>.<br>'
-    + 'Start with <b>=</b> for a raw SQL condition (fields: <i>Name, Pub, Year, Duration, '
-    + "Variation, Rating</i>), e.g. <code>=Year&lt;1985 AND Pub LIKE 'Domark%'</code>.<br>"
-    + 'End with <b>?</b> for a random pick. Max ' + MAX_RESULTS + ' results.';
-
-function el(tag, styles, props) {
-    const e = document.createElement(tag);
-    if (styles) Object.assign(e.style, styles);
-    if (props) Object.assign(e, props);
-    return e;
-}
+    '<b>Type the start of a title</b> to find a game, then press <span class="jsd-kbd">Enter</span> '
+    + 'or double-click it to load it; <span class="jsd-kbd">↑</span> <span class="jsd-kbd">↓</span> pick another.<br>'
+    + 'Start with a <span class="jsd-kbd">space</span> to search by <b>publisher</b>.<br>'
+    + 'End with <span class="jsd-kbd">?</span> for a <b>random pick</b>.<br>'
+    + 'Start with <span class="jsd-kbd">=</span> for an SQL condition on <i>Name, Pub, Year, Duration, '
+    + "Variation, Rating</i>, e.g. <code>=Year&lt;1985 AND Pub LIKE 'Domark%'</code>.<br>"
+    + 'Shows up to ' + MAX_RESULTS + ' results.';
 
 /* Single-quote escaping for the string literals we interpolate into LIKE
  * clauses (sql.js has no server to protect, but a quote in a title would
@@ -329,7 +322,7 @@ async function loadGame(gid, name, ui, emu, setStatus, isClosed) {
     if (loadInProgress) return;
     const thisLoad = {};
     loadInProgress = thisLoad;
-    status('Loading…');
+    status('Loading ' + (name || 'the game') + '…', 'busy');
     try {
         const {buffer, format} = await fetchImage(gid);
         if (closed()) return;
@@ -337,223 +330,200 @@ async function loadGame(gid, name, ui, emu, setStatus, isClosed) {
     } catch (e) {
         if (closed()) return;
         if (e instanceof PlayZXError) {
-            status(e.message);
+            status(e.message, 'error');
         } else if (e && e.code === 'origin_denied') {
-            status('PlayZX is not available on this site.');
+            status('PlayZX is not available on this site.', 'error');
         } else if (e && e.code === 'unsupported_version') {
-            status('Please update to continue using PlayZX.');
+            status('Please update to continue using PlayZX.', 'error');
         } else if (e && e.message) {
-            status(e.message);
+            status(e.message, 'error');
         } else {
-            status(NETWORK_ERROR);
+            status(NETWORK_ERROR, 'error');
         }
     } finally {
         if (loadInProgress === thisLoad) loadInProgress = null;
     }
 }
 
+/* What the search box is searching by, from how its text starts and ends:
+ * [label, input class], or null for a plain title search. */
+function searchMode(value) {
+    if (value.trim().endsWith('?')) return ['Random pick', 'random'];
+    if (value[0] === ' ') return ['By publisher', 'publisher'];
+    if (value[0] === '=') return ['SQL condition', 'sql'];
+    return null;
+}
+
 export function openPlayZXDialog(ui, emu) {
-    const wasRunning = emu.isRunning;
-    emu.pause();
-
-    const dialogBody = ui.showDialog();
-    dialogBody.innerHTML = '';
-    const originalHideDialog = ui.hideDialog;
-    let closed = false;
-
-    const close = () => {
-        if (closed) return;
-        closed = true;
-        loadInProgress = null;
-        document.removeEventListener('keydown', onKeyDown, true);
-        delete ui.hideDialog;
-        originalHideDialog.call(ui);
-        if (wasRunning) emu.start();
-        emu.focus();
-    };
-    const onKeyDown = (e) => {
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            e.stopPropagation();
-            close();
-        }
-    };
-    const load = (gid, name) => loadGame(gid, name, ui, emu, setStatus, () => closed);
-
-    ui.hideDialog = function () { close(); };
-    document.addEventListener('keydown', onKeyDown, { capture: true, signal: ui.teardown });
-
-    const container = el('div', {
-        maxWidth: '100%', fontFamily: 'Arial, Helvetica, sans-serif', color: '#000',
+    const dialog = openDialog(ui, emu, {
+        id: 'playzx', title: 'PlayZX', subtitle: 'Open a game from the PlayZX online catalog',
+        width: 640, height: 680,
+        onClose: () => { loadInProgress = null; },
     });
-    dialogBody.appendChild(container);
-    container.appendChild(el('h2',
-        {margin: '4px 0 8px 0', fontSize: '18px'},
-        {textContent: 'PlayZX: open a game'}));
+    const setStatus = dialog.setStatus;
+    const load = (gid, name) => loadGame(gid, name, ui, emu, setStatus, () => dialog.closed);
 
-    /* Tab strip */
-    const tabs = el('div', {
-        display: 'flex', gap: '4px', borderBottom: '2px solid #888', marginBottom: '8px',
-    });
-    container.appendChild(tabs);
-    const allTab = el('button', {}, {type: 'button', textContent: 'All'});
-    const searchTab = el('button', {}, {type: 'button', textContent: 'Search'});
-    [allTab, searchTab].forEach((tab) => {
-        Object.assign(tab.style, {
-            padding: '6px 14px', border: '1px solid #888', borderBottom: 'none',
-            borderTopLeftRadius: '4px', borderTopRightRadius: '4px', cursor: 'pointer',
-        });
-    });
-    tabs.appendChild(allTab);
-    tabs.appendChild(searchTab);
+    /* Tab strip, with the search box or the letters beside it */
+    const bar = h('div', 'jsd-bar');
+    const tabs = h('div', 'jsd-tabs');
+    const searchTab = h('button', 'jsd-tab', {type: 'button', textContent: 'Search'});
+    const allTab = h('button', 'jsd-tab', {type: 'button', textContent: 'Browse A-Z'});
+    tabs.append(searchTab, allTab);
+    bar.appendChild(tabs);
 
-    const searchPane = el('div', {});
-    const allPane = el('div', {display: 'none'});
-    container.appendChild(searchPane);
-    container.appendChild(allPane);
-
-    /* Status line, shared by the catalog load and the download */
-    const statusLine = el('div', {
-        marginTop: '10px', paddingTop: '6px', borderTop: '1px solid #ccc',
-        minHeight: '1.2em', fontSize: '90%', color: '#333',
+    const searchInput = h('input', 'jsd-input jsd-search jsd-grow', {
+        type: 'search', placeholder: 'Type a game name…', autocomplete: 'off', spellcheck: false,
     });
-    function setStatus(text) {
-        statusLine.textContent = text || '';
-    }
+    const modeBadge = h('span', 'jsd-badge warn');
+    const alphaBar = h('div', 'jsd-letters');
+    alphaBar.style.flexBasis = '100%';
+    bar.append(searchInput, modeBadge, alphaBar);
+
+    const searchPane = h('div', 'jsd-scroll');
+    const allPane = h('div', 'jsd-scroll');
+    dialog.body.append(bar, searchPane, allPane);
 
     function showTab(which) {
         const searching = (which === 'search');
-        searchPane.style.display = searching ? 'block' : 'none';
-        allPane.style.display = searching ? 'none' : 'block';
-        searchTab.style.backgroundColor = searching ? '#fff' : '#ddd';
-        searchTab.style.fontWeight = searching ? 'bold' : 'normal';
-        allTab.style.backgroundColor = searching ? '#ddd' : '#fff';
-        allTab.style.fontWeight = searching ? 'normal' : 'bold';
-        if (searching) searchInput.focus();
+        searchPane.style.display = searching ? '' : 'none';
+        allPane.style.display = searching ? 'none' : '';
+        searchInput.style.display = searching ? '' : 'none';
+        alphaBar.style.display = searching ? 'none' : '';
+        showMode();
+        searchTab.classList.toggle('active', searching);
+        allTab.classList.toggle('active', !searching);
+        if (searching) {
+            searchInput.focus();
+            showCount(results.length, searchInput.value.trim() !== '');
+        } else {
+            dialog.aside.textContent = '';
+        }
+    }
+
+    function showCount(n, searched) {
+        dialog.aside.textContent = searched
+            ? ((n >= MAX_RESULTS) ? `First ${MAX_RESULTS} results` : (n + (n === 1 ? ' result' : ' results')))
+            : '';
     }
 
     /* One catalog row: title (optional), publisher/year, duration/variation,
-     * and the Load button. Clicking anywhere selects; only Load downloads. */
-    function imageRow(image, selection, opts) {
+     * and the Load button. A click selects the row, a double-click or its
+     * Load button loads it. */
+    function imageRow(image, opts) {
         const showName = (opts || {}).showName !== false;
-        const row = el('div', {
-            display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 4px',
-            borderBottom: '1px solid #ccc', cursor: 'pointer',
-        });
-        const text = el('div', {flex: '1 1 auto', minWidth: '0', overflowWrap: 'anywhere'});
-        if (showName) text.appendChild(el('div', {fontWeight: 'bold'}, {textContent: image.name}));
+        const row = h('div', 'jsd-row');
+        const text = h('div', 'jsd-row-main');
+        if (showName) text.appendChild(h('div', 'jsd-row-title', {textContent: image.name}));
 
-        const publisher = (image.pub || 'Unknown') + (image.year ? ', ' + image.year : '');
-        text.appendChild(el('div', {color: '#444', fontSize: '90%'}, {textContent: publisher}));
-
-        const duration = formatDuration(image.duration);
-        const detail = (duration ? '[' + duration + ']' : '')
-            + (image.variation ? '  ' + image.variation : '');
-        if (detail.trim()) {
-            text.appendChild(el('div',
-                {color: '#8a6d00', fontSize: '90%'}, {textContent: detail.trim()}));
-        }
+        const publisher = (image.pub || 'Unknown publisher') + (image.year ? ', ' + image.year : '');
+        text.appendChild(h('div', showName ? 'jsd-row-meta' : 'jsd-row-title', {textContent: publisher}));
+        if (image.variation) text.appendChild(h('div', 'jsd-row-extra', {textContent: image.variation}));
         row.appendChild(text);
 
-        const loadButton = el('button',
-            {flex: '0 0 auto', padding: '4px 10px', cursor: 'pointer', whiteSpace: 'nowrap'},
-            {type: 'button', textContent: 'Load'});
+        const duration = formatDuration(image.duration);
+        if (duration) row.appendChild(h('span', 'jsd-badge', {textContent: duration, title: 'Loading time'}));
+
+        const loadButton = button('Load', {small: true, title: 'Load this tape into the emulator'});
         loadButton.addEventListener('click', (e) => {
             e.stopPropagation();
             load(image.gid, image.name);
         });
         row.appendChild(loadButton);
-
-        row.addEventListener('click', () => {
-            if (selection.selected && selection.selected !== row) {
-                selection.selected.style.backgroundColor = 'transparent';
-            }
-            selection.selected = row;
-            row.style.backgroundColor = '#c8c8c8';
-        });
-        row.addEventListener('mouseenter', () => {
-            if (selection.selected !== row) row.style.backgroundColor = '#e6e6e6';
-        });
-        row.addEventListener('mouseleave', () => {
-            if (selection.selected !== row) row.style.backgroundColor = 'transparent';
-        });
+        row.addEventListener('dblclick', () => load(image.gid, image.name));
         return row;
     }
 
+    /* A list of rows of which one at a time is selected, its Load button
+     * then the primary one. Returns select(index). */
     function renderList(target, images, opts) {
-        target.innerHTML = '';
-        const selection = {selected: null};
+        target.replaceChildren();
         if (!images.length) {
-            target.appendChild(el('p',
-                {color: '#666', fontStyle: 'italic'}, {textContent: 'No results.'}));
-            return;
+            const none = h('div', 'jsd-empty');
+            none.appendChild(h('b', '', {textContent: 'No games found'}));
+            none.appendChild(document.createTextNode('Check the spelling, or search by the start of the title.'));
+            target.appendChild(none);
+            return () => {};
         }
-        images.forEach((image) => target.appendChild(imageRow(image, selection, opts)));
+        const rows = images.map((image) => imageRow(image, opts));
+        let selected = -1;
+        const select = (index) => {
+            if (selected >= 0) {
+                rows[selected].classList.remove('selected');
+                rows[selected].querySelector('.jsd-btn').classList.remove('primary');
+            }
+            selected = index;
+            if (index < 0) return;
+            rows[index].classList.add('selected');
+            rows[index].querySelector('.jsd-btn').classList.add('primary');
+            rows[index].scrollIntoView({block: 'nearest'});
+        };
+        rows.forEach((row, i) => {
+            row.addEventListener('click', () => select(i));
+            target.appendChild(row);
+        });
+        return select;
     }
 
-    container.appendChild(statusLine);
-    allTab.addEventListener('click', () => showTab('all'));
-    searchTab.addEventListener('click', () => showTab('search'));
-
     /* ---- Search tab ---- */
-    const searchInput = el('input', {
-        width: '100%', boxSizing: 'border-box', padding: '6px 8px', fontSize: '16px',
-        border: '2px solid #888', borderRadius: '4px', backgroundColor: INPUT_BG,
-    }, {type: 'search', placeholder: 'Type a game name…', autocomplete: 'off'});
-    searchPane.appendChild(searchInput);
-
-    const help = el('div', {
-        marginTop: '8px', padding: '8px', backgroundColor: '#f6f6f6',
-        border: '1px solid #ddd', borderRadius: '4px', fontSize: '90%', lineHeight: '1.5',
-    });
+    const help = h('div', 'jsd-help');
     help.innerHTML = HELP_HTML;
-    searchPane.appendChild(help);
-
-    const searchResults = el('div', {marginTop: '8px'});
-    searchPane.appendChild(searchResults);
+    const searchResults = h('div');
+    searchPane.append(help, searchResults);
 
     let results = [];
+    let selectedResult = 0;
+    let selectResult = () => {};
     let searchTimer = null;
 
     function runSearch() {
         const query = searchInput.value;
+        results = [];
+        selectedResult = 0;
+        selectResult = () => {};
+        searchResults.replaceChildren();
         // Blank box: show the help instead of every title in the catalog.
         if (query.trim() === '' && query[0] !== ' ' && query[0] !== '=') {
-            help.style.display = 'block';
-            searchResults.innerHTML = '';
-            results = [];
+            help.style.display = '';
+            showCount(0, false);
             return;
         }
         help.style.display = 'none';
         // until the catalog is in, the status says it is loading, and the search runs once it is
-        if (!db.loaded) {
-            results = [];
-            searchResults.innerHTML = '';
-            return;
-        }
+        if (!db.loaded) return;
 
         const found = db.search(query, MAX_RESULTS);
         if (found && !Array.isArray(found) && found.error) {
-            results = [];
-            searchResults.innerHTML = '';
-            searchResults.appendChild(el('p',
-                {color: '#a00', fontStyle: 'italic'},
-                {textContent: found.error + '. Check the condition after "=".'}));
+            const bad = h('div', 'jsd-empty');
+            bad.appendChild(h('b', 'jsd-error-text', {textContent: found.error}));
+            bad.appendChild(document.createTextNode('Check the condition after "=". ' + (found.detail || '')));
+            searchResults.appendChild(bad);
+            showCount(0, false);
             return;
         }
         results = Array.isArray(found) ? found : [];
-        renderList(searchResults, results, {showName: true});
+        selectResult = renderList(searchResults, results, {showName: true});
+        if (results.length) selectResult(0);
+        showCount(results.length, true);
+    }
+
+    function showMode() {
+        const mode = (searchInput.style.display === 'none') ? null : searchMode(searchInput.value);
+        modeBadge.style.display = mode ? '' : 'none';
+        if (mode) modeBadge.textContent = mode[0];
     }
 
     searchInput.addEventListener('input', () => {
-        const value = searchInput.value;
-        searchInput.style.backgroundColor =
-            (value[0] === ' ') ? INPUT_BG_PUB : ((value[0] === '=') ? INPUT_BG_SQL : INPUT_BG);
+        showMode();
         if (searchTimer) clearTimeout(searchTimer);
-        searchTimer = setTimeout(runSearch, SEARCH_DEBOUNCE_MS);
+        searchTimer = setTimeout(() => { searchTimer = null; runSearch(); }, SEARCH_DEBOUNCE_MS);
     });
     searchInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
+        if ((e.key === 'ArrowDown') || (e.key === 'ArrowUp')) {
+            e.preventDefault();
+            if (!results.length) return;
+            selectedResult = Math.min(results.length - 1, Math.max(0, selectedResult + ((e.key === 'ArrowDown') ? 1 : -1)));
+            selectResult(selectedResult);
+        } else if (e.key === 'Enter') {
             e.preventDefault();
             // the results must be for what the box says now, not for a search still waiting to run
             if (searchTimer) {
@@ -561,92 +531,97 @@ export function openPlayZXDialog(ui, emu) {
                 searchTimer = null;
                 runSearch();
             }
-            if (results.length) load(results[0].gid, results[0].name);
+            const image = results[selectedResult];
+            if (image) load(image.gid, image.name);
         }
+    });
+    // Picking a row with the mouse is what Enter then loads.
+    searchResults.addEventListener('click', (e) => {
+        const row = e.target.closest('.jsd-row');
+        if (row) selectedResult = [...searchResults.children].indexOf(row);
     });
 
     /* ---- All tab: initial letter → title → variations ---- */
-    const alphaBar = el('div', {
-        display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px',
-    });
-    allPane.appendChild(alphaBar);
-    const alphaList = el('div', {});
+    const alphaList = h('div');
     allPane.appendChild(alphaList);
 
     let currentAlpha = null;
 
     function showVariations(name) {
-        alphaList.innerHTML = '';
-        const back = el('button',
-            {marginBottom: '8px', padding: '4px 10px', cursor: 'pointer'},
-            {type: 'button', textContent: '‹ Back to "' + alphaLabel(currentAlpha) + '"'});
+        alphaList.replaceChildren();
+        const heading = h('div', 'jsd-heading');
+        const back = button('‹ ' + alphaLabel(currentAlpha), {small: true, title: 'Back to the titles'});
         back.addEventListener('click', () => showNames(currentAlpha));
-        alphaList.appendChild(back);
-        alphaList.appendChild(el('h3',
-            {margin: '4px 0 8px 0', fontSize: '16px'}, {textContent: name}));
+        heading.append(back, h('h3', '', {textContent: name}));
+        alphaList.appendChild(heading);
 
         const images = db.variations(name) || [];
-        const list = el('div', {});
+        alphaList.appendChild(h('div', 'jsd-note', {
+            textContent: (images.length === 1) ? 'One release:' : images.length + ' releases, oldest first:',
+        }));
+        const list = h('div');
+        list.style.marginTop = '6px';
         alphaList.appendChild(list);
-        renderList(list, images, {showName: false});
+        const select = renderList(list, images, {showName: false});
+        if (images.length) select(0);
+        allPane.scrollTop = 0;
     }
 
     function showNames(index) {
-        alphaList.innerHTML = '';
+        alphaList.replaceChildren();
+        if (index === null) {
+            const start = h('div', 'jsd-empty');
+            start.appendChild(h('b', '', {textContent: 'Browse the catalog'}));
+            start.appendChild(document.createTextNode('Pick a letter above to see every title that starts with it.'));
+            alphaList.appendChild(start);
+            return;
+        }
         // the letter's titles come once the catalog is in
         if (!db.loaded) {
-            alphaList.appendChild(el('div', {margin: '4px 0', color: '#666', fontSize: '90%'},
-                {textContent: 'The game database is still loading.'}));
+            alphaList.appendChild(h('div', 'jsd-empty', {textContent: 'The game database is still loading.'}));
             return;
         }
         const names = db.alphaNames(index) || [];
-        alphaList.appendChild(el('div',
-            {margin: '4px 0', color: '#666', fontSize: '90%'},
-            {textContent: names.length
-                ? 'Titles starting with "' + alphaLabel(index) + '", pick one:'
-                : 'No titles starting with "' + alphaLabel(index) + '".'}));
+        alphaList.appendChild(h('div', 'jsd-note', {
+            textContent: names.length
+                ? names.length + ' titles starting with "' + alphaLabel(index) + '":'
+                : 'No titles start with "' + alphaLabel(index) + '".',
+        }));
+        const list = h('div');
+        list.style.marginTop = '6px';
         names.forEach((name) => {
-            const row = el('div', {
-                padding: '6px 4px', borderBottom: '1px solid #ccc', cursor: 'pointer',
-                fontWeight: 'bold', overflowWrap: 'anywhere',
-            }, {textContent: name});
-            row.addEventListener('mouseenter', () => { row.style.backgroundColor = '#e6e6e6'; });
-            row.addEventListener('mouseleave', () => { row.style.backgroundColor = 'transparent'; });
+            const row = h('div', 'jsd-row');
+            row.append(h('div', 'jsd-row-main jsd-row-title', {textContent: name}), h('span', 'jsd-faint', {textContent: '›'}));
             row.addEventListener('click', () => showVariations(name));
-            alphaList.appendChild(row);
+            list.appendChild(row);
         });
+        alphaList.appendChild(list);
+        allPane.scrollTop = 0;
     }
 
-    function selectAlpha(index, button) {
+    function selectAlpha(index, letter) {
         currentAlpha = index;
-        Array.from(alphaBar.children).forEach((b) => {
-            b.style.backgroundColor = '#eee';
-            b.style.fontWeight = 'normal';
-        });
-        if (button) {
-            button.style.backgroundColor = '#fff';
-            button.style.fontWeight = 'bold';
-        }
+        for (const b of alphaBar.children) b.classList.toggle('active', b === letter);
         showNames(index);
     }
 
     for (let i = 0; i <= 26; i++) {
-        const button = el('button', {
-            minWidth: '30px', padding: '4px 6px', cursor: 'pointer',
-            border: '1px solid #888', borderRadius: '3px', backgroundColor: '#eee',
-        }, {type: 'button', textContent: alphaLabel(i)});
-        button.addEventListener('click', () => selectAlpha(i, button));
-        alphaBar.appendChild(button);
+        const letter = h('button', 'jsd-letter', {type: 'button', textContent: alphaLabel(i)});
+        letter.addEventListener('click', () => selectAlpha(i, letter));
+        alphaBar.appendChild(letter);
     }
 
+    searchTab.addEventListener('click', () => showTab('search'));
+    allTab.addEventListener('click', () => showTab('all'));
     showTab('search');
-    setStatus('Loading game database…');
+    showNames(null);
+    setStatus('Loading the game database…', 'busy');
     db.load().then(() => {
         setStatus('');
+        dialog.setTitle('PlayZX', db.count().toLocaleString('en') + ' ZX Spectrum tapes, ready to load');
         runSearch();
         if (currentAlpha !== null) showNames(currentAlpha);
-        searchInput.focus();
     }).catch((e) => {
-        setStatus('Failed to load game database: ' + ((e && e.message) ? e.message : e));
+        setStatus('Failed to load the game database: ' + ((e && e.message) ? e.message : e), 'error');
     });
 }

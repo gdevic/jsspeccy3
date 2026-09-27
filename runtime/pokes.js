@@ -7,103 +7,70 @@
  * to the worker, which writes the bytes into emulated memory (Multiface-style)
  * and returns the overwritten values so unchecking can restore them.
  *
- * Built with a plain-DOM + inline-style scaffold: pauses
- * the emulator while open, wraps ui.hideDialog so the X button and Esc both
- * restore the run state.
+ * Opens in the dialog window (dialog.js), which pauses the emulator while it
+ * is open.
  */
 
 import { PokesDatabase } from './pokes-db.js';
+import { openDialog, h } from './dialog.js';
 
 const SEARCH_DEBOUNCE_MS = 150;
 
 // One catalog for the page lifetime — ~2 MB JSON, fetched on first open only.
 const db = new PokesDatabase();
 
-function el(tag, styles, props) {
-    const e = document.createElement(tag);
-    if (styles) Object.assign(e.style, styles);
-    if (props) Object.assign(e, props);
-    return e;
-}
-
 const trainerKey = (game, trainerIndex) => game.id + ':' + trainerIndex;
 
 const trainerNeedsValue = (trainer) => trainer.pokes.some(p => p.value === 256);
 
+const plural = (n, word) => n + ' ' + word + (n === 1 ? '' : 's');
+
 export function openPokesDialog(ui, emu) {
-    const wasRunning = emu.isRunning;
-    emu.pause();
-
-    const body = ui.showDialog();
-    body.innerHTML = '';
-
-    /* ----- close / restore plumbing ----- */
-    const origHideDialog = ui.hideDialog;
-    let isClosed = false;
-    function close() {
-        if (isClosed) return;
-        isClosed = true;
-        document.removeEventListener('keydown', onKeydown, true);
-        delete ui.hideDialog;            // restore UIController.prototype.hideDialog
-        origHideDialog.call(ui);
-        if (wasRunning) emu.start();
-        emu.focus();
-    }
-    ui.hideDialog = function () { close(); };
-
-    function onKeydown(e) {
-        if (e.key === 'Escape') {
-            e.preventDefault();
-            e.stopPropagation();
-            close();
-        }
-    }
-    document.addEventListener('keydown', onKeydown, { capture: true, signal: ui.teardown });
+    const dialog = openDialog(ui, emu, {
+        id: 'pokes', title: 'Pokes', subtitle: 'Game cheats: infinite lives, energy, time and more',
+        width: 600, height: 640,
+    });
+    const setStatus = dialog.setStatus;
 
     /* ----- layout ----- */
-    const root = el('div', { maxWidth: '100%', fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' });
-    body.appendChild(root);
-
-    root.appendChild(el('h2', { margin: '4px 0 8px 0', fontSize: '18px' },
-        { textContent: 'Pokes — game cheats' }));
-
-    const searchInput = el('input', {
-        width: '100%', boxSizing: 'border-box', padding: '6px 8px', fontSize: '16px',
-        border: '2px solid #888', borderRadius: '4px',
-    }, {
+    const bar = h('div', 'jsd-bar');
+    const searchInput = h('input', 'jsd-input jsd-search jsd-grow', {
         type: 'search',
         placeholder: 'Type a game name…',
         autocomplete: 'off',
+        spellcheck: false,
         value: emu.loadedGameName || '',
     });
-    root.appendChild(searchInput);
+    bar.appendChild(searchInput);
+    bar.appendChild(h('div', 'jsd-note', {
+        textContent: 'Tick a cheat to poke it into memory; untick it to put the original bytes back. '
+            + 'Apply cheats once the game has finished loading, as loading would overwrite them.',
+    }));
 
-    const hint = el('div', { margin: '6px 0', color: '#666', fontSize: '90%' }, {
-        textContent: 'Tick a cheat to poke it into memory; untick to restore the original bytes. '
-            + 'Apply pokes after the game has finished loading (a tape load would overwrite them).',
-    });
-    root.appendChild(hint);
+    const resultsBox = h('div', 'jsd-scroll');
 
-    const resultsBox = el('div', { marginTop: '8px' });
-    root.appendChild(resultsBox);
-
-    const statusBar = el('div', {
-        marginTop: '10px', paddingTop: '6px', borderTop: '1px solid #ccc',
-        minHeight: '1.2em', fontSize: '90%', color: '#333',
-    });
-    root.appendChild(statusBar);
-    function setStatus(text) { statusBar.textContent = text || ''; }
+    /* Detail line: the hovered/applied cheat's pokes, spelt out BASIC-style
+     * ("POKE 35899,0"), so the user can see (or note down) the actual values. */
+    const pokeDetailBar = h('div', 'jsd-detail jsd-mono');
+    const detailHint = () => {
+        pokeDetailBar.replaceChildren(h('span', 'jsd-faint', { textContent: 'Point at a cheat to see the pokes it makes.' }));
+    };
+    detailHint();
 
     /* Applied-cheats list: every trainer currently poked in, one per row with
      * its actual values, rebuilt from emu.activePokes after each change. */
-    const appliedBox = el('div', { marginTop: '4px', fontSize: '90%', color: '#333' });
-    root.appendChild(appliedBox);
+    const appliedBox = h('div', 'jsd-applied');
+    dialog.body.append(bar, resultsBox, pokeDetailBar, appliedBox);
+
+    const credit = h('a', '', { href: 'https://www.the-tipshop.co.uk/', target: '_blank', rel: 'noopener', textContent: 'The Tipshop' });
+    dialog.aside.append('Pokes courtesy of ', credit);
 
     function renderApplied() {
-        appliedBox.innerHTML = '';
-        if (!db.games || emu.activePokes.size === 0) return;
-        appliedBox.appendChild(el('div', { fontWeight: 'bold', margin: '2px 0' },
-            { textContent: 'Applied cheats:' }));
+        appliedBox.replaceChildren();
+        const show = db.games && (emu.activePokes.size > 0);
+        appliedBox.style.display = show ? '' : 'none';
+        if (!show) return;
+        appliedBox.appendChild(h('div', 'jsd-row-title', { textContent: 'Applied cheats' }));
         for (const [key, active] of emu.activePokes) {
             const [gameId, trainerIndex] = key.split(':').map(Number);
             const game = db.games[gameId];
@@ -111,20 +78,9 @@ export function openPokesDialog(ui, emu) {
             if (!trainer) continue;
             const values = trainer.pokes.map((p, i) =>
                 formatPoke(p, active.pokes[i].value, active.originals[i])).join('  •  ');
-            appliedBox.appendChild(el('div', {
-                padding: '1px 0 1px 12px', fontFamily: 'Consolas, Monaco, monospace',
-                fontSize: '95%', overflowWrap: 'anywhere',
-            }, { textContent: trainer.name + ': ' + values }));
+            appliedBox.appendChild(h('div', 'jsd-applied-item', { textContent: trainer.name + ': ' + values }));
         }
     }
-
-    /* Detail line: the hovered/applied cheat's pokes, spelt out BASIC-style
-     * ("POKE 35899,0"), so the user can see (or note down) the actual values. */
-    const pokeDetailBar = el('div', {
-        marginTop: '4px', minHeight: '1.2em', fontSize: '90%', color: '#555',
-        fontFamily: 'Consolas, Monaco, monospace', overflowWrap: 'anywhere',
-    });
-    root.appendChild(pokeDetailBar);
 
     /* A byte read from memory is shown whatever it was, 0 included; the
      * catalog's original is shown only when not 0, which many .pok files
@@ -149,10 +105,6 @@ export function openPokesDialog(ui, emu) {
         pokeDetailBar.textContent = trainer.name + ': ' + parts.join('  •  ');
     }
 
-    root.appendChild(el('div', { marginTop: '4px', color: '#888', fontSize: '80%' }, {
-        textContent: 'Poke database courtesy of The Tipshop (www.the-tipshop.co.uk).',
-    }));
-
     /* ----- apply / undo a trainer ----- */
 
     async function applyTrainer(game, trainerIndex, userValue) {
@@ -164,7 +116,7 @@ export function openPokesDialog(ui, emu) {
         }));
         const { originals, locations } = await emu.applyPokes(pokes);
         emu.activePokes.set(trainerKey(game, trainerIndex), { pokes, originals, locations });
-        setStatus('');
+        setStatus('Applied: ' + trainer.name, 'ok');
         renderApplied();
     }
 
@@ -195,35 +147,34 @@ export function openPokesDialog(ui, emu) {
         if (restore.length) await emu.applyPokes(restore);
         emu.activePokes.delete(key);
         setStatus('Restored: ' + game.trainers[trainerIndex].name
-            + (restore.length ? ' — ' + restore.map(p => 'POKE ' + p.address + ',' + p.value).join('  •  ') : ''));
+            + (restore.length ? ', ' + restore.map(p => 'POKE ' + p.address + ',' + p.value).join('  •  ') : ''));
         renderApplied();
     }
 
     /* ----- rendering ----- */
 
-    function makeTrainerRow(game, trainerIndex) {
+    // onToggled is called once a tick or untick has taken effect
+    function makeTrainerRow(game, trainerIndex, onToggled) {
         const trainer = game.trainers[trainerIndex];
         const key = trainerKey(game, trainerIndex);
         const needsValue = trainerNeedsValue(trainer);
 
-        const row = el('label', {
-            display: 'flex', alignItems: 'center', gap: '8px',
-            padding: '4px 4px 4px 24px', borderBottom: '1px solid #eee', cursor: 'pointer',
-        });
+        const row = h('label', 'jsd-check');
         row.addEventListener('mouseenter', () => showPokeDetail(game, trainerIndex));
 
-        const checkbox = el('input', { flex: '0 0 auto' },
-            { type: 'checkbox', checked: emu.activePokes.has(key) });
+        const checkbox = h('input', '', { type: 'checkbox', checked: emu.activePokes.has(key) });
+        const showTicked = () => row.classList.toggle('on', checkbox.checked);
+        showTicked();
         row.appendChild(checkbox);
 
-        row.appendChild(el('div', { flex: '1 1 auto', overflowWrap: 'anywhere' },
-            { textContent: trainer.name }));
+        row.appendChild(h('div', 'jsd-row-main', { textContent: trainer.name }));
 
         let valueInput = null;
         if (needsValue) {
-            valueInput = el('input', {
-                flex: '0 0 auto', width: '60px', padding: '2px 4px',
-            }, { type: 'number', min: '0', max: '255', placeholder: 'value', title: 'Value to poke (0-255)' });
+            valueInput = h('input', 'jsd-input small', {
+                type: 'number', min: '0', max: '255', placeholder: 'value', title: 'Value to poke (0-255)',
+            });
+            valueInput.style.width = '72px';
             const active = emu.activePokes.get(key);
             if (active) {
                 const varPoke = trainer.pokes.findIndex(p => p.value === 256);
@@ -234,14 +185,14 @@ export function openPokesDialog(ui, emu) {
             row.appendChild(valueInput);
         }
 
-        row.appendChild(el('div', { flex: '0 0 auto', color: '#888', fontSize: '80%' }, {
-            textContent: trainer.pokes.length + (trainer.pokes.length === 1 ? ' poke' : ' pokes'),
-        }));
+        row.appendChild(h('span', 'jsd-badge', { textContent: plural(trainer.pokes.length, 'poke') }));
 
         checkbox.addEventListener('change', () => {
             checkbox.disabled = true;
             const done = () => {
                 checkbox.disabled = false;
+                showTicked();
+                onToggled();
                 showPokeDetail(game, trainerIndex);   // reflect actual poked/original values
             };
             if (checkbox.checked) {
@@ -249,7 +200,7 @@ export function openPokesDialog(ui, emu) {
                 if (needsValue) {
                     userValue = parseInt(valueInput.value, 10);
                     if (isNaN(userValue) || userValue < 0 || userValue > 255) {
-                        setStatus('Enter a value (0-255) for "' + trainer.name + '" first.');
+                        setStatus('Enter a value (0-255) for "' + trainer.name + '" first.', 'error');
                         checkbox.checked = false;
                         done();
                         valueInput.focus();
@@ -266,55 +217,63 @@ export function openPokesDialog(ui, emu) {
     }
 
     function makeGameSection(game, startExpanded) {
-        const section = el('div', { borderBottom: '1px solid #ccc' });
+        const section = h('div', 'jsd-section');
 
-        const header = el('div', {
-            display: 'flex', alignItems: 'center', gap: '8px',
-            padding: '6px 4px', cursor: 'pointer', fontWeight: 'bold',
-        });
-        const arrow = el('span', { flex: '0 0 auto', width: '1em', color: '#666' });
-        header.appendChild(arrow);
-        const title = game.name + (game.year ? ' (' + game.year + (game.pub ? ', ' + game.pub : '') + ')'
-            : (game.pub ? ' (' + game.pub + ')' : ''));
-        header.appendChild(el('div', { flex: '1 1 auto', overflowWrap: 'anywhere' }, { textContent: title }));
-        header.appendChild(el('div', { flex: '0 0 auto', color: '#666', fontSize: '90%', fontWeight: 'normal' }, {
-            textContent: game.trainers.length + (game.trainers.length === 1 ? ' cheat' : ' cheats'),
-        }));
+        const header = h('div', 'jsd-section-head');
+        header.appendChild(h('span', 'jsd-chevron', { textContent: '▸' }));
+        const main = h('div', 'jsd-row-main');
+        main.appendChild(h('div', 'jsd-row-title', { textContent: game.name }));
+        const meta = [game.pub, game.year].filter(Boolean).join(', ');
+        if (meta) main.appendChild(h('div', 'jsd-row-meta', { textContent: meta }));
+        header.appendChild(main);
+        // how many of its cheats are on, kept up to date as they are ticked
+        const onBadge = h('span', 'jsd-badge accent');
+        const countOn = () => {
+            const on = game.trainers.filter((t, i) => emu.activePokes.has(trainerKey(game, i))).length;
+            onBadge.textContent = on + ' on';
+            onBadge.style.display = on ? '' : 'none';
+        };
+        countOn();
+        header.appendChild(onBadge);
+        header.appendChild(h('span', 'jsd-badge', { textContent: plural(game.trainers.length, 'cheat') }));
         section.appendChild(header);
 
-        const list = el('div', {});
+        const list = h('div');
         section.appendChild(list);
 
         let expanded = false;
         function setExpanded(want) {
             expanded = want;
-            arrow.textContent = expanded ? '▾' : '▸';
+            section.classList.toggle('open', expanded);
             list.style.display = expanded ? 'block' : 'none';
             if (expanded && !list.childNodes.length) {
-                game.trainers.forEach((t, i) => list.appendChild(makeTrainerRow(game, i)));
+                game.trainers.forEach((t, i) => list.appendChild(makeTrainerRow(game, i, countOn)));
             }
         }
         header.addEventListener('click', () => setExpanded(!expanded));
-        header.addEventListener('mouseenter', () => { header.style.backgroundColor = '#e6e6e6'; });
-        header.addEventListener('mouseleave', () => { header.style.backgroundColor = 'transparent'; });
         setExpanded(!!startExpanded);
 
         return section;
     }
 
+    function empty(title, text) {
+        const box = h('div', 'jsd-empty');
+        box.appendChild(h('b', '', { textContent: title }));
+        box.appendChild(document.createTextNode(text));
+        return box;
+    }
+
     function renderResults() {
-        resultsBox.innerHTML = '';
+        resultsBox.replaceChildren();
         if (!db.games) return;
         const query = searchInput.value;
         if (!query.trim()) {
-            resultsBox.appendChild(el('p', { color: '#666', fontStyle: 'italic' },
-                { textContent: 'Load a game, or type a game name to find its pokes.' }));
+            resultsBox.appendChild(empty('Find a game’s cheats', 'Load a game, or type its name above.'));
             return;
         }
         const matches = db.search(query);
         if (!matches.length) {
-            resultsBox.appendChild(el('p', { color: '#666', fontStyle: 'italic' },
-                { textContent: 'No pokes found for "' + query + '".' }));
+            resultsBox.appendChild(empty('No pokes found', 'Nothing in the catalog matches "' + query + '". Try fewer or different words.'));
             return;
         }
         // Expand the first match only when it's a clear winner shown on open.
@@ -330,14 +289,16 @@ export function openPokesDialog(ui, emu) {
     });
 
     /* ----- boot ----- */
-    setStatus('Loading poke database…');
+    renderApplied();
+    setStatus('Loading the poke database…', 'busy');
+    searchInput.focus();
+    searchInput.select();
     db.load().then(() => {
         setStatus('');
         renderResults();
         renderApplied();   // cheats applied before the dialog was (re)opened
-        searchInput.focus();
     }).catch((err) => {
-        setStatus('Failed to load poke database: ' + (err && err.message ? err.message : err));
+        setStatus('Failed to load the poke database: ' + (err && err.message ? err.message : err), 'error');
     });
 }
 

@@ -12,6 +12,7 @@
 
 import JSZip from 'jszip';
 import { DOCK_SCALE, RIBBON_PLUG_Y } from './microdrive-ui.js';
+import { makeMovable } from './movable.js';
 import closeIcon from './icons/close.svg';
 import mouseWheelIcon from './icons/mouse-wheel.svg';
 
@@ -374,6 +375,7 @@ function buildPanel(printer) {
 
     const api = {
         element: panel,
+        header,
         onClose: null,
         refresh() {
             const paper = printer.paper;
@@ -746,7 +748,7 @@ export function createPrinter(ui, emu) {
         panel = null;
     }
     function positionPanel() {
-        if (!panel) return;
+        if (!panel || panel.mover.place()) return;
         // Opens just above the printer, right edges aligned.
         const box = art.element.getBoundingClientRect();
         const container = ui.appContainer.getBoundingClientRect();
@@ -758,6 +760,7 @@ export function createPrinter(ui, emu) {
         if (panel) return;
         panel = buildPanel(printer);
         panel.onClose = closePanel;
+        panel.mover = makeMovable(panel.element, panel.header, ui.appContainer, { id: 'printer', onReset: positionPanel });
         ui.appContainer.appendChild(panel.element);
         panel.refresh();
         positionPanel();

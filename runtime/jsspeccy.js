@@ -11,6 +11,7 @@ import { JoystickHandler } from './joystick.js';
 import { AudioHandler } from './audio.js';
 import { openPokesDialog } from './pokes.js';
 import { openPlayZXDialog } from './playzx.js';
+import { openDialog, h, button } from './dialog.js';
 import { isPlayZXAvailable } from './playzx-session.js';
 import { validateMDRFile } from './mdr.js';
 import { createMicrodriveDock } from './microdrive-ui.js';
@@ -1794,36 +1795,86 @@ window.JSSpeccy = (container, opts) => {
     }
 
     const openGameBrowser = () => {
-        const wasRunning = emu.isRunning;
-        emu.pause();
-        const body = ui.showDialog();
-        // Closing the dialog, by its X or after opening a game, sets the machine going as it was.
-        const originalHideDialog = ui.hideDialog;
-        ui.hideDialog = () => {
-            delete ui.hideDialog;
-            originalHideDialog.call(ui);
-            if (wasRunning) emu.start();
-            emu.focus();
+        // Closing the dialog, by its X, Escape or after opening a game, sets the machine going as it was.
+        const dialog = openDialog(ui, emu, {
+            id: 'findGames', title: 'Find games', subtitle: 'Search the Internet Archive’s ZX Spectrum software library',
+            width: 600, height: 600,
+        });
+        const searchForm = h('form', 'jsd-bar');
+        const input = h('input', 'jsd-input jsd-search jsd-grow', {
+            type: 'search', placeholder: 'Type a game name…', autocomplete: 'off', spellcheck: false,
+        });
+        const searchButton = button('Search', { variant: 'primary' });
+        searchButton.type = 'submit';
+        searchForm.append(input, searchButton);
+        const resultsContainer = h('div', 'jsd-scroll');
+        dialog.body.append(searchForm, resultsContainer);
+        const archive = h('a', '', { href: 'https://archive.org/', target: '_blank', rel: 'noopener', textContent: 'Internet Archive' });
+        dialog.aside.append('Powered by the ', archive);
+
+        const showEmpty = (title, text) => {
+            const box = h('div', 'jsd-empty');
+            box.appendChild(h('b', '', { textContent: title }));
+            box.appendChild(document.createTextNode(text));
+            resultsContainer.replaceChildren(box);
         };
-        body.innerHTML = `
-            <label>Find games</label>
-            <form>
-                <input type="search">
-                <button type="submit">Search</button>
-            </form>
-            <div class="results">
-            </div>
-        `;
-        const input = body.querySelector('input');
-        const searchButton = body.querySelector('button');
-        const searchForm = body.querySelector('form');
-        const resultsContainer = body.querySelector('.results');
+        showEmpty('Find a game', 'Type a title and press Enter. Double-click a result, or click its Open button, to play it.');
+
+        const failed = (what) => (err) => {
+            searchButton.disabled = false;
+            dialog.setStatus(what + ': ' + ((err && err.message) || err), 'error');
+        };
+
+        // Opens the game's first snapshot or tape file.
+        let opening = false;
+        const openResult = (result) => {
+            if (opening) return;
+            opening = true;
+            dialog.setStatus('Opening ' + result.title + '…', 'busy');
+            const done = (err) => {
+                opening = false;
+                failed('Could not open ' + result.title)(err);
+            };
+            fetch(
+                'https://archive.org/metadata/' + encodeURIComponent(result.identifier)
+            ).then(response => {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
+            }).then(data => {
+                if (dialog.closed) return;
+                let chosenFilename = null;
+                (data.files || []).forEach(file => {
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    if (ext == 'z80' || ext == 'sna' || ext == 'tap' || ext == 'tzx' || ext == 'szx') {
+                        chosenFilename = file.name;
+                    }
+                });
+                if (!chosenFilename) {
+                    done(new Error('it has no file the emulator can load'));
+                    return;
+                }
+                // the file's path within the item, a segment at a time, keeping its slashes
+                const finalUrl = 'https://cors.archive.org/cors/' + encodeURIComponent(result.identifier)
+                    + '/' + chosenFilename.split('/').map(encodeURIComponent).join('/');
+                return emu.openUrl(finalUrl).then(() => {
+                    opening = false;
+                    dialog.close();
+                    emu.focus();
+                    emu.start();
+                });
+            }).catch(done);
+        };
 
         searchForm.addEventListener('submit', (e) => {
             e.preventDefault();
-            searchButton.innerText = 'Searching...';
             // anything that could end the quoted title in the query goes
             const searchTerm = input.value.replace(/[^\w\s\-\']/g, '');
+            if (!searchTerm.trim()) {
+                input.focus();
+                return;
+            }
+            searchButton.disabled = true;
+            dialog.setStatus('Searching…', 'busy');
 
             const encodeParam = (key, val) => {
                 return encodeURIComponent(key) + '=' + encodeURIComponent(val);
@@ -1839,59 +1890,43 @@ window.JSSpeccy = (container, opts) => {
                 + '&' + encodeParam('page', '1')
                 + '&' + encodeParam('output', 'json')
             )
-            const failed = (what) => (err) => {
-                searchButton.innerText = 'Search';
-                alert(what + ': ' + ((err && err.message) || err));
-            };
             fetch(searchUrl).then(response => {
-                searchButton.innerText = 'Search';
                 if (!response.ok) throw new Error('HTTP ' + response.status);
                 return response.json();
             }).then(data => {
-                resultsContainer.innerHTML = '<ul></ul><p>- powered by <a href="https://archive.org/">Internet Archive</a></p>';
-                const ul = resultsContainer.querySelector('ul');
+                searchButton.disabled = false;
                 const results = data.response.docs;
+                dialog.setStatus(results.length
+                    ? results.length + (results.length === 1 ? ' game found' : ' games found') + (results.length >= 50 ? ' (the first 50)' : '')
+                    : '');
+                if (!results.length) {
+                    showEmpty('No games found', 'Nothing in the library matches "' + searchTerm + '". Try fewer or different words.');
+                    return;
+                }
+                const list = h('div');
                 results.forEach(result => {
-                    const li = document.createElement('li');
-                    ul.appendChild(li);
-                    const resultLink = document.createElement('a');
-                    resultLink.href = '#';
-                    resultLink.innerText = result.title;
-                    const creator = document.createTextNode(' - ' + result.creator)
-                    li.appendChild(resultLink);
-                    li.appendChild(creator);
-                    resultLink.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        fetch(
-                            'https://archive.org/metadata/' + encodeURIComponent(result.identifier)
-                        ).then(response => {
-                            if (!response.ok) throw new Error('HTTP ' + response.status);
-                            return response.json();
-                        }).then(data => {
-                            let chosenFilename = null;
-                            data.files.forEach(file => {
-                                const ext = file.name.split('.').pop().toLowerCase();
-                                if (ext == 'z80' || ext == 'sna' || ext == 'tap' || ext == 'tzx' || ext == 'szx') {
-                                    chosenFilename = file.name;
-                                }
-                            });
-                            if (!chosenFilename) {
-                                alert('No loadable file found');
-                            } else {
-                                // the file's path within the item, a segment at a time, keeping its slashes
-                                const finalUrl = 'https://cors.archive.org/cors/' + encodeURIComponent(result.identifier)
-                                    + '/' + chosenFilename.split('/').map(encodeURIComponent).join('/');
-                                emu.openUrl(finalUrl).catch((err) => {
-                                    alert(err);
-                                }).then(() => {
-                                    ui.hideDialog();
-                                    emu.focus();
-                                    emu.start();
-                                });
-                            }
-                        }).catch(failed('Could not list the game’s files'));
-                    })
-                })
+                    const row = h('div', 'jsd-row');
+                    const main = h('div', 'jsd-row-main');
+                    main.appendChild(h('div', 'jsd-row-title', { textContent: result.title }));
+                    const creator = [].concat(result.creator || []).join(', ');
+                    if (creator) main.appendChild(h('div', 'jsd-row-meta', { textContent: creator }));
+                    const openButton = button('Open', { small: true, title: 'Load this game into the emulator' });
+                    openButton.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        openResult(result);
+                    });
+                    row.append(main, openButton);
+                    row.addEventListener('click', () => {
+                        for (const other of list.children) {
+                            other.classList.toggle('selected', other === row);
+                            other.querySelector('.jsd-btn').classList.toggle('primary', other === row);
+                        }
+                    });
+                    row.addEventListener('dblclick', () => openResult(result));
+                    list.appendChild(row);
+                });
+                resultsContainer.replaceChildren(list);
+                resultsContainer.scrollTop = 0;
             }).catch(failed('The search failed'));
         })
         input.focus();
