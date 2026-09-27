@@ -18,7 +18,7 @@ A ZX Spectrum emulator for the browser
 * AY and beeper audio
 * Play using a joystick / gamepad connected to your PC (Kempston, Cursor and Sinclair)
 * Loads SZX, Z80 and SNA snapshots
-* Loads TZX and TAP tape images, instantly through the ROM loader or in real time
+* Loads TZX and TAP tape images, instantly through the ROM loader or in real time; a TZX plays its turbo, pure tone, pulse, direct recording, CSW and generalized data blocks, follows its jumps, loops and calls, and stops where it says to stop the tape (in 48K mode only, if it says so)
 * Detects custom tape loaders (Speedlock and other turbo loaders) and plays the tape for them automatically, fast-forwarded when instant loading is on
 * Loads any of the above files from inside a ZIP file
 * Saves and restores the whole session as one file: the running machine, tape, tape recorder cassettes, Microdrive cartridges, printout and settings

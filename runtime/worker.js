@@ -1135,15 +1135,17 @@ const runEmulatedFrame = () => {
     if (tape && tapeIsPlaying) {
         const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
         const tapePulseWriteIndex = core.getTapePulseWriteIndex();
-        const [newTapePulseWriteIndex, tstatesGenerated, tapeFinished] = tape.pulseGenerator.emitPulses(
-            tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount
+        // a 128K with paging locked is in 48K mode
+        const in48KMode = (core.getMachineType() === 48) || !!(core.getPagingValue() & 0x20);
+        const [newTapePulseWriteIndex, tstatesGenerated, tapeStopped] = tape.pulseGenerator.emitPulses(
+            tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount, in48KMode
         );
         core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
         // Advance the cassette counter by the tape actually played this frame.
         tapePositionTstates += tstatesGenerated;
         framesSincePositionPost++;
-        if (tapeFinished || framesSincePositionPost >= 5) postTapePosition();
-        if (tapeFinished) {
+        if (tapeStopped || framesSincePositionPost >= 5) postTapePosition();
+        if (tapeStopped) {
             setTapePlaying(false);
             deckSound(4);  // the recorder's auto stop
         }

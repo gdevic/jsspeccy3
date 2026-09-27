@@ -1,3 +1,5 @@
+import pako from 'pako';
+
 import {
     TSTATES_PER_MS, CASSETTE_MS, dataBlockTstates, headerName, pilotMs, blockMs, catchUntilMs,
     counterText, describeParts, blankFromMs, parseCassetteFile, writeCassetteTZX, pilotPulses, bytesThatFit,
@@ -13,14 +15,20 @@ const SEGMENT_PAUSE_MS = 500;
  * catches the block (see seekToMs). */
 const CATCH_MARGIN_MS = 100;
 
+/* How many TZX control blocks (jumps, loops, calls, and blocks that do not
+ * play) are followed in a row before the tape is taken to go round them for
+ * ever; a loop of 65535 repeats over a few such blocks stays well within it. */
+const MAX_CONTROL_STEPS = 1 << 20;
+
 function msToString(ms) {
     const secs = Math.round(ms / 1000);
     return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
 }
 
-/* Group a flat list of {index, tstates, bytes, name, pauseAfterMs, loadable}
- * timed blocks into segments, breaking after any block whose trailing pause is
- * at least SEGMENT_PAUSE_MS. Returns {segments, totalMs, totalBytes}. */
+/* Group a flat list of {index, tstates, bytes, name, pauseAfterMs, loadable,
+ * endsPart} timed blocks into segments, breaking after any block whose
+ * trailing pause is at least SEGMENT_PAUSE_MS, and at a block with endsPart,
+ * which joins no segment. Returns {segments, totalMs, totalBytes}. */
 function groupSegments(timed) {
     const segments = [];
     const blockStartMs = [];      // ms at which each block starts (indexed by block index)
@@ -32,6 +40,10 @@ function groupSegments(timed) {
     };
     for (const b of timed) {
         blockStartMs[b.index] = totalTstates / TSTATES_PER_MS;
+        if (b.endsPart) {
+            closeSegment();
+            continue;
+        }
         totalTstates += b.tstates;
         totalBytes += b.bytes;
         if (!cur) {
@@ -95,12 +107,19 @@ class PulseSequenceSegment {
     }
 }
 
+/* How many bits of a TZX data block's last byte are used: the TZX spec allows
+ * 1 to 8, and 8 stands in for anything else. */
+const lastBits = (lastByteBits) => (((lastByteBits >= 1) && (lastByteBits <= 8)) ? lastByteBits : 8);
+
+// How many bits a TZX data block of `length` bytes holds.
+const dataBitCount = (length, lastByteBits) => (length ? (((length - 1) * 8) + lastBits(lastByteBits)) : 0);
+
 class DataSegment {
     constructor(data, zeroPulseLength, onePulseLength, lastByteBits) {
         this.data = data;
         this.zeroPulseLength = zeroPulseLength;
         this.onePulseLength = onePulseLength;
-        this.bitCount = (this.data.length - 1) * 8 + lastByteBits;
+        this.bitCount = dataBitCount(data.length, lastByteBits);
         this.pulsesOutput = 0;
         this.lastPulseLength = null;
     }
@@ -153,6 +172,166 @@ class SilenceSegment {
     }
 }
 
+/* The level a pulse starts at, for a segment that says (TZX 0x19 symbol
+ * flags): an edge, no edge, or a forced level. */
+const EDGE = 0;
+const SAME_LEVEL = 1;
+const LOW = 2;
+const HIGH = 3;
+
+/* Pulses from `pulses`, an iterator of {length, polarity}; a pulse of length
+ * 0 only sets the level, as TZX block 0x2B does. */
+class LevelledPulseSegment {
+    constructor(pulses) {
+        this.pulses = pulses;
+        this.next = pulses.next();
+    }
+    isFinished() {
+        return this.next.done;
+    }
+    nextPulseLevel(level) {
+        switch (this.next.value.polarity) {
+            case SAME_LEVEL: return level;
+            case LOW: return 0x0000;
+            case HIGH: return 0x8000;
+            default: return level ^ 0x8000;
+        }
+    }
+    getNextPulseLength() {
+        const length = this.next.value.length;
+        this.next = this.pulses.next();
+        return length;
+    }
+}
+
+/* Stops the tape when it reaches the head: always, or with `onlyIn48KMode`
+ * only on a 48K machine or a 128K locked into 48K mode (TZX 0x20 of 0 and
+ * 0x2A). */
+class StopSegment {
+    constructor(onlyIn48KMode) {
+        this.onlyIn48KMode = onlyIn48KMode;
+    }
+    isFinished() {
+        return false;
+    }
+    stopsTape(in48KMode) {
+        return !this.onlyIn48KMode || in48KMode;
+    }
+}
+
+/* The pulse lengths in T-states of a TZX 0x18 block's CSW data at `rate`
+ * samples a second: RLE, or with `compression` 2 zlib-packed RLE, where a
+ * byte of 1-255 is a pulse that many samples long and a 0 byte is followed by
+ * a 4-byte length. */
+function decodeCSW(bytes, rate, compression) {
+    if (!rate) throw new RangeError('CSW block with a sample rate of 0');
+    if ((compression !== 1) && (compression !== 2)) throw new RangeError('CSW block with unknown compression ' + compression);
+    const rle = (compression === 2) ? pako.inflate(bytes) : bytes;
+    const view = new DataView(rle.buffer, rle.byteOffset, rle.byteLength);
+    const lengths = [];
+    let samples = 0;
+    let tstates = 0;
+    for (let i = 0; i < rle.length;) {
+        const run = rle[i++];
+        if (run) {
+            samples += run;
+        } else {
+            samples += view.getUint32(i, true);
+            i += 4;
+        }
+        // timed from the start of the block, so rounding never adds up
+        const end = Math.round((samples * TSTATES_PER_MS * 1000) / rate);
+        lengths.push(end - tstates);
+        tstates = end;
+    }
+    return { lengths, tstates };
+}
+
+/* A TZX 0x19 block's body: a pilot and sync stream of symbols, each with a
+ * repeat count, then a data stream of symbols packed into as few bits as its
+ * alphabet needs. A symbol is up to a set number of pulses, cut short by one
+ * of length 0, and its flags say how its first pulse starts. Returns the
+ * pause after it, the bytes of its data stream, its length in T-states and
+ * a function giving its pulses afresh. */
+function parseGeneralizedData(body) {
+    const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+    let p = 0;
+    const pause = view.getUint16(p, true); p += 2;
+    const pilotCount = view.getUint32(p, true); p += 4;
+    const pilotMaxPulses = view.getUint8(p++);
+    const pilotAlphabet = view.getUint8(p++) || 256;
+    const dataCount = view.getUint32(p, true); p += 4;
+    const dataMaxPulses = view.getUint8(p++);
+    const dataAlphabet = view.getUint8(p++) || 256;
+
+    const readSymbols = (count, maxPulses) => {
+        const symbols = [];
+        for (let i = 0; i < count; i++) {
+            const polarity = view.getUint8(p++) & 0x03;
+            const lengths = [];
+            let cut = false;
+            for (let j = 0; j < maxPulses; j++) {
+                const length = view.getUint16(p, true); p += 2;
+                if (!length) cut = true;
+                if (!cut) lengths.push(length);
+            }
+            symbols.push({ polarity, lengths });
+        }
+        return symbols;
+    };
+
+    let pilotSymbols = [];
+    const pilotStream = [];
+    if (pilotCount) {
+        pilotSymbols = readSymbols(pilotAlphabet, pilotMaxPulses);
+        for (let i = 0; i < pilotCount; i++) {
+            pilotStream.push({ symbol: view.getUint8(p), repeats: view.getUint16(p + 1, true) });
+            p += 3;
+        }
+    }
+    let dataSymbols = [];
+    let bitsPerSymbol = 0;
+    let dataStream = new Uint8Array(0);
+    if (dataCount) {
+        dataSymbols = readSymbols(dataAlphabet, dataMaxPulses);
+        bitsPerSymbol = Math.ceil(Math.log2(dataAlphabet));
+        const length = Math.ceil((bitsPerSymbol * dataCount) / 8);
+        if ((p + length) > body.length) throw new RangeError('Generalized data block is cut short');
+        dataStream = body.subarray(p, p + length);
+    }
+
+    const symbolAt = (symbols, index) => {
+        if (index >= symbols.length) throw new RangeError('Generalized data block uses an undefined symbol');
+        return symbols[index];
+    };
+    // a symbol with no pulses can still force the level
+    function* symbolPulses(symbol) {
+        if (!symbol.lengths.length && (symbol.polarity >= LOW)) yield { length: 0, polarity: symbol.polarity };
+        for (let i = 0; i < symbol.lengths.length; i++) {
+            yield { length: symbol.lengths[i], polarity: i ? EDGE : symbol.polarity };
+        }
+    }
+    function* pulses() {
+        for (const { symbol, repeats } of pilotStream) {
+            const s = symbolAt(pilotSymbols, symbol);
+            for (let r = 0; r < repeats; r++) yield* symbolPulses(s);
+        }
+        for (let i = 0; i < dataCount; i++) {
+            let index = 0;
+            for (let b = 0; b < bitsPerSymbol; b++) {
+                const bit = (i * bitsPerSymbol) + b;
+                index = (index << 1) | ((dataStream[bit >> 3] >> (7 - (bit & 7))) & 1);
+            }
+            yield* symbolPulses(symbolAt(dataSymbols, index));
+        }
+    }
+
+    // played through once here, which also turns away a block with undefined symbols
+    let tstates = 0;
+    for (const pulse of pulses()) tstates += pulse.length;
+    return { pause, bytes: dataStream.length, tstates, pulses };
+}
+
 /* A sound recording (see runtime/cassette.js) from sample `fromSample` on:
  * each run of samples at one level is a pulse. */
 class SoundSegment {
@@ -196,10 +375,14 @@ class PulseGenerator {
     isAtEnd() {
         return this.tapeIsFinished && this.segments.length === 0 && this.pendingCycles === 0;
     }
-    emitPulses(buffer, startIndex, cycleCount) {
+    /* Fills `buffer` from `startIndex` with up to `cycleCount` T-states of
+     * pulses. Returns the next free index, the T-states emitted, and whether
+     * the tape stopped: at its end, or at a block that stops it, where
+     * `in48KMode` says whether one that stops only in 48K mode does. */
+    emitPulses(buffer, startIndex, cycleCount, in48KMode) {
         let cyclesEmitted = 0;
         let index = startIndex;
-        let isFinished = false;
+        let stopped = false;
         // Stops short of the time asked for once the buffer is full; the rest waits for the next call.
         while ((cyclesEmitted < cycleCount) && (index < buffer.length)) {
             if (this.pendingCycles > 0) {
@@ -217,7 +400,7 @@ class PulseGenerator {
             } else if (this.segments.length === 0) {
                 if (this.tapeIsFinished) {
                     // mark end of tape
-                    isFinished = true;
+                    stopped = true;
                     break;
                 } else {
                     // get more segments
@@ -226,13 +409,20 @@ class PulseGenerator {
             } else if (this.segments[0].isFinished()) {
                 // discard finished segment
                 this.segments.shift();
+            } else if (this.segments[0].stopsTape) {
+                if (this.segments.shift().stopsTape(in48KMode)) {
+                    stopped = true;
+                    break;
+                }
             } else {
                 // new pulse
-                this.pendingCycles = this.segments[0].getNextPulseLength();
-                this.level ^= 0x8000;
+                const segment = this.segments[0];
+                const level = segment.nextPulseLevel ? segment.nextPulseLevel(this.level) : (this.level ^ 0x8000);
+                this.pendingCycles = segment.getNextPulseLength();
+                this.level = level;
             }
         }
-        return [index, cyclesEmitted, isFinished];
+        return [index, cyclesEmitted, stopped];
     }
 }
 
@@ -530,7 +720,7 @@ export class TZXFile {
                         const dataLength = tzx.getUint16(offset, true) | (tzx.getUint8(offset+2) << 16); offset += 3;
                         const blockData = new Uint8Array(data, offset, dataLength);
                         // one bit per sample; lastByteMask is how many of the last byte's bits are used
-                        const count = dataLength ? (((dataLength - 1) * 8) + (((lastByteMask >= 1) && (lastByteMask <= 8)) ? lastByteMask : 8)) : 0;
+                        const count = dataBitCount(dataLength, lastByteMask);
                         this.blocks.push({
                             'type': 'DirectRecording',
                             'tstatesPerSample': tstatesPerSample,
@@ -547,17 +737,64 @@ export class TZXFile {
                         offset += dataLength;
                     })();
                     break;
-                case 0x20:
+                case 0x18:
                     (() => {
-                        // TODO: handle pause length of 0 (= stop tape)
-                        const pause = tzx.getUint16(offset, true); offset += 2;
+                        const blockLength = tzx.getUint32(offset, true);
+                        const body = new DataView(data, offset + 4, blockLength);
+                        offset += 4 + blockLength;
+                        const pause = body.getUint16(0, true);
+                        const rate = body.getUint16(2, true) | (body.getUint8(4) << 16);
+                        const csw = new Uint8Array(data, body.byteOffset + 10, blockLength - 10);
+                        const { lengths, tstates } = decodeCSW(csw, rate, body.getUint8(5));
                         this.blocks.push({
-                            'type': 'Pause',
+                            'type': 'CSWRecording',
                             'pause': pause,
+                            'tstates': tstates,
+                            'bytes': csw.length,
                             'generatePulses': (generator) => {
-                                generator.addSegment(new PauseSegment(pause));
+                                generator.addSegment(new PulseSequenceSegment(lengths));
+                                if (pause) generator.addSegment(new PauseSegment(pause));
                             }
                         });
+                    })();
+                    break;
+                case 0x19:
+                    (() => {
+                        const blockLength = tzx.getUint32(offset, true);
+                        const { pause, bytes, tstates, pulses } = parseGeneralizedData(new Uint8Array(data, offset + 4, blockLength));
+                        offset += 4 + blockLength;
+                        this.blocks.push({
+                            'type': 'GeneralizedData',
+                            'pause': pause,
+                            'tstates': tstates,
+                            'bytes': bytes,
+                            'generatePulses': (generator) => {
+                                generator.addSegment(new LevelledPulseSegment(pulses()));
+                                if (pause) generator.addSegment(new PauseSegment(pause));
+                            }
+                        });
+                    })();
+                    break;
+                case 0x20:
+                    (() => {
+                        const pause = tzx.getUint16(offset, true); offset += 2;
+                        if (pause) {
+                            this.blocks.push({
+                                'type': 'Pause',
+                                'pause': pause,
+                                'generatePulses': (generator) => {
+                                    generator.addSegment(new PauseSegment(pause));
+                                }
+                            });
+                        } else {
+                            // a pause of 0 stops the tape
+                            this.blocks.push({
+                                'type': 'Stop',
+                                'generatePulses': (generator) => {
+                                    generator.addSegment(new StopSegment(false));
+                                }
+                            });
+                        }
                     })();
                     break;
                 case 0x21:
@@ -581,7 +818,7 @@ export class TZXFile {
                     break;
                 case 0x23:
                     (() => {
-                        const jumpOffset = tzx.getUint16(offset, true); offset += 2;
+                        const jumpOffset = tzx.getInt16(offset, true); offset += 2;
                         this.blocks.push({
                             'type': 'JumpToBlock',
                             'offset': jumpOffset
@@ -609,7 +846,7 @@ export class TZXFile {
                         const callCount = tzx.getUint16(offset, true); offset += 2;
                         const offsets = [];
                         for (let i = 0; i < callCount; i++) {
-                            offsets[i] = tzx.getUint16(offset + i*2, true);
+                            offsets[i] = tzx.getInt16(offset + i*2, true);
                         }
                         this.blocks.push({
                             'type': 'CallSequence',
@@ -634,6 +871,30 @@ export class TZXFile {
                             'data': new Uint8Array(data, offset, blockLength)
                         });
                         offset += blockLength;
+                    })();
+                    break;
+                case 0x2A:
+                    (() => {
+                        offset += 4 + tzx.getUint32(offset, true);
+                        this.blocks.push({
+                            'type': 'StopIf48K',
+                            'generatePulses': (generator) => {
+                                generator.addSegment(new StopSegment(true));
+                            }
+                        });
+                    })();
+                    break;
+                case 0x2B:
+                    (() => {
+                        const level = tzx.getUint8(offset + 4);
+                        offset += 4 + tzx.getUint32(offset, true);
+                        this.blocks.push({
+                            'type': 'SetSignalLevel',
+                            'level': level,
+                            'generatePulses': (generator) => {
+                                generator.addSegment(new LevelledPulseSegment([{ length: 0, polarity: level ? HIGH : LOW }].values()));
+                            }
+                        });
                     })();
                     break;
                 case 0x30:
@@ -697,6 +958,16 @@ export class TZXFile {
                         offset += dataLength;
                     })();
                     break;
+                case 0x34:
+                    // emulation info, 8 bytes, not used
+                    offset += 8;
+                    this.blocks.push({ 'type': 'EmulationInfo' });
+                    break;
+                case 0x40:
+                    // a snapshot: its type, then a 3-byte length; not used
+                    offset += 4 + (tzx.getUint16(offset + 1, true) | (tzx.getUint8(offset + 3) << 16));
+                    this.blocks.push({ 'type': 'Snapshot' });
+                    break;
                 case 0x5A:
                     (() => {
                         offset += 9;
@@ -752,21 +1023,28 @@ export class TZXFile {
             case 'TurboSpeedData': {
                 const t = block.pilotPulseLength * block.pilotPulseCount
                     + (block.syncPulse1Length + block.syncPulse2Length)
-                    + dataBlockTstates(block.data, block.lastByteMask, block.zeroBitLength, block.oneBitLength)
+                    + dataBlockTstates(block.data, lastBits(block.lastByteMask), block.zeroBitLength, block.oneBitLength)
                     + block.pause * TSTATES_PER_MS;
                 return { tstates: t, bytes: block.data.length, name: headerName(block.data),
                     pauseAfterMs: block.pause, loadable: true };
             }
             case 'PureData': {
-                const t = dataBlockTstates(block.data, block.lastByteMask, block.zeroBitLength, block.oneBitLength)
+                const t = dataBlockTstates(block.data, lastBits(block.lastByteMask), block.zeroBitLength, block.oneBitLength)
                     + block.pause * TSTATES_PER_MS;
                 return { tstates: t, bytes: block.data.length, name: '', pauseAfterMs: block.pause, loadable: true };
             }
             case 'DirectRecording': {
-                const samples = (block.data.length - 1) * 8 + block.lastByteMask;
+                const samples = dataBitCount(block.data.length, block.lastByteMask);
                 const t = samples * block.tstatesPerSample + block.pause * TSTATES_PER_MS;
                 return { tstates: t, bytes: block.data.length, name: '', pauseAfterMs: block.pause, loadable: true };
             }
+            case 'CSWRecording':
+            case 'GeneralizedData':
+                return { tstates: block.tstates + block.pause * TSTATES_PER_MS, bytes: block.bytes, name: '', pauseAfterMs: block.pause, loadable: true };
+            case 'Stop':
+            case 'StopIf48K':
+                // where the tape stops, one part of it ends
+                return { tstates: 0, bytes: 0, name: '', pauseAfterMs: 0, loadable: false, endsPart: true };
             case 'PureTone':
                 return { tstates: block.pulseLength * block.pulseCount, bytes: 0, name: '', pauseAfterMs: 0, loadable: false };
             case 'PulseSequence':
@@ -847,9 +1125,14 @@ export class TZXFile {
         }
     }
 
+    /* The next block that plays, following jumps, loops and calls on the way;
+     * null at the end of the tape. A jump or call outside the tape ends it,
+     * and so do control blocks that go round without ever reaching a block
+     * that plays. */
     getNextMeaningfulBlock(wrapAtEnd) {
         let startedAtZero = (this.nextBlockIndex === 0);
-        while (true) {
+        for (let steps = 0; steps < MAX_CONTROL_STEPS; steps++) {
+            if (this.nextBlockIndex < 0) break;
             if (this.nextBlockIndex >= this.blocks.length) {
                 if (startedAtZero || !wrapAtEnd) return null; /* have looped around; quit now */
                 this.nextBlockIndex = 0;
@@ -857,18 +1140,9 @@ export class TZXFile {
             }
             var block = this.blocks[this.nextBlockIndex];
             switch (block.type) {
-                case 'StandardSpeedData':
-                case 'TurboSpeedData':
-                case 'PureTone':
-                case 'PulseSequence':
-                case 'PureData':
-                case 'DirectRecording':
-                case 'Pause':
-                    /* found a meaningful block */
-                    this.nextBlockIndex++;
-                    return block;
                 case 'JumpToBlock':
-                    this.nextBlockIndex += block.offset;
+                    // a jump of 0 would stay put for ever, so it moves on
+                    this.nextBlockIndex += (block.offset || 1);
                     break;
                 case 'LoopStart':
                     this.loopToBlockIndex = this.nextBlockIndex + 1;
@@ -887,21 +1161,26 @@ export class TZXFile {
                     /* push the future destinations (where to go on reaching a ReturnFromSequence block)
                         onto the call stack in reverse order, starting with the block immediately
                         after the CallSequence (which we go to when leaving the sequence) */
-                    this.callStack.unshift(this.nextBlockIndex+1);
+                    this.callStack.push(this.nextBlockIndex+1);
                     for (var i = block.offsets.length - 1; i >= 0; i--) {
-                        this.callStack.unshift(this.nextBlockIndex + block.offsets[i]);
+                        this.callStack.push(this.nextBlockIndex + block.offsets[i]);
                     }
                     /* now visit the first destination on the list */
-                    this.nextBlockIndex = this.callStack.shift();
+                    this.nextBlockIndex = this.callStack.pop();
                     break;
                 case 'ReturnFromSequence':
-                    this.nextBlockIndex = this.callStack.shift();
+                    // outside a call it does nothing
+                    this.nextBlockIndex = this.callStack.length ? this.callStack.pop() : (this.nextBlockIndex + 1);
                     break;
                 default:
-                    /* not one of the types we care about; skip past it */
                     this.nextBlockIndex++;
+                    /* a block that plays; any other is skipped */
+                    if (block.generatePulses) return block;
             }
         }
+        this.nextBlockIndex = this.blocks.length;
+        this.callStack = [];
+        return null;
     }
 
     /* Reads on to the end of the tape and, where the tape goes round, once
