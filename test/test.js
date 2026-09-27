@@ -18,7 +18,19 @@ const resultsFilename = argv[3];
 
 const registers = new Uint16Array(core.memory.buffer, core.REGISTERS, 12);
 const logEvents = new Uint16Array(core.memory.buffer, core.LOG_ENTRIES, 2048);
+// the log's last entry is kept for its end marker
+const LOG_EVENT_LIMIT = 511;
+const machineMemory = new Uint8Array(core.memory.buffer, core.MACHINE_MEMORY, 0x40000);
 core.setMachineType(1212);
+
+// FUSE's coretest fills memory with this pattern before every test
+const MEMORY_FILL = new Uint8Array(0x40000).map((_, i) => [0xde, 0xad, 0xbe, 0xef][i & 3]);
+
+let failures = 0;
+function fail(...message) {
+    console.log(...message);
+    failures++;
+}
 
 
 const inFile = fs.createReadStream(inputFilename);
@@ -45,7 +57,7 @@ const getResultLine = (function () {
 
 function assertEqual(actual, expected, testName, reg) {
     if (actual != expected) {
-        console.log(testName, reg, '- expected', expected.toString(16), 'but got', actual.toString(16));
+        fail(testName, reg, '- expected', expected.toString(16), 'but got', actual.toString(16));
     }
 }
 
@@ -55,6 +67,7 @@ while (true) {
     if (!line) continue;
 
     core.reset();
+    machineMemory.set(MEMORY_FILL);
 
     const testName = line;
     const mainRegistersLine = await getLine();
@@ -99,14 +112,14 @@ while (true) {
     while (true) {
         resultLine = await getResultLine();
         if (resultLine === undefined) {
-            console.log("unexpected EOF in results file!");
+            fail("unexpected EOF in results file!");
             break;
         } else if (resultLine) {
             break;
         }
     }
     if (resultLine != testName) {
-        console.log(
+        fail(
             "Test name in results file does not match: expected", testName, "but got", resultLine
         );
     }
@@ -115,6 +128,10 @@ while (true) {
     let checkingEvents = true;
     let logPtr = 0;
     while (resultLine.startsWith(' ')) {
+        if (checkingEvents && logPtr >= LOG_EVENT_LIMIT * 4) {
+            fail("Test", testName, "expects more events than the log holds");
+            checkingEvents = false;
+        }
         if (checkingEvents) {
             const [expectedEventTime, expectedEventType, expectedEventAddr, expectedEventVal] = resultLine.trim().split(/\s+/);
             const actualEventTime = logEvents[logPtr++];
@@ -128,7 +145,7 @@ while (true) {
                 || (parseInt(expectedEventVal || '0', 16) != actualEventVal)
             ) {
                 const actualResult = '' + actualEventTime + ' ' + actualEventType + ' ' + actualEventAddr.toString(16) + ' ' + actualEventVal.toString(16);
-                console.log("Event mismatch on test", testName, "- expected", resultLine, "but got", actualResult);
+                fail("Event mismatch on test", testName, "- expected", resultLine, "but got", actualResult);
                 checkingEvents = false;
             }
         }
@@ -136,7 +153,7 @@ while (true) {
         resultLine = await getResultLine();
     }
     if (checkingEvents && logEvents[logPtr] != 0xffff) {
-        console.log("Extra event on test", testName);
+        fail("Extra event on test", testName);
     }
 
     const mainRegistersOutLine = resultLine;
@@ -147,7 +164,7 @@ while (true) {
     const [newi, newr, newiff1, newiff2, newim, newhalted] = auxRegistersOutStrings.map(x => parseInt(x, 16));
 
     if (status) {
-        console.log(testName, 'failed with status', status.toString(16));
+        fail(testName, 'failed with status', status.toString(16));
 
         while (await getResultLine()) {
             // discard memory lines
@@ -160,7 +177,7 @@ while (true) {
                 if (val == -1) break;
                 const actual = core.peek(addr)
                 if (actual != val) {
-                    console.log(testName, 'mem', addr.toString(16), '- expected', val.toString(16), 'but got', actual.toString(16));
+                    fail(testName, 'mem', addr.toString(16), '- expected', val.toString(16), 'but got', actual.toString(16));
                 }
                 addr++;
             }
@@ -189,3 +206,8 @@ while (true) {
 
 inFile.close();
 resultsFile.close();
+
+if (failures) {
+    console.log(failures, 'checks failed');
+    process.exitCode = 1;
+}

@@ -45,14 +45,14 @@
     },
     "build:static": {
       "patterns": [
-        "static/*.html",
-        "static/*.rom",
-        "static/playzx/*"
-      ],
-      "extensions": [
-        "html",
-        "rom",
-        "db"
+        "static/*",
+        "static/roms/*",
+        "static/tapeloaders/*",
+        "static/pokes/*",
+        "static/playzx/*",
+        "README.md",
+        "COPYING",
+        "CHANGELOG.md"
       ]
     }
   },

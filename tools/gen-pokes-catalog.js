@@ -14,7 +14,7 @@
  *   M <bank> <addr> <val> <orig>   a poke belonging to the trainer (more follow)
  *   Z <bank> <addr> <val> <orig>   the trainer's last poke
  *   Y                        end of file
- * bank: bit 3 set (value 8) = ignore bank / poke via current paging; 0-7 = a
+ * bank: bit 3 set (8-15) = ignore bank / poke via current paging; 0-7 = a
  * specific 128K RAM bank. val 256 = ask the user for the value at apply time.
  *
  * Output JSON shape (arrays to keep the file small; decoded by pokes-db.js):
@@ -74,16 +74,21 @@ const parsePok = (text, filename) => {
         } else if (kind === 'M' || kind === 'Z') {
             const parts = line.slice(1).trim().split(/\s+/).map(Number);
             const [bank, addr, val, orig] = parts;
-            if (parts.length < 4 || parts.some(isNaN)
+            if (parts.length < 4 || !parts.every(Number.isInteger) || bank < 0 || bank > 15
                 || addr < 0x4000 || addr > 0xffff || val < 0 || val > 256 || orig < 0 || orig > 255) {
                 console.warn(`bad poke line in ${path.basename(filename)}: "${line}"`);
                 badLines++;
                 continue;
             }
-            if (current) {
-                current[1].push([bank, addr, val, orig]);
-                pokeCount++;
+            if (!current) {
+                console.warn(`poke outside a trainer in ${path.basename(filename)}: "${line}"`);
+                badLines++;
+                continue;
             }
+            current[1].push([bank, addr, val, orig]);
+            pokeCount++;
+            // Z is the trainer's last poke
+            if (kind === 'Z') current = null;
         } else if (kind === 'Y') {
             break;
         } else {

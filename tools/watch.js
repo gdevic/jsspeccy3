@@ -5,8 +5,9 @@
  *   node tools/watch.js
  *
  * The "watch" section of package.json names the npm scripts to rerun and the
- * files that trigger each one: "patterns" are paths whose file name may hold
- * a * (any run of characters), and "extensions" limits them further. A full
+ * files that trigger each one: "patterns" are paths from the project root
+ * whose file name may hold a * (any run of characters), and "extensions", when
+ * given, limits them further. A full
  * build runs first, then watching starts. Scripts run one at a time, each
  * once the files have been quiet for a moment, so a burst of changes (an
  * editor saving several files, or one script writing a file another one
@@ -29,7 +30,7 @@ const tasks = Object.entries(JSON.parse(fs.readFileSync('package.json', 'utf8'))
         script,
         patterns: [].concat(patterns),
         matchers: [].concat(patterns).map(globToRegExp),
-        extensions: [].concat(extensions),
+        extensions: extensions === undefined ? null : [].concat(extensions),
     }));
 
 const pending = new Set();
@@ -66,7 +67,7 @@ const drain = async () => {
 
 const changed = (file) => {
     for (const task of tasks) {
-        if (task.extensions.includes(path.extname(file).slice(1)) && task.matchers.some(m => m.test(file))) {
+        if ((!task.extensions || task.extensions.includes(path.extname(file).slice(1))) && task.matchers.some(m => m.test(file))) {
             pending.add(task.script);
             lastChange = Date.now();
         }
@@ -79,7 +80,7 @@ await run('build');
 const dirs = [...new Set(tasks.flatMap(task => task.patterns.map(p => path.posix.dirname(p))))];
 for (const dir of dirs) {
     fs.watch(dir, (event, name) => {
-        if (name) changed(`${dir}/${name.replaceAll('\\', '/')}`);
+        if (name) changed(path.posix.join(dir, name.replaceAll('\\', '/')));
     });
 }
 console.log(`[watch] watching ${dirs.join(', ')}; press Ctrl+C to stop`);

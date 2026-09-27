@@ -577,11 +577,12 @@ function detectLoader():void {
 }
 
 function log(time:u32, type:u16, addr:u16, val:u8):void {
+    // the last entry is kept for the end marker, so a longer run logs its first 511 events
+    if (logPtr >= 2044 && type != 0xffff) return;
     logEntries[logPtr++] = u16(time);
     logEntries[logPtr++] = type;
     logEntries[logPtr++] = addr;
     logEntries[logPtr++] = u16(val);
-    logPtr = logPtr % 2048;
 }
 
 export function startLog():void {
