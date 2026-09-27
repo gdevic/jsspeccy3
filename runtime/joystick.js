@@ -49,10 +49,19 @@ export class JoystickHandler {
         // last reported direction / fire state, so we only emit input on changes
         this.lastState = {up: false, down: false, left: false, right: false, fire: false};
 
+        /* One poll per animation frame: a stop and start within one frame
+         * leave the frame asked for before the stop to carry on polling. */
+        this.pollRequested = false;
+        this.requestPoll = () => {
+            if (this.pollRequested) return;
+            this.pollRequested = true;
+            requestAnimationFrame(this.pollHandler);
+        };
         this.pollHandler = () => {
+            this.pollRequested = false;
             if (!this.running) return;
             this.poll();
-            requestAnimationFrame(this.pollHandler);
+            this.requestPoll();
         };
     }
 
@@ -98,7 +107,7 @@ export class JoystickHandler {
     start() {
         if (this.running || !this.supported()) return;
         this.running = true;
-        requestAnimationFrame(this.pollHandler);
+        this.requestPoll();
     }
 
     stop() {

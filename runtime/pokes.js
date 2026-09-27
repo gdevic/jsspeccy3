@@ -58,7 +58,7 @@ export function openPokesDialog(ui, emu) {
             close();
         }
     }
-    document.addEventListener('keydown', onKeydown, true);
+    document.addEventListener('keydown', onKeydown, { capture: true, signal: ui.teardown });
 
     /* ----- layout ----- */
     const root = el('div', { maxWidth: '100%', fontFamily: 'Arial, Helvetica, sans-serif', color: '#000' });

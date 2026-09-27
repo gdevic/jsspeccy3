@@ -1045,7 +1045,7 @@ export function createMicrodriveDock(ui, emu) {
     // The panel is anchored by its bottom edge, so whenever its height
     // changes (formatting, ejecting, a file's LOAD line appearing) it is
     // re-placed.
-    const panelResize = window.ResizeObserver ? new ResizeObserver(() => positionPanel()) : null;
+    const panelResize = window.ResizeObserver ? ui.keepObserver(new ResizeObserver(() => positionPanel())) : null;
 
     function closePanel() {
         if (openPanel) {
@@ -1124,7 +1124,7 @@ export function createMicrodriveDock(ui, emu) {
         ui.makeRoomOnLeft(element);
         positionPanel();
     }
-    if (window.ResizeObserver) new ResizeObserver(reposition).observe(ui.appContainer);
+    if (window.ResizeObserver) ui.keepObserver(new ResizeObserver(reposition)).observe(ui.appContainer);
     ui.on('setZoom', reposition);
     setTimeout(reposition, 0);
 

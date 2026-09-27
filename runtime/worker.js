@@ -1478,6 +1478,10 @@ onmessage = (e) => {
             // The UI wants the cassette's latest bytes kept now, e.g. to show it in the box.
             flushCassette(false);
             break;
+        case 'flushMicrodrives':
+            // every drive with writes not yet sent back, as the emulator is about to stop
+            for (let d = 0; d < 8; d++) flushMicrodrive(d);
+            break;
         case 'setTapeDeck': {
             /* Connects or disconnects the tape recorder. Disconnecting stops
              * recording and winding, and a cassette in it has been parked by

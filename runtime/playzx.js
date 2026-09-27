@@ -376,7 +376,7 @@ export function openPlayZXDialog(ui, emu) {
     const load = (gid, name) => loadGame(gid, name, ui, emu, setStatus, () => closed);
 
     ui.hideDialog = function () { close(); };
-    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('keydown', onKeyDown, { capture: true, signal: ui.teardown });
 
     const container = el('div', {
         maxWidth: '100%', fontFamily: 'Arial, Helvetica, sans-serif', color: '#000',

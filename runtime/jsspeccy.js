@@ -41,6 +41,12 @@ const scriptUrl = document.currentScript.src;
 // How far behind time the frame loop catches up (see advanceFrameTime).
 const MAX_FRAME_LAG_MS = 100;
 
+// How long exit() waits for the worker to send back what it holds.
+const EXIT_FLUSH_TIMEOUT_MS = 2000;
+
+// How long a display change asked for through the API takes to arrive at most.
+const API_DISPLAY_MS = 1000;
+
 // The file name at the end of a path.
 const baseName = (path) => String(path).split('/').pop();
 
@@ -100,6 +106,7 @@ class Emulator extends EventEmitter {
         this.displayHandler = new DisplayHandler(this.canvas);
         this.audioHandler = new AudioHandler();
         this.isRunning = false;
+        this.animationFrameRequested = false;  // see requestAnimationFrame
         this.isReady = false;
         this.isInitiallyPaused = (!opts.autoStart);
         this.autoLoadTapes = ('autoLoadTapes' in opts) ? opts.autoLoadTapes : true;
@@ -386,10 +393,20 @@ class Emulator extends EventEmitter {
             this.audioHandler.start();
             this.focus();
             this.emit('start');
-            window.requestAnimationFrame((t) => {
-                this.runAnimationFrame(t);
-            });
+            this.requestAnimationFrame();
         }
+    }
+
+    /* Asks for the next animation frame, unless one is asked for already: a
+     * pause and start within one frame leave the frame asked for before the
+     * pause to carry on the loop, rather than starting a second loop. */
+    requestAnimationFrame() {
+        if (this.animationFrameRequested) return;
+        this.animationFrameRequested = true;
+        window.requestAnimationFrame((t) => {
+            this.animationFrameRequested = false;
+            this.runAnimationFrame(t);
+        });
     }
 
     focus() {
@@ -516,9 +533,7 @@ class Emulator extends EventEmitter {
                 this.runFrame();
                 this.advanceFrameTime(time);
             }
-            window.requestAnimationFrame((t) => {
-                this.runAnimationFrame(t);
-            });
+            this.requestAnimationFrame();
         }
     };
 
@@ -826,13 +841,14 @@ class Emulator extends EventEmitter {
         this.autoLoadTapes = val;
         this.emit('setAutoLoadTapes', val);
     }
-    setTapeTraps(val) {
+    // `byScript` marks the page's own choice, which the visitor's settings don't keep.
+    setTapeTraps(val, byScript) {
         this.tapeTrapsEnabled = val;
         this.worker.postMessage({
             message: 'setTapeTraps',
             value: val,
         })
-        this.emit('setTapeTraps', val);
+        this.emit('setTapeTraps', val, !!byScript);
     }
 
     playTape() {
@@ -1033,8 +1049,17 @@ class Emulator extends EventEmitter {
         }
     }
 
-    exit() {
+    /* Stops the emulator for good. What the tape recorder and the drives
+     * hold that isn't kept yet is sent back first, so a recording or save
+     * still in the worker isn't lost; resolves once the worker is gone. */
+    async exit() {
         this.pause();
+        if (this.isReady) {
+            this.flushCassette();
+            this.worker.postMessage({ message: 'flushMicrodrives' });
+            // a worker that doesn't answer is stopped anyway
+            await Promise.race([this.barrier(), new Promise(resolve => setTimeout(resolve, EXIT_FLUSH_TIMEOUT_MS))]);
+        }
         this.worker.terminate();
     }
 }
@@ -1090,13 +1115,14 @@ function saveTapeSetting(name, value) {
     } catch (e) { /* private browsing / quota / disabled storage: just don't persist it */ }
 }
 
-// A listener that remembers the setting `name` whenever it changes from `initial`.
+/* A listener that remembers the setting `name` whenever it changes from
+ * `initial`, unless a script changed it. */
 function rememberTapeSetting(name, initial) {
     let last = initial;
-    return (value) => {
+    return (value, byScript) => {
         if (value === last) return;
         last = value;
-        saveTapeSetting(name, value);
+        if (!byScript) saveTapeSetting(name, value);
     };
 }
 
@@ -1140,8 +1166,18 @@ window.JSSpeccy = (container, opts) => {
         uiEnabled: uiEnabled,
     });
     let tapeDeck = null;  // the tape recorder, where the UI offers one
+    /* A display size set through the embedding API is the page's choice,
+     * not the visitor's, so it isn't remembered. The change it asks for is
+     * noted here and passed over when it arrives: at once, or in or out of
+     * fullscreen once the browser has made the change. */
+    let apiDisplay = null;
+    const displayByApi = (value) => { apiDisplay = { value, at: performance.now() }; };
     if (uiEnabled) {
         ui.on('setZoom', (factor) => {
+            if (apiDisplay && (apiDisplay.value === factor) && ((performance.now() - apiDisplay.at) < API_DISPLAY_MS)) {
+                apiDisplay = null;
+                return;
+            }
             saveDisplay(factor === 'fullscreen' ? { zoom: ui.zoom, fullscreen: true } : { zoom: factor, fullscreen: false });
         });
         if (savedDisplay && savedDisplay.fullscreen) {
@@ -1297,8 +1333,8 @@ window.JSSpeccy = (container, opts) => {
                 }
             };
             rebuildControllerMenu();
-            window.addEventListener('gamepadconnected', rebuildControllerMenu);
-            window.addEventListener('gamepaddisconnected', rebuildControllerMenu);
+            window.addEventListener('gamepadconnected', rebuildControllerMenu, { signal: ui.teardown });
+            window.addEventListener('gamepaddisconnected', rebuildControllerMenu, { signal: ui.teardown });
             emu.on('setJoystickDevice', rebuildControllerMenu);
         }
 
@@ -1861,9 +1897,11 @@ window.JSSpeccy = (container, opts) => {
         input.focus();
     }
 
+    // The page is left at once; the promise settles once what the worker held is sent back.
     const exit = () => {
-        emu.exit();
+        const done = emu.exit();
         ui.unload();
+        return done;
     }
 
     /*
@@ -1879,9 +1917,9 @@ window.JSSpeccy = (container, opts) => {
     */
 
     return {
-        setZoom: (zoom) => {ui.setZoom(zoom);},
+        setZoom: (zoom) => {displayByApi(zoom); ui.setZoom(zoom);},
         toggleFullscreen: () => {ui.toggleFullscreen();},
-        enterFullscreen: () => {ui.enterFullscreen();},
+        enterFullscreen: () => {displayByApi('fullscreen'); ui.enterFullscreen();},
         exitFullscreen: () => {ui.exitFullscreen();},
         setMachine: (model) => {emu.setMachine(model);},
         setJoystickType: (type) => {emu.setJoystickType(type);},
@@ -1895,7 +1933,7 @@ window.JSSpeccy = (container, opts) => {
             emu.loadSnapshot(snapshot);
         },
         onReady: (callback) => { emu.onStarted(callback); },
-        exit: () => {exit();},
+        exit: () => exit(),
         machine: createMachineApi(emu),
         keyboard: createKeyboardApi(emu),
         tape: createTapeApi(emu, tapeDeck),

@@ -140,6 +140,7 @@ export function createTapeApi(emu, deck) {
         /* Presses one of the recorder's keys: 'play', 'record', 'rewind',
          * 'ffwd', 'stop' or 'eject'. */
         async press(key) {
+            needDeck();
             if (key === 'eject') {
                 needDeck().eject();
             } else if (['play', 'record', 'rewind', 'ffwd', 'stop'].includes(key)) {
@@ -153,14 +154,16 @@ export function createTapeApi(emu, deck) {
          * does, or at once with opts.quiet. Resolves once the tape is there,
          * or fails after opts.timeoutMs as until does. */
         async windTo(positionMs, opts) {
+            needDeck();
             opts = opts || {};
             emu.windTape(positionMs, !!opts.quiet);
             await settled();
             await until(s => s.mode === 'stop', opts.timeoutMs);
         },
-        async undo() { emu.undoCassetteRecording(); await settled(); },
+        async undo() { needDeck(); emu.undoCassetteRecording(); await settled(); },
         async setWriteProtect(value) { await needDeck().setWriteProtect(value); await settled(); },
-        setInstantLoading(value) { emu.setTapeTraps(!!value); return settled(); },
+        // the page's choice for now, which the visitor's own setting doesn't take on
+        async setInstantLoading(value) { needDeck(); emu.setTapeTraps(!!value, true); await settled(); },
         // The cassette in the recorder as a TZX file, recordings so far included; null if none is in.
         data() { return needDeck().currentData(); },
         until,

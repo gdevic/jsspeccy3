@@ -6,7 +6,9 @@ import closeIcon from './icons/close.svg';
 
 
 export class MenuBar {
-    constructor(container) {
+    // `teardown` is the signal that takes the menus' document listeners away
+    constructor(container, teardown) {
+        this.teardown = teardown;
         this.elem = document.createElement('div');
         this.elem.style.display = 'flow-root';
         this.elem.style.backgroundColor = '#eee';
@@ -21,7 +23,7 @@ export class MenuBar {
     }
 
     addMenu(title) {
-        const menu = new Menu(this.elem, title);
+        const menu = new Menu(this.elem, title, this.teardown);
         menu.setCompact(this.compact);
         this.menus.push(menu);
         return menu;
@@ -66,7 +68,8 @@ export class MenuBar {
 }
 
 export class Menu {
-    constructor(container, title) {
+    constructor(container, title, teardown) {
+        this.teardown = teardown;
         const elem = document.createElement('div');
         elem.style.float = 'left';
         elem.style.position = 'relative';
@@ -99,7 +102,7 @@ export class Menu {
         })
         document.addEventListener('click', (e) => {
             if (e.target != button && this.isOpen()) this.close();
-        })
+        }, { signal: teardown })
     }
 
     isOpen() {
@@ -204,8 +207,8 @@ export class Menu {
         input.addEventListener('pointerdown', () => {
             const rect = this.list.getBoundingClientRect();
             Object.assign(this.list.style, { position: 'fixed', left: rect.left + 'px', top: rect.top + 'px' });
-            window.addEventListener('pointerup', unpin);
-            window.addEventListener('pointercancel', unpin);
+            window.addEventListener('pointerup', unpin, { signal: this.teardown });
+            window.addEventListener('pointercancel', unpin, { signal: this.teardown });
         });
         input.addEventListener('input', () => {
             const v = snapped(+input.value);
@@ -354,6 +357,14 @@ export class UIController extends EventEmitter {
         this.canvas = emulator.canvas;
         this.uiEnabled = ('uiEnabled' in opts) ? opts.uiEnabled : true;
 
+        /* What the emulator hangs on the page outside its own elements - its
+         * document and window listeners, given `teardown` as their signal,
+         * and the ResizeObservers passed to keepObserver - goes when it is
+         * unloaded. */
+        this.teardownController = new AbortController();
+        this.teardown = this.teardownController.signal;
+        this.observers = [];
+
         /* build UI elements */
         if (this.uiEnabled) {
             this.dialog = document.createElement('div');
@@ -381,7 +392,7 @@ export class UIController extends EventEmitter {
         this.leftSide = new Set();  // see makeRoomOnLeft
 
         if (this.uiEnabled) {
-            this.menuBar = new MenuBar(this.appContainer);
+            this.menuBar = new MenuBar(this.appContainer, this.teardown);
         }
         this.appContainer.appendChild(this.canvas);
         this.canvas.style.objectFit = 'contain';
@@ -449,7 +460,7 @@ export class UIController extends EventEmitter {
          * or the menu bar does: its filling in moves the canvas down without
          * always resizing the container. */
         if (window.ResizeObserver) {
-            const observer = new ResizeObserver(() => {this.centerStartButton();});
+            const observer = this.keepObserver(new ResizeObserver(() => {this.centerStartButton();}));
             observer.observe(this.appContainer);
             if (this.menuBar) observer.observe(this.menuBar.elem);
         }
@@ -491,7 +502,7 @@ export class UIController extends EventEmitter {
                 this.setCompactUI(false);
 
                 if (this.uiEnabled) {
-                    document.addEventListener('mousemove', fullscreenMouseMove);
+                    document.addEventListener('mousemove', fullscreenMouseMove, { signal: this.teardown });
                     /* a bogus mousemove event is emitted on entering fullscreen, so ignore it */
                     this.ignoreNextMouseMove = true;
 
@@ -833,8 +844,8 @@ export class UIController extends EventEmitter {
          * immediately close it) */
         this._tapePopupKeyHandler = (e) => { if (e.key === 'Escape') this.hideTapePopup(); };
         this._tapePopupClickHandler = (e) => { if (!popup.contains(e.target)) this.hideTapePopup(); };
-        document.addEventListener('keydown', this._tapePopupKeyHandler);
-        setTimeout(() => document.addEventListener('click', this._tapePopupClickHandler), 0);
+        document.addEventListener('keydown', this._tapePopupKeyHandler, { signal: this.teardown });
+        setTimeout(() => document.addEventListener('click', this._tapePopupClickHandler, { signal: this.teardown }), 0);
     }
     hideTapePopup() {
         if (this._tapePopup) {
@@ -853,8 +864,16 @@ export class UIController extends EventEmitter {
     isTapePopupOpen() {
         return !!this._tapePopup;
     }
+    // Keeps a ResizeObserver to be disconnected on unload; returns it.
+    keepObserver(observer) {
+        this.observers.push(observer);
+        return observer;
+    }
+
     unload() {
         this.charPicker.close();
+        this.teardownController.abort();
+        this.observers.forEach(observer => observer.disconnect());
         window.removeEventListener('scroll', this.onPageScroll);
         window.removeEventListener('resize', this.onWindowResize);
         if (this.uiEnabled) {

@@ -147,8 +147,8 @@ For additional JavaScript hackery, the return value of the JSSpeccy function cal
     </script>
 ```
 
-* `emu.setZoom(zoomLevel)` - set the zoom level of the emulator (any positive factor, as for the `zoom` option)
-* `emu.enterFullscreen()` - activate full-screen mode
+* `emu.setZoom(zoomLevel)` - set the zoom level of the emulator (any positive factor, as for the `zoom` option); unlike a size the visitor chooses, it is not remembered for the next visit
+* `emu.enterFullscreen()` - activate full-screen mode, which is not remembered for the next visit
 * `emu.exitFullscreen()` - exit full-screen mode
 * `emu.toggleFullscreen()` - enter or exit full-screen mode
 * `emu.setMachine(machine)` - set the emulated machine type
@@ -159,7 +159,7 @@ For additional JavaScript hackery, the return value of the JSSpeccy function cal
 * `emu.openUrl(url)` - open the file at the given URL
 * `emu.loadSnapshotFromStruct(snapshot)` - load a snapshot from the given data structure; the data format is currently undocumented but runtime/snapshot.js should give you a decent idea of it...
 * `emu.onReady(callback)` - call the given callback once the emulator is fully initialised: the files given in `openUrl` are open and `autoStart` has started the machine. Files opened, snapshots loaded and a machine chosen while it is still loading take effect once it has loaded, rather than being lost to its start-up
-* `emu.exit()` - immediately stop the emulator and remove it from the document
+* `emu.exit()` - immediately stop the emulator and remove it from the document, with everything it hung on the page; returns a promise that resolves once what the tape recorder and the Microdrives held but hadn't kept yet has been sent back to be kept, and the emulator's worker has stopped
 * `emu.machine` - the machine's power and pause, worked from a script (see below)
 * `emu.keyboard` - the Spectrum's keyboard, pressed from a script (see below)
 * `emu.tape` - the tape recorder and the cassette box, worked from a script (see below)
@@ -193,7 +193,7 @@ The tape recorder calls resolve once the emulator has done what they ask, so `em
 * `emu.tape.windTo(positionMs, opts)` - wind the tape to a place, as picking a part in the panel does, or at once with `{quiet: true}`; resolves when it is there
 * `emu.tape.undo()` - take back the last recording that recorded over something
 * `emu.tape.setWriteProtect(value)` - write-protect the cassette in the recorder, or allow recording on it
-* `emu.tape.setInstantLoading(value)` - turn File → Instant tape loading on or off
+* `emu.tape.setInstantLoading(value)` - turn File → Instant tape loading on or off for now; the visitor's own setting, kept for the next visit, is left as it was
 * `emu.tape.data()` - the cassette in the recorder as a `.tzx` file's bytes, what has been recorded so far included, or `null`
 * `emu.tape.until(condition, timeoutMs)` - resolve with the status once `condition(status)` is true, checking every 20ms, or fail after `timeoutMs` (10 seconds unless given)
 

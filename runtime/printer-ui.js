@@ -736,7 +736,7 @@ export function createPrinter(ui, emu) {
 
     /* ---------- the panel ---------- */
     let panel = null;
-    const panelResize = window.ResizeObserver ? new ResizeObserver(() => positionPanel()) : null;
+    const panelResize = window.ResizeObserver ? ui.keepObserver(new ResizeObserver(() => positionPanel())) : null;
 
     function closePanel() {
         if (!panel) return;
@@ -773,8 +773,8 @@ export function createPrinter(ui, emu) {
     function releaseFeed() {
         if (releaseHeldFeed) releaseHeldFeed();
     }
-    window.addEventListener('pointerup', releaseFeed);
-    window.addEventListener('pointercancel', releaseFeed);
+    window.addEventListener('pointerup', releaseFeed, { signal: ui.teardown });
+    window.addEventListener('pointercancel', releaseFeed, { signal: ui.teardown });
 
     /* ---------- the paper and the roll ---------- */
     // rollVersion counts changes to the roll and writtenVersion is the one
@@ -816,12 +816,15 @@ export function createPrinter(ui, emu) {
             storeRoll();
         }
     }
-    window.addEventListener('pagehide', () => {
+    // The roll is kept as it is when the page goes away, or the emulator is unloaded from it.
+    const keepRollNow = () => {
         if (rollReady && writtenVersion < rollVersion) {
             saveRoll(state.paper, printout, printoutSaved);
             writtenVersion = rollVersion;
         }
-    });
+    };
+    window.addEventListener('pagehide', keepRollNow, { signal: ui.teardown });
+    ui.teardown.addEventListener('abort', keepRollNow);
 
     const printer = {
         get paper() { return state.paper; },
@@ -964,7 +967,7 @@ export function createPrinter(ui, emu) {
         }
         positionPanel();
     }
-    if (window.ResizeObserver) new ResizeObserver(reposition).observe(ui.appContainer);
+    if (window.ResizeObserver) ui.keepObserver(new ResizeObserver(reposition)).observe(ui.appContainer);
     ui.on('setZoom', reposition);
 
     function setConnected(connected) {

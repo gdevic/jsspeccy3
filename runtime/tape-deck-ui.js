@@ -1479,7 +1479,7 @@ export function createTapeDeck(ui, emu) {
         positionPanel();
         positionBubble();
     }
-    if (window.ResizeObserver) new ResizeObserver(reposition).observe(ui.appContainer);
+    if (window.ResizeObserver) ui.keepObserver(new ResizeObserver(reposition)).observe(ui.appContainer);
     ui.on('setZoom', reposition);
     setTimeout(reposition, 0);
 
