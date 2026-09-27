@@ -972,6 +972,35 @@ function saveDisplay(display) {
     } catch (e) { /* private browsing / quota / disabled storage: just don't persist it */ }
 }
 
+/* The File menu's Auto-load tapes and Instant tape loading, once changed,
+ * are remembered in localStorage and restored on the next visit, as
+ * {autoLoadTapes, tapeTraps}. */
+const TAPE_SETTINGS_KEY = 'jsspeccy-tape-settings';
+
+function loadTapeSettings() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(TAPE_SETTINGS_KEY));
+        if (saved && typeof saved === 'object') return saved;
+    } catch (e) { /* unreadable: use the page's own settings */ }
+    return {};
+}
+
+function saveTapeSetting(name, value) {
+    try {
+        localStorage.setItem(TAPE_SETTINGS_KEY, JSON.stringify({ ...loadTapeSettings(), [name]: value }));
+    } catch (e) { /* private browsing / quota / disabled storage: just don't persist it */ }
+}
+
+// A listener that remembers the setting `name` whenever it changes from `initial`.
+function rememberTapeSetting(name, initial) {
+    let last = initial;
+    return (value) => {
+        if (value === last) return;
+        last = value;
+        saveTapeSetting(name, value);
+    };
+}
+
 window.JSSpeccy = (container, opts) => {
     // let benchmarkRunCount = 0;
     // let benchmarkRenderCount = 0;
@@ -984,13 +1013,19 @@ window.JSSpeccy = (container, opts) => {
     const keyboardEnabled = ('keyboardEnabled' in opts) ? opts.keyboardEnabled : true;
     const uiEnabled = ('uiEnabled' in opts) ? opts.uiEnabled : true;
 
+    // Only a setting the File menu shows can have been changed, so only that
+    // one takes the place of the page's own.
+    const savedTape = uiEnabled ? loadTapeSettings() : {};
+    const savedAutoLoad = (!opts.sandbox && (typeof savedTape.autoLoadTapes === 'boolean')) ? savedTape.autoLoadTapes : null;
+    const savedTraps = (typeof savedTape.tapeTraps === 'boolean') ? savedTape.tapeTraps : null;
+
     const emu = new Emulator(canvas, {
         machine: opts.machine || 48,
         autoStart: opts.autoStart || false,
-        autoLoadTapes: ('autoLoadTapes' in opts) ? opts.autoLoadTapes : true,
+        autoLoadTapes: savedAutoLoad ?? (('autoLoadTapes' in opts) ? opts.autoLoadTapes : true),
         tapeAutoLoadMode: opts.tapeAutoLoadMode || 'default',
         openUrl: opts.openUrl,
-        tapeTrapsEnabled: ('tapeTrapsEnabled' in opts) ? opts.tapeTrapsEnabled : true,
+        tapeTrapsEnabled: savedTraps ?? (('tapeTrapsEnabled' in opts) ? opts.tapeTrapsEnabled : true),
         keyboardEnabled: keyboardEnabled,
         keyboardMap: opts.keyboardMap || 'standard',
         joystickEnabled: ('joystickEnabled' in opts) ? opts.joystickEnabled : true,
@@ -1047,6 +1082,7 @@ window.JSSpeccy = (container, opts) => {
                 }
             }
             emu.on('setAutoLoadTapes', updateAutoLoadTapesCheckbox);
+            emu.on('setAutoLoadTapes', rememberTapeSetting('autoLoadTapes', emu.autoLoadTapes));
             updateAutoLoadTapesCheckbox();
         }
 
@@ -1063,6 +1099,7 @@ window.JSSpeccy = (container, opts) => {
             }
         }
         emu.on('setTapeTraps', updateTapeTrapsCheckbox);
+        emu.on('setTapeTraps', rememberTapeSetting('tapeTraps', emu.tapeTrapsEnabled));
         updateTapeTrapsCheckbox();
 
         const machineMenu = ui.menuBar.addMenu('Machine');
