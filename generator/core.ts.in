@@ -68,7 +68,7 @@ overflowSubTable = [0, FLAG_V, 0, 0, 0, 0, FLAG_V, 0];
 #alloc audioBufferLeft[1024]: f32
 export const AUDIO_BUFFER_LEFT:usize = (&audioBufferLeft);
 #alloc audioBufferRight[1024]: f32
-export const AUDIO_BUFFER_RIGHT:usize = (&audioBufferLeft);
+export const AUDIO_BUFFER_RIGHT:usize = (&audioBufferRight);
 
 /* The level changes at the MIC socket while the tape records sound, by
 T-state in the frame (see setSoundRecording). Kept straight after the audio
@@ -334,6 +334,8 @@ function clearContentionTable(frameCycleCount:u32):void {
 
 
 let frameCycleCount:u32 = 69888;
+let screenStartTstate:u32 = 14335;  // where the first line's screen fetches (and contention) start
+let tstatesPerRow:u32 = 224;
 let screenPageIndex:u32 = 5;
 let pagingLocked:bool = 0;
 let pagingValue:u8 = 0;  // the last value written to the 128K paging port, for snapshots
@@ -356,7 +358,6 @@ let soundRecording:bool = false;
 let soundLevel:u8 = 0;  // the level being recorded
 let soundEdgeCount:u32 = 0;
 let selectedAYRegister:u8 = 0;
-let floatingBusValue:u8 = 0xff;
 let currentTapeTime:u32 = 0;  // time at which tape pulse pointer was last updated
 let tapePulseReadIndex:u16 = 0;  // index into the tape pulses buffer for the current pulse
 let tapePulseWriteIndex:u16 = 0;
@@ -379,14 +380,18 @@ export function setMachineType(type:u32):void {
     machineType = type;
     if (type == 48 || type == 1212) {
         frameCycleCount = 69888;
+        screenStartTstate = 14335;
+        tstatesPerRow = 224;
         recalculateAYCyclesPerSample();
-        buildScreenEventsTable(14335, 224, 0xfc);
-        buildContentionTable(14335, 224, frameCycleCount);
+        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xfc);
+        buildContentionTable(screenStartTstate, tstatesPerRow, frameCycleCount);
         betadiskEnabled = false;
     } else if (type == 5) {  // pentagon
         frameCycleCount = 71680;
+        screenStartTstate = 17988;
+        tstatesPerRow = 224;
         recalculateAYCyclesPerSample();
-        buildScreenEventsTable(17988, 224, 0xff);
+        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xff);
         clearContentionTable(frameCycleCount);
         rom0Page = 12;
         rom1Page = 9;
@@ -394,9 +399,11 @@ export function setMachineType(type:u32):void {
         betadiskROMActive = false;
     } else {  // 128
         frameCycleCount = 70908;
+        screenStartTstate = 14361;
+        tstatesPerRow = 228;
         recalculateAYCyclesPerSample();
-        buildScreenEventsTable(14361, 228, 0xfc);
-        buildContentionTable(14361, 228, frameCycleCount);
+        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xfc);
+        buildContentionTable(screenStartTstate, tstatesPerRow, frameCycleCount);
         rom0Page = 8;
         rom1Page = 9;
         betadiskEnabled = false;
@@ -1158,6 +1165,7 @@ export function readPort(addr:u16):u8 {
     t++;
 
     let result:u8 = 0xff;
+    let floatingBus:bool = false;
     if (machineType == 1212) {
         /*
         on port reads, the test machine just responds with the high byte of the port address.
@@ -1195,12 +1203,11 @@ export function readPort(addr:u16):u8 {
             /* kempston joystick */
             result = kempstonState;
         } else if (machineType == 48 || machineType == 128) {
-            /* floating bus */
-            updateFramebuffer();
-            result = floatingBusValue;
+            /* floating bus: read once the post-read contention is known, below */
+            floatingBus = true;
         }
     }
-    if (loggingEnabled) log(t, 4, addr, result);
+    if (loggingEnabled && !floatingBus) log(t, 4, addr, result);
 
     /* apply post-read contention */
     if (addr & 0x0001) {
@@ -1221,6 +1228,12 @@ export function readPort(addr:u16):u8 {
         if (loggingEnabled) log(t, 6, addr, 0);
         t += contentionTable[t % frameCycleCount];
         t += 3;
+    }
+
+    if (floatingBus) {
+        /* The bus is sampled in the I/O cycle's last T-state, as FUSE samples it. */
+        result = floatingBusAt(t - 1);
+        if (loggingEnabled) log(t - 1, 4, addr, result);
     }
 
     return result;
@@ -1326,18 +1339,38 @@ function updateFramebuffer():void {
         const addressWord:u32 = screenEvents[screenEventPointer + 1];
         if (addressWord == 0xffffffff) {
             frameBuffer[framebufferIndex++] = borderColour;
-            floatingBusValue = 0xff;
         } else {
             const screenAddr:u32 = screenBaseAddr | (addressWord & 0xffff);
             const attributeAddr:u32 = screenBaseAddr | (addressWord >> 16);
             frameBuffer[framebufferIndex++] = machineMemory[screenAddr];
             frameBuffer[framebufferIndex++] = machineMemory[attributeAddr];
             frameBuffer[framebufferIndex++] = machineMemory[screenAddr + 1];
-            floatingBusValue = machineMemory[attributeAddr + 1];
-            frameBuffer[framebufferIndex++] = floatingBusValue;
+            frameBuffer[framebufferIndex++] = machineMemory[attributeAddr + 1];
         }
         screenEventPointer += 2;
     }
+}
+
+function floatingBusAt(time:u32):u8 {
+    /* What an unattached port reads at `time`: the byte the ULA is fetching
+    for the display, as FUSE models it. Each 8 T-states of a screen line,
+    counted from one after the contention starts, carry the bitmap byte at
+    3, its attribute at 4, the next bitmap byte at 5 and its attribute at 6;
+    the rest of the time, and outside the screen, the bus is idle. */
+    const firstPixel:u32 = screenStartTstate + 1;
+    if (time < firstPixel) return 0xff;
+    const y:u32 = (time - firstPixel) / tstatesPerRow;
+    if (y >= 192) return 0xff;
+    const x:u32 = (time - firstPixel) % tstatesPerRow;
+    if (x >= 128) return 0xff;
+    const phase:u32 = x & 0x07;
+    if (phase < 3 || phase > 6) return 0xff;
+    const column:u32 = ((x >> 3) << 1) + ((phase >= 5) ? 1 : 0);
+    const screenBaseAddr:u32 = screenPageIndex << 14;
+    if (phase & 0x01) {
+        return machineMemory[screenBaseAddr | ((y & 0xc0) << 5) | ((y & 0x07) << 8) | ((y & 0x38) << 2) | column];
+    }
+    return machineMemory[screenBaseAddr | 0x1800 | ((y & 0xf8) << 2) | column];
 }
 
 function updateAudioBuffer(targetTime:u32):void {
@@ -1417,18 +1450,23 @@ function updateAudioBufferInner(targetTime:u32):void {
                 envelopeAlternatePhase ^= 0x0f;
             }
 
-            envelopeValue = (
-                /* start with the descending ramp counter */
-                envelopeRampCounter
-                /* XOR with the 'alternating' bit if on an even-numbered ramp */
-                ^ (envelopeAlternatePhase && envelopeAlternateMask)
-            );
-            /* OR with the 'hold' bit if past the first ramp */
-            if (!envelopeOnFirstRamp) envelopeValue |= envelopeHoldMask;
-            /* XOR with the 'attack' bit */
-            envelopeValue ^= envelopeAttackMask;
-            /* AND with the 'continue' bit if past the first ramp */
-            if (!envelopeOnFirstRamp) envelopeValue &= envelopeContinueMask;
+            if (!envelopeOnFirstRamp && !envelopeContinueMask) {
+                /* without 'continue', silent once the first ramp is over */
+                envelopeValue = 0;
+            } else if (!envelopeOnFirstRamp && envelopeHoldMask) {
+                /* 'hold' stays where the first ramp ended (15 after an
+                attack, 0 after a decay), turned over if 'alternate' is set */
+                envelopeValue = envelopeAttackMask ^ envelopeAlternateMask;
+            } else {
+                envelopeValue = (
+                    /* start with the descending ramp counter */
+                    envelopeRampCounter
+                    /* XOR with the 'alternating' bit if on an even-numbered ramp */
+                    ^ (envelopeAlternatePhase && envelopeAlternateMask)
+                    /* XOR with the 'attack' bit */
+                    ^ envelopeAttackMask
+                );
+            }
         }
 
         const finalVolumeA:u8 = (
@@ -1777,7 +1815,7 @@ export function runFrame():i16 {
         samplesPerFrame = requestedSamplesPerFrame;
         recalculateAYCyclesPerSample();
         audioBufferPointer = 0;
-        lastAudioT = 0;
+        lastAudioT = t;
     } else {
         /* copy any excess samples from previous frame's buffer */
         for (let j:u32 = 0; j < audioBufferPointer; j++) {
@@ -1786,7 +1824,9 @@ export function runFrame():i16 {
         }
     }
 
-    currentTapeTime = 0;
+    /* The frame starts where the last one's final instruction ran over to;
+    the tape and the sound were brought up to that point already. */
+    currentTapeTime = t;
 
     return resumeFrame();
 }

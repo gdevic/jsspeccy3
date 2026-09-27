@@ -200,7 +200,8 @@ class PulseGenerator {
         let cyclesEmitted = 0;
         let index = startIndex;
         let isFinished = false;
-        while (cyclesEmitted < cycleCount) {
+        // Stops short of the time asked for once the buffer is full; the rest waits for the next call.
+        while ((cyclesEmitted < cycleCount) && (index < buffer.length)) {
             if (this.pendingCycles > 0) {
                 if (this.pendingCycles >= 0x8000) {
                     // emit a pulse of length 0x7fff
