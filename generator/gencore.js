@@ -1,5 +1,6 @@
 import { argv, exit } from 'process';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as readline from 'readline';
 
 import instructionTable from './instructions.js';
@@ -289,6 +290,8 @@ const generateOpcodeTable = (prefix, outFile) => {
 }
 
 const inFile = fs.createReadStream(inputFilename);
+// the output directory (build/) is not checked in, so a clean checkout creates it here
+fs.mkdirSync(path.dirname(outputFilename), { recursive: true });
 const outFile = fs.createWriteStream(outputFilename);
 
 const processLine = (line) => {

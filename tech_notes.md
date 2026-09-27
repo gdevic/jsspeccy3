@@ -18,11 +18,13 @@ On the real machine, generating video and audio output happens in parallel with 
 Building the core
 -----------------
 
-To build jsspeccy-core.wasm, we run the script generator/gencore.js, which runs a preprocessing pass over the input file generator/core.ts.in, to generate the [AssemblyScript](https://www.assemblyscript.org/) source file build/core.ts. This is then passed to the AssemblyScript compiler to produce the final dist/jsspeccy-core.wasm module.
+To build jsspeccy-core.wasm, we run the script generator/gencore.js, which runs a preprocessing pass over the input file generator/core.ts.in, to generate the [AssemblyScript](https://www.assemblyscript.org/) source file build/core.ts (creating the build directory if needed). This is then passed to the AssemblyScript compiler to produce the final dist/jsspeccy/jsspeccy-core.wasm module.
 
 The preprocessor step serves two purposes: firstly, it allows us to programmatically build the large repetitive `switch` statements that form the Z80 core. Secondly, it allows us to use conventional array syntax to access our statically-defined arrays. Currently, AssemblyScript does not appear to have any native support for static arrays - any use of array syntax causes it to immediately pull in a `malloc` implementation and a higher-level array construct with bounds checking, all of which is unwanted overhead for our purposes. The gencore.js processor rewrites array syntax into direct memory access [`load` / `store` instructions](https://www.assemblyscript.org/stdlib/builtins.html#memory).
 
-All statically-defined arrays are allocated at the start of the module's memory map, from address 0 onward. Currently a 512Kb block is allocated for these - if you need more, increase `memoryBase` in asconfig.json.
+All statically-defined arrays are allocated at the start of the module's memory map, from address 0 onward. Currently a 1664Kb block is allocated for these - if you need more, increase `memoryBase` in asconfig.json. gencore.js stops the build with an error if the allocations outgrow it.
+
+The core's top-level statements (setting up the power-on machine state) run when the module is instantiated, in source order, and the AssemblyScript compiler rejects any such code that reaches a global declared further down the file. For that reason this start-up block sits at the very end of core.ts.in, after every declaration it could touch.
 
 The gencore.js preprocessor recognises the following directives:
 

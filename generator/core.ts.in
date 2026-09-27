@@ -462,11 +462,6 @@ export function reset():void {
     zxpPixelLatch = false;
     zxpLastT = 0;
 }
-setMachineType(48);
-
-for (let i=0; i < 8; i++) {
-    keyStates[i] = 0xff;
-}
 
 export function setRegisters(af:u16, bc:u16, de:u16, hl:u16, af_:u16, bc_:u16, de_:u16, hl_:u16, ix:u16, iy:u16, sp:u16, ir:u16):void {
     AF = af;
@@ -2133,4 +2128,12 @@ function writeAYRegister(reg:u8, val:u8):void {
             envelopeContinueMask = (val & 0x08) ? 0x0f : 0x00;
             break;
     }
+}
+
+/* Power-on state. This stays at the end of the module because it runs at
+instantiation, and every global it touches must be declared above it. */
+setMachineType(48);
+
+for (let i=0; i < 8; i++) {
+    keyStates[i] = 0xff;
 }
