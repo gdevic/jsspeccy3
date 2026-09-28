@@ -264,6 +264,15 @@ const CARDS = [
         ],
         tip: 'The machine pauses while a dialog is open, and each opens where it was left.',
     },
+    {
+        emoji: '🖐️', title: 'Move the devices', colour: 'orange', full: true,
+        rows: [
+            ['Drag the recorder, drives or printer', 'Wherever you like; the lead stretches to follow'],
+            ['Push one into another', 'It slides along it: they never overlap'],
+            ['Click a lead', 'Puts that device back, and any in its way'],
+        ],
+        tip: 'Open hand: drag it. Pointing finger: click it. Where they stand is kept in this browser, not in sessions.',
+    },
 ];
 
 function cardStyle(card, colour) {

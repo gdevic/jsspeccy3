@@ -601,13 +601,20 @@ export class UIController extends EventEmitter {
      * still centres it where it did; only once the window is too narrow to
      * show them does it move over, and the page then scrolls to them as it
      * does to the printer on the right. Called with the element whenever its
-     * size or visibility changes; a hidden one takes no room. */
+     * size or visibility changes; a hidden one takes no room. A device
+     * dragged out beyond its element (marked data-reach) gets room on the
+     * left as far as it reaches, and none on the right for that. */
     makeRoomOnLeft(element) {
         this.leftSide.add(element);
-        const reach = Math.max(0, ...[...this.leftSide].map(e => e.getBoundingClientRect().width));
-        const margin = Math.ceil(reach) + 'px';
-        this.appContainer.style.marginLeft = margin;
-        this.appContainer.style.marginRight = margin;
+        const left = this.appContainer.getBoundingClientRect().left;
+        let reach = 0, dragged = 0;
+        for (const e of this.leftSide) {
+            if (!e.getClientRects().length) continue;
+            reach = Math.max(reach, left - e.getBoundingClientRect().left);
+            for (const part of e.querySelectorAll('[data-reach]')) dragged = Math.max(dragged, left - part.getBoundingClientRect().left);
+        }
+        this.appContainer.style.marginLeft = Math.ceil(Math.max(reach, dragged)) + 'px';
+        this.appContainer.style.marginRight = Math.ceil(reach) + 'px';
         this.keepCentred();
     }
 

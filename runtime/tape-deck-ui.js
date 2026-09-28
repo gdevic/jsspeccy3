@@ -23,9 +23,9 @@ import JSZip from 'jszip';
 import * as cassette from './cassette.js';
 import * as store from './cassette-store.js';
 import { boxCopyMovedOn } from './session.js';
-import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W } from './microdrive-ui.js';
+import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W, buildLead } from './microdrive-ui.js';
 import { openDialog, h, button, confirmButton } from './dialog.js';
-import { makeMovable } from './movable.js';
+import { makeMovable, makeDeviceMovable } from './movable.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -137,7 +137,7 @@ function buildDeckArt() {
     const W = DECK_W, H = DECK_H;
     const uid = 'tdart' + (deckArtId++);
     const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
-    Object.assign(svg.style, { display: 'block', overflow: 'visible', userSelect: 'none', cursor: 'pointer' });
+    Object.assign(svg.style, { display: 'block', overflow: 'visible', userSelect: 'none' });
 
     const defs = svgEl('defs');
     svg.appendChild(defs);
@@ -170,7 +170,7 @@ function buildDeckArt() {
     svg.appendChild(svgEl('rect', { x: DOOR.x, y: DOOR.y, width: DOOR.w, height: DOOR.h, rx: 2, fill: '#070708' }));
     svg.appendChild(svgEl('line', { x1: DOOR.x + 2, y1: DOOR.y + 1, x2: DOOR.x + DOOR.w - 2, y2: DOOR.y + 1, stroke: '#3a3b3e', 'stroke-width': 0.8 }));
 
-    const door = svgEl('g');
+    const door = svgEl('g', { cursor: 'pointer' });  // a click on the door opens the recorder's panel
     door.appendChild(svgEl('rect', { x: DOOR.x, y: DOOR.y, width: DOOR.w, height: DOOR.h, rx: 2, fill: doorFill, stroke: '#0b0b0c', 'stroke-width': 0.8 }));
     door.appendChild(svgEl('rect', { x: DOOR.x + 2.5, y: DOOR.y + 2.5, width: DOOR.w - 5, height: DOOR.h - 5, rx: 1.5, fill: 'none', stroke: '#8a8c90', 'stroke-width': 0.45 }));
     const brand = svgEl('text', {
@@ -342,6 +342,7 @@ function buildDeckArt() {
     let door0 = -1, lift0 = -1;
     return {
         element: svg,
+        door,
         keys,
         // Which keys show down: a Set of names.
         setKeysDown(down) {
@@ -432,26 +433,48 @@ function buildDeckArt() {
 
 /* The EAR and MIC leads: a grey and a black lead, jacked into sockets on
  * the recorder's side, hanging in a loop down to the side of the Spectrum,
- * above where the Microdrive ribbon goes in. */
+ * above where the Microdrive ribbon goes in. draw(width, dx, dy) lays them
+ * across a column `width` wide, from the recorder's side moved by (dx, dy)
+ * to the Spectrum's, where their jacks stay put; a wider invisible stroke
+ * along each takes the pointer, for the click that puts the recorder
+ * back. */
 function buildLeads() {
-    const W = RIBBON_W;
-    const svg = svgEl('svg', { width: W, height: DECK_H, viewBox: `0 0 ${W} ${DECK_H}`, preserveAspectRatio: 'none' });
+    const svg = svgEl('svg', { width: RIBBON_W, height: DECK_H, viewBox: `0 0 ${RIBBON_W} ${DECK_H}` });
     Object.assign(svg.style, { display: 'block', overflow: 'visible', pointerEvents: 'none' });
+    const leads = [];
     const lead = (y0, y1, colour, sheen) => {
-        const g = svgEl('g');
-        const d = `M 5 ${y0} C ${W * 0.75} ${y0 + 6} ${W * 0.2} ${y1 - 30} ${W - 5} ${y1}`;
-        g.appendChild(svgEl('path', { d, fill: 'none', stroke: colour, 'stroke-width': 2.2, 'stroke-linecap': 'round' }));
-        g.appendChild(svgEl('path', { d, fill: 'none', stroke: sheen, 'stroke-width': 0.5, transform: 'translate(0 -0.5)' }));
+        const { g, setPath } = buildLead(colour, sheen, { width: 2.2, shine: 0.5, lift: 0.5 });
         // a jack plug at each end: its body, and the metal tip going in
-        for (const [x, tipX] of [[0.6, -1.2], [W - 5.6, W - 0.6]]) {
-            g.appendChild(svgEl('rect', { x: tipX, y: (x < 1 ? y0 : y1) - 0.8, width: 1.8, height: 1.6, fill: '#c9cbce' }));
-            g.appendChild(svgEl('rect', { x, y: (x < 1 ? y0 : y1) - 1.9, width: 5, height: 3.8, rx: 0.8, fill: colour, stroke: '#000', 'stroke-width': 0.3 }));
-        }
+        const jack = () => {
+            const tip = svgEl('rect', { width: 1.8, height: 1.6, fill: '#c9cbce' });
+            const shell = svgEl('rect', { width: 5, height: 3.8, rx: 0.8, fill: colour, stroke: '#000', 'stroke-width': 0.3 });
+            g.append(tip, shell);
+            return (x, tipX, y) => {
+                tip.setAttribute('x', tipX);
+                tip.setAttribute('y', y - 0.8);
+                shell.setAttribute('x', x);
+                shell.setAttribute('y', y - 1.9);
+            };
+        };
+        const nearJack = jack();
+        const farJack = jack();
+        leads.push((width, dx, dy) => {
+            const sx = 5 + dx, sy = y0 + dy, ex = width - 5, span = ex - sx;
+            setPath(`M ${sx} ${sy} C ${sx + (span * 0.9)} ${sy + 6} ${sx} ${y1 - 30} ${ex} ${y1}`);
+            nearJack(dx + 0.6, dx - 1.2, sy);
+            farJack(width - 5.6, width - 0.6, y1);
+        });
         return g;
     };
     svg.appendChild(lead(26, 118, '#8e9094', '#c3c5c8'));
     svg.appendChild(lead(32, 125, '#161618', '#46464b'));
-    return svg;
+    function draw(width, dx, dy) {
+        svg.setAttribute('width', width);
+        svg.setAttribute('viewBox', `0 0 ${width} ${DECK_H}`);
+        leads.forEach(l => l(width, dx, dy));
+    }
+    draw(RIBBON_W, 0, 0);
+    return { element: svg, draw };
 }
 
 /* ==================== controller: the recorder's state, shared with the box ==================== */
@@ -1379,14 +1402,17 @@ export function createTapeDeck(ui, emu) {
 
     // Stands to the left of the Spectrum above the Microdrives, level with
     // them: the recorder over the two drives, its leads where the drives'
-    // ribbon runs below.
+    // ribbon runs below. The recorder is the body that can be dragged away
+    // from there.
     const element = el('div', { position: 'absolute', zIndex: '90', right: '100%', transformOrigin: '100% 0%', display: 'none' });
     const inner = el('div', { display: 'flex', flexDirection: 'row-reverse', alignItems: 'flex-start' });
     element.appendChild(inner);
     const leads = buildLeads();
-    inner.appendChild(leads);
+    inner.appendChild(leads.element);
     const art = buildDeckArt();
-    inner.appendChild(art.element);
+    const body = el('div', {});
+    body.appendChild(art.element);
+    inner.appendChild(body);
     ui.appContainer.appendChild(element);
 
     // The recorder's light in fullscreen, where the recorder itself is hidden.
@@ -1504,13 +1530,18 @@ export function createTapeDeck(ui, emu) {
         // Normally drawn at the drives' scale; smaller only if it wouldn't fit below the top of the screen.
         const fit = clamp((bottom - screenTop) / DECK_H, 0.2, scale);
         // The leads' column stays as wide as the drives' ribbon, so the recorder stays over the drives.
-        leads.setAttribute('width', (RIBBON_W * scale) / fit);
+        leadsWidth = (RIBBON_W * scale) / fit;
         element.style.top = (bottom - (DECK_H * fit)) + 'px';
         element.style.transform = `scale(${fit})`;
-        ui.makeRoomOnLeft(element);
+        mover.update();
+        if (!mover.dragging()) ui.makeRoomOnLeft(element);
         positionPanel();
         positionBubble();
     }
+    let leadsWidth = RIBBON_W;
+    const mover = makeDeviceMovable(body, leads.element, {
+        id: 'tapeRecorder', draw: (dx, dy) => leads.draw(leadsWidth, dx, dy), onMove: reposition,
+    });
     if (window.ResizeObserver) ui.keepObserver(new ResizeObserver(reposition)).observe(ui.appContainer);
     ui.on('setZoom', reposition);
     setTimeout(reposition, 0);
@@ -1690,7 +1721,7 @@ export function createTapeDeck(ui, emu) {
         g.addEventListener('pointercancel', () => { anim.held = null; art.setKeysDown(keysDown()); });
         g.addEventListener('click', (e) => e.stopPropagation());
     }
-    art.element.addEventListener('click', () => togglePanel());
+    art.door.addEventListener('click', () => togglePanel());
     art.element.addEventListener('pointerdown', (e) => e.preventDefault());
 
     /* ---------- following the emulator ---------- */

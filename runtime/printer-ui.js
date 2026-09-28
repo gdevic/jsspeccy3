@@ -11,8 +11,8 @@
  */
 
 import JSZip from 'jszip';
-import { DOCK_SCALE, RIBBON_PLUG_Y } from './microdrive-ui.js';
-import { makeMovable } from './movable.js';
+import { DOCK_SCALE, RIBBON_PLUG_Y, buildLead } from './microdrive-ui.js';
+import { makeMovable, makeDeviceMovable } from './movable.js';
 import closeIcon from './icons/close.svg';
 import mouseWheelIcon from './icons/mouse-wheel.svg';
 
@@ -132,7 +132,7 @@ let printerArtId = 0;
 
 function buildPrinterArt() {
     const id = 'zxp' + (printerArtId++);
-    const box = el('div', { position: 'relative', width: PRINTER_W + 'px', height: PRINTER_H + 'px', cursor: 'pointer' });
+    const box = el('div', { position: 'relative', width: PRINTER_W + 'px', height: PRINTER_H + 'px' });
     box.title = 'ZX Printer';
 
     /* ---------- behind the paper: the recess and the roll ---------- */
@@ -156,6 +156,7 @@ function buildPrinterArt() {
         position: 'absolute', left: PAPER_X + 'px', width: PAPER_W + 'px',
         bottom: (PRINTER_H - SLOT_Y) + 'px', height: '0px', overflow: 'hidden',
     });
+    paperWrap.dataset.noDrag = '';  // a press on the paper never drags the printer: the paper has its own drag
     const paper = el('canvas', { position: 'absolute', left: '0', bottom: '0', width: PAPER_W + 'px', display: 'block' });
     paper.width = PAPER_DOTS;
     paper.height = 1;
@@ -192,35 +193,41 @@ function buildPrinterArt() {
     defs.appendChild(linearGradient(id + 'bar', [[0, 'rgba(210,214,218,0.55)'], [0.25, 'rgba(160,166,172,0.38)'], [1, 'rgba(120,126,132,0.45)']]));
     front.appendChild(defs);
 
-    front.appendChild(svgEl('rect', { x: 0, y: SLOT_Y, width: PRINTER_W, height: PRINTER_H - SLOT_Y - 1, rx: 3, fill: `url(#${id}body)` }));
-    front.appendChild(svgEl('rect', { x: 0.5, y: PRINTER_H - 1.6, width: PRINTER_W - 1, height: 0.8, fill: '#0a0a0b' }));
+    // The body below the paper slot, with the cutter bar and the name: a
+    // click on it opens the printer's panel.
+    const face = svgEl('g', { cursor: 'pointer' });
+    face.appendChild(svgEl('rect', { x: 0, y: SLOT_Y, width: PRINTER_W, height: PRINTER_H - SLOT_Y - 1, rx: 3, fill: `url(#${id}body)` }));
+    face.appendChild(svgEl('rect', { x: 0.5, y: PRINTER_H - 1.6, width: PRINTER_W - 1, height: 0.8, fill: '#0a0a0b' }));
+    front.appendChild(face);
     for (const x of [1, PRINTER_W - 17]) {
         front.appendChild(svgEl('rect', { x, y: 4, width: 16, height: 40, rx: 2.5, fill: `url(#${id}tower)` }));
         front.appendChild(svgEl('rect', { x: x + 0.6, y: 4.3, width: 14.8, height: 1.4, rx: 0.7, fill: '#4b4b50' }));
     }
 
+    const strip = svgEl('g', { cursor: 'pointer' });
+    front.appendChild(strip);
     const barX = 17, barW = PRINTER_W - 34;
-    front.appendChild(svgEl('rect', { x: barX, y: BAR_Y, width: barW, height: BAR_H, fill: `url(#${id}bar)`, stroke: 'rgba(235,240,245,0.35)', 'stroke-width': 0.4 }));
+    strip.appendChild(svgEl('rect', { x: barX, y: BAR_Y, width: barW, height: BAR_H, fill: `url(#${id}bar)`, stroke: 'rgba(235,240,245,0.35)', 'stroke-width': 0.4 }));
     let teeth = `M ${barX} ${BAR_Y + 1.6}`;
     for (let x = barX; x < barX + barW; x += 1.6) teeth += ` L ${x + 0.8} ${BAR_Y} L ${Math.min(x + 1.6, barX + barW)} ${BAR_Y + 1.6}`;
-    front.appendChild(svgEl('path', { d: teeth + ' Z', fill: '#a9adb2' }));
+    strip.appendChild(svgEl('path', { d: teeth + ' Z', fill: '#a9adb2' }));
     const logo = svgEl('text', {
         x: barX + 4, y: BAR_Y + 11, 'font-family': '"Arial Rounded MT Bold", "Helvetica Rounded", Arial, sans-serif',
         'font-weight': 'bold', 'font-size': 7.5, fill: 'rgba(255,255,255,0.16)', stroke: 'rgba(0,0,0,0.3)', 'stroke-width': 0.2,
     });
     logo.textContent = 'sinclair';
-    front.appendChild(logo);
+    strip.appendChild(logo);
 
     const name = svgEl('text', {
         x: barX, y: 60, 'font-family': 'Arial, Helvetica, sans-serif', 'font-weight': 'bold',
         'font-size': 5.2, 'letter-spacing': 0.3, fill: '#d23a32',
     });
     name.textContent = 'ZX PRINTER';
-    front.appendChild(name);
+    strip.appendChild(name);
 
     // Lit while the motor runs, whether the computer or FEED is driving it.
     const light = svgEl('circle', { cx: PRINTER_W - barX - 1.6, cy: 58.2, r: 1.6, fill: '#3a1210', stroke: '#000', 'stroke-width': 0.4 });
-    front.appendChild(light);
+    strip.appendChild(light);
 
     const feed = svgEl('g', { cursor: 'pointer' });
     const feedTitle = svgEl('title');
@@ -234,6 +241,7 @@ function buildPrinterArt() {
 
     return {
         element: box,
+        faces: [face, strip],  // what a click on opens the panel
         paperWrap,
         paper,
         feed,
@@ -267,9 +275,10 @@ function buildPrinterArt() {
             scrollHint.style.display = shown ? 'block' : 'none';
         },
         // An open hand over paper that can be scrolled, a closed one while
-        // it is held.
+        // it is held; paper that can't be is not offered the printer's
+        // own open hand either.
         setGrab(can, holding) {
-            paperWrap.style.cursor = can ? (holding ? 'grabbing' : 'grab') : '';
+            paperWrap.style.cursor = can ? (holding ? 'grabbing' : 'grab') : 'default';
             paperWrap.style.touchAction = can ? 'none' : '';
         },
         setFeedPressed(pressed) {
@@ -281,18 +290,23 @@ function buildPrinterArt() {
 
 /* The printer's cable: a round black lead from the back of the left tower
  * to an edge connector on the side of the Spectrum, its plug level with the
- * Microdrive ribbon's. */
+ * Microdrive ribbon's. draw(dx, dy) lays it from the tower moved by
+ * (dx, dy), the plug staying put; a wider invisible stroke along it takes
+ * the pointer, for the click that puts the printer back. */
 function buildCable() {
     const W = CABLE_W, H = PRINTER_H, y = RIBBON_PLUG_Y, plugW = 5.5;
     const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
-    svg.style.display = 'block';
-    svg.style.overflow = 'visible';
-    const path = `M ${W + 2} 17 C ${W * 0.55} 18 ${W * 0.5} ${y} ${plugW + 1.5} ${y}`;
-    svg.appendChild(svgEl('path', { d: path, fill: 'none', stroke: '#111113', 'stroke-width': 3.4, 'stroke-linecap': 'round' }));
-    svg.appendChild(svgEl('path', { d: path, fill: 'none', stroke: '#3c3c41', 'stroke-width': 0.7, transform: 'translate(0 -0.8)' }));
+    Object.assign(svg.style, { display: 'block', overflow: 'visible', pointerEvents: 'none' });
+    const lead = buildLead('#111113', '#3c3c41', { width: 3.4, shine: 0.7, lift: 0.8 });
+    svg.appendChild(lead.g);
     svg.appendChild(svgEl('rect', { x: plugW, y: y - 2.2, width: 2.6, height: 4.4, rx: 0.6, fill: '#222225' }));
     svg.appendChild(svgEl('rect', { x: 0, y: y - 6, width: plugW, height: 12, rx: 0.8, fill: '#151618', stroke: '#000', 'stroke-width': 0.4 }));
-    return svg;
+    function draw(dx, dy) {
+        const sx = W + 2 + dx, sy = 17 + dy, ex = plugW + 1.5, span = sx - ex;
+        lead.setPath(`M ${sx} ${sy} C ${ex + (span * 0.35)} ${sy + 1} ${ex + (span * 0.3)} ${y} ${ex} ${y}`);
+    }
+    draw(0, 0);
+    return { element: svg, draw };
 }
 
 /* ==================== the printer panel ==================== */
@@ -565,12 +579,13 @@ export function createPrinter(ui, emu) {
 
     // Sits to the right of the Spectrum, mirroring the Microdrive dock on the
     // left: the same scale, and the cable's plug level with the toolbar strip.
-    const element = el('div', { position: 'absolute', zIndex: '90', left: '100%', transformOrigin: '0% 0%', display: 'none' });
+    // The printer is the body that can be dragged away from there; it stands
+    // above the other devices, so its paper is never under one of them.
+    const element = el('div', { position: 'absolute', zIndex: '94', left: '100%', transformOrigin: '0% 0%', display: 'none' });
     const inner = el('div', { display: 'flex', flexDirection: 'row', alignItems: 'flex-end' });
     element.appendChild(inner);
     const cable = buildCable();
-    cable.style.pointerEvents = 'none';
-    inner.appendChild(cable);
+    inner.appendChild(cable.element);
     const art = buildPrinterArt();
     inner.appendChild(art.element);
     ui.appContainer.appendChild(element);
@@ -599,7 +614,6 @@ export function createPrinter(ui, emu) {
     let scrollOffset = 0;
     let canScroll = false;       // whether there is anywhere to scroll the paper to
     let drag = null;             // the paper held by the pointer: {id, y, from, moved}
-    let dragJustEnded = false;   // a drag ends in a click, which isn't one
 
     // The mouse wheel hint shows while the printout goes on above the top of
     // the screen.
@@ -690,8 +704,7 @@ export function createPrinter(ui, emu) {
 
     /* Dragging the paper moves it with the hand, as the wheel does: down to
      * pull it over the printer, up to take it back as far as the fold. Let
-     * go part way into the fold, it folds the rest of the way. A drag is
-     * not a click, so it doesn't open the panel. */
+     * go part way into the fold, it folds the rest of the way. */
     art.paperWrap.addEventListener('pointerdown', (e) => {
         if (e.button !== 0 || !canScroll) return;
         drag = { id: e.pointerId, y: e.clientY, from: pullTarget, moved: false };
@@ -716,8 +729,6 @@ export function createPrinter(ui, emu) {
         drag = null;
         art.setGrab(canScroll, false);
         if (!moved) return;
-        dragJustEnded = true;
-        setTimeout(() => { dragJustEnded = false; }, 0);
         if (pullTarget > 0 && pullTarget < FOLD_ROWS) pullTo(FOLD_ROWS);
     };
     art.paperWrap.addEventListener('pointerup', endDrag);
@@ -913,10 +924,11 @@ export function createPrinter(ui, emu) {
 
     printer.holdToFeed(art.feed, art.feed);
     art.setRoll(state.paper);
-    art.element.addEventListener('click', () => {
-        if (dragJustEnded) return;
-        if (panel) closePanel(); else openPanel();
-    });
+    for (const face of art.faces) {
+        face.addEventListener('click', () => {
+            if (panel) closePanel(); else openPanel();
+        });
+    }
 
     emu.on('printerOutput', (bytes) => {
         const count = bytes.length / ROW_BYTES;
@@ -962,15 +974,18 @@ export function createPrinter(ui, emu) {
         const top = bar.offsetTop + (bar.offsetHeight / 2) - (RIBBON_PLUG_Y * scale);
         element.style.top = top + 'px';
         element.style.transform = `scale(${scale})`;
-        // The paper reaches from the slot up to the top of the screen.
+        mover.update();
+        // The paper reaches from the slot, wherever the printer has been
+        // moved to, up to the top of the screen.
         const screenTop = emu.canvas.getBoundingClientRect().top - ui.appContainer.getBoundingClientRect().top;
-        const height = Math.max(0, SLOT_Y + ((top - screenTop) / scale));
+        const height = Math.max(0, SLOT_Y + ((top + (mover.offset().y * scale) - screenTop) / scale));
         if (height !== paperHeight) {
             paperHeight = height;
             layoutPaper();
         }
         positionPanel();
     }
+    const mover = makeDeviceMovable(art.element, cable.element, { id: 'zxPrinter', draw: cable.draw, onMove: reposition });
     if (window.ResizeObserver) ui.keepObserver(new ResizeObserver(reposition)).observe(ui.appContainer);
     ui.on('setZoom', reposition);
 

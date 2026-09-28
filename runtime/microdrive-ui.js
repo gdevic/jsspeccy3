@@ -23,7 +23,7 @@ import * as mdr from './mdr.js';
 import * as store from './microdrive-store.js';
 import { boxCopyMovedOn } from './session.js';
 import { openDialog, h, button, confirmButton } from './dialog.js';
-import { makeMovable } from './movable.js';
+import { makeMovable, makeDeviceMovable } from './movable.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -114,7 +114,6 @@ function buildDriveIcon(driveIndex) {
     const uid = 'mdart' + (driveArtId++);
     const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
     svg.style.display = 'block';
-    svg.style.cursor = 'pointer';
     svg.style.overflow = 'visible';
 
     const defs = svgEl('defs');
@@ -175,17 +174,20 @@ function buildDriveIcon(driveIndex) {
     });
     svg.appendChild(rainbow);
 
-    // Front face: a highlight where the deck turns down, then the face.
-    svg.appendChild(svgEl('path', {
+    // Front face: a highlight where the deck turns down, then the face. A
+    // click on the face opens the drive's panel.
+    const front = svgEl('g', { cursor: 'pointer' });
+    svg.appendChild(front);
+    front.appendChild(svgEl('path', {
         d: `M 1 ${FRONT_Y} H ${W - 1} V ${BOTTOM_Y - 3.5} Q ${W - 1} ${BOTTOM_Y} ${W - 4.5} ${BOTTOM_Y} H 4.5 Q 1 ${BOTTOM_Y} 1 ${BOTTOM_Y - 3.5} Z`,
         fill: frontFill,
     }));
-    svg.appendChild(svgEl('line', { x1: 1.5, y1: FRONT_Y + 0.4, x2: W - 1.5, y2: FRONT_Y + 0.4, stroke: '#3e4147', 'stroke-width': 0.8 }));
+    front.appendChild(svgEl('line', { x1: 1.5, y1: FRONT_Y + 0.4, x2: W - 1.5, y2: FRONT_Y + 0.4, stroke: '#3e4147', 'stroke-width': 0.8 }));
 
     // Cartridge slot, the cartridge's label end inside it, and the LED.
     const slotX = 23, slotW = 36;
-    svg.appendChild(svgEl('rect', { x: slotX, y: FRONT_Y + 3, width: slotW, height: 8.5, rx: 1, fill: '#030303' }));
-    svg.appendChild(svgEl('line', { x1: slotX + 0.5, y1: FRONT_Y + 11.8, x2: slotX + slotW - 0.5, y2: FRONT_Y + 11.8, stroke: '#34373c', 'stroke-width': 0.6 }));
+    front.appendChild(svgEl('rect', { x: slotX, y: FRONT_Y + 3, width: slotW, height: 8.5, rx: 1, fill: '#030303' }));
+    front.appendChild(svgEl('line', { x1: slotX + 0.5, y1: FRONT_Y + 11.8, x2: slotX + slotW - 0.5, y2: FRONT_Y + 11.8, stroke: '#34373c', 'stroke-width': 0.6 }));
 
     // The label carries the cartridge's name, handwritten, as a real owner
     // would have written it; blank until the cartridge is formatted.
@@ -202,19 +204,20 @@ function buildDriveIcon(driveIndex) {
         fill: '#1f3a8a',
     });
     cart.append(cartBody, cartLabel, cartName);
-    svg.appendChild(cart);
+    front.appendChild(cart);
 
     const led = svgEl('circle', { cx: 7, cy: FRONT_Y + 7.5, r: 1.6, fill: '#3a1210', stroke: '#000', 'stroke-width': 0.4 });
-    svg.appendChild(led);
+    front.appendChild(led);
     const number = svgEl('text', {
         x: 14.5, y: FRONT_Y + 9.3, 'text-anchor': 'middle', 'font-size': 5.5, 'font-weight': 'bold',
         'font-family': 'Arial, Helvetica, sans-serif', fill: '#5d6168',
     });
     number.textContent = String(driveIndex + 1);
-    svg.appendChild(number);
+    front.appendChild(number);
 
     return {
         element: svg,
+        front,
         setLed(on) { led.setAttribute('fill', on ? '#ff3b30' : '#3a1210'); led.style.filter = on ? 'drop-shadow(0 0 2px #ff3b30)' : 'none'; },
         setCartridge(colour, name) {
             if (colour) {
@@ -234,7 +237,9 @@ function buildDriveIcon(driveIndex) {
 /* The Microdrive lead: a flat grey ribbon from the rear of drive 1 into the
  * side of the Spectrum, ending in a small black plug. RIBBON_PLUG_Y is the
  * plug's vertical centre in drive units, which the dock lines up with the
- * toolbar strip. */
+ * toolbar strip. draw(dx, dy) lays the ribbon to the drive's rear moved by
+ * (dx, dy), its plug staying put; only the ribbon itself takes the
+ * pointer, for the click that puts the drives back. */
 export const RIBBON_W = 26;
 const RIBBON_Y0 = 11, RIBBON_Y1 = 7, RIBBON_THICK = 9;
 export const RIBBON_PLUG_Y = RIBBON_Y1 + (RIBBON_THICK / 2);
@@ -242,19 +247,42 @@ export const RIBBON_PLUG_Y = RIBBON_Y1 + (RIBBON_THICK / 2);
 function buildRibbon() {
     const W = RIBBON_W, H = DRIVE_H;
     const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
-    svg.style.display = 'block';
-    svg.style.overflow = 'visible';
+    Object.assign(svg.style, { display: 'block', overflow: 'visible', pointerEvents: 'none' });
     const y0 = RIBBON_Y0, y1 = RIBBON_Y1, thick = RIBBON_THICK, plugW = 5;
-    const edge = (y) => `M 0 ${y} C ${W * 0.45} ${y + 7} ${W * 0.55} ${y1 - y0 + y + 3} ${W - plugW} ${y1 - y0 + y}`;
-    svg.appendChild(svgEl('path', {
-        d: `${edge(y0)} L ${W - plugW} ${y1 + thick} C ${W * 0.55} ${y1 + thick + 3} ${W * 0.45} ${y0 + thick + 7} 0 ${y0 + thick} Z`,
-        fill: '#9c9ea3', stroke: '#6c6e73', 'stroke-width': 0.5,
-    }));
+    const ribbon = svgEl('path', { fill: '#9c9ea3', stroke: '#6c6e73', 'stroke-width': 0.5 });
+    ribbon.style.pointerEvents = 'visiblePainted';
+    ribbon.style.cursor = 'pointer';
+    svg.appendChild(ribbon);
+    const lines = [];
     for (let i = 1; i < 6; i++) {
-        svg.appendChild(svgEl('path', { d: edge(y0 + i * thick / 6), fill: 'none', stroke: '#85878c', 'stroke-width': 0.35 }));
+        lines.push(svgEl('path', { fill: 'none', stroke: '#85878c', 'stroke-width': 0.35 }));
+        svg.appendChild(lines[i - 1]);
     }
     svg.appendChild(svgEl('rect', { x: W - plugW, y: y1 - 1.5, width: plugW, height: thick + 3, rx: 0.8, fill: '#151618', stroke: '#000', 'stroke-width': 0.4 }));
-    return svg;
+    function draw(dx, dy) {
+        // Its bends stay in proportion however far it is stretched.
+        const cx = (f) => dx + ((W - dx) * f);
+        const edge = (y) => `M ${dx} ${y + dy} C ${cx(0.45)} ${y + dy + 7} ${cx(0.55)} ${y1 - y0 + y + 3} ${W - plugW} ${y1 - y0 + y}`;
+        ribbon.setAttribute('d', `${edge(y0)} L ${W - plugW} ${y1 + thick} C ${cx(0.55)} ${y1 + thick + 3} ${cx(0.45)} ${y0 + dy + thick + 7} ${dx} ${y0 + dy + thick} Z`);
+        lines.forEach((line, i) => line.setAttribute('d', edge(y0 + ((i + 1) * thick / 6))));
+    }
+    draw(0, 0);
+    return { element: svg, draw };
+}
+
+/* A round lead for another device's cable SVG (the recorder's, the
+ * printer's): the lead `width` wide in `colour`, a sheen `shine` wide in
+ * `sheen` along its top, raised by `lift`, and a wider invisible stroke
+ * that takes the pointer for the click that puts the device back. setPath(d)
+ * lays all three along `d`. */
+export function buildLead(colour, sheen, { width, shine, lift }) {
+    const g = svgEl('g');
+    const line = svgEl('path', { fill: 'none', stroke: colour, 'stroke-width': width, 'stroke-linecap': 'round' });
+    const gloss = svgEl('path', { fill: 'none', stroke: sheen, 'stroke-width': shine, transform: `translate(0 ${-lift})` });
+    const hit = svgEl('path', { fill: 'none', stroke: 'transparent', 'stroke-width': width + 6 });
+    Object.assign(hit.style, { pointerEvents: 'stroke', cursor: 'pointer' });
+    g.append(line, gloss, hit);
+    return { g, setPath(d) { for (const p of [line, gloss, hit]) p.setAttribute('d', d); } };
 }
 
 /* ==================== the tape-loop ring ==================== */
@@ -1044,13 +1072,15 @@ export function createMicrodriveDock(ui, emu) {
     // Sits to the left of the Spectrum with the ribbon plugged in level with
     // the toolbar strip (the keyboard below it is optional, so it is no
     // anchor): drive 1 nearest the Spectrum and joined to it by the ribbon,
-    // drive 2 abutting to its left, as with a real daisy chain.
+    // drive 2 abutting to its left, as with a real daisy chain. The drives
+    // together are the body that can be dragged away from there.
     const element = el('div', { position: 'absolute', zIndex: '90', right: '100%', transformOrigin: '100% 0%', display: 'none' });
     const inner = el('div', { display: 'flex', flexDirection: 'row-reverse', alignItems: 'flex-end' });
     element.appendChild(inner);
     const ribbon = buildRibbon();
-    ribbon.style.pointerEvents = 'none';
-    inner.appendChild(ribbon);
+    inner.appendChild(ribbon.element);
+    const body = el('div', { display: 'flex', flexDirection: 'row-reverse', alignItems: 'flex-end' });
+    inner.appendChild(body);
     ui.appContainer.appendChild(element);
 
     // A small "recording light"-style indicator for fullscreen, where the
@@ -1112,8 +1142,8 @@ export function createMicrodriveDock(ui, emu) {
     for (let i = 0; i < DRIVE_COUNT; i++) {
         const icon = buildDriveIcon(i);
         icons.push(icon);
-        inner.appendChild(icon.element);
-        icon.element.addEventListener('click', () => togglePanel(i));
+        body.appendChild(icon.element);
+        icon.front.addEventListener('click', () => togglePanel(i));
         icon.element.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); icon.setGlow(true); });
         icon.element.addEventListener('dragleave', () => icon.setGlow(false));
         icon.element.addEventListener('drop', async (e) => {
@@ -1147,9 +1177,11 @@ export function createMicrodriveDock(ui, emu) {
         const bar = ui.toolbar.elem;
         element.style.top = (bar.offsetTop + (bar.offsetHeight / 2) - (RIBBON_PLUG_Y * scale)) + 'px';
         element.style.transform = `scale(${scale})`;
-        ui.makeRoomOnLeft(element);
+        mover.update();
+        if (!mover.dragging()) ui.makeRoomOnLeft(element);
         positionPanel();
     }
+    const mover = makeDeviceMovable(body, ribbon.element, { id: 'microdrives', draw: ribbon.draw, onMove: reposition });
     if (window.ResizeObserver) ui.keepObserver(new ResizeObserver(reposition)).observe(ui.appContainer);
     ui.on('setZoom', reposition);
     setTimeout(reposition, 0);
