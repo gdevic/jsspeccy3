@@ -267,9 +267,13 @@ function buildDeckArt() {
     door.appendChild(autoStop);
     svg.appendChild(door);
 
-    // The tape counter: four wheels of digits behind a window.
-    svg.appendChild(svgEl('rect', { x: 10, y: 130, width: 36, height: 13.5, rx: 1.5, fill: '#e0e1df', stroke: '#707275', 'stroke-width': 0.6 }));
-    svg.appendChild(svgEl('rect', { x: 12.5, y: 132, width: 31, height: 9.5, fill: '#f6f6f1', stroke: '#2a2a2a', 'stroke-width': 0.5 }));
+    // The tape counter: four wheels of digits behind a window. A click on it, with the tape standing still, asks where to wind to.
+    const counter = svgEl('g', { cursor: 'pointer' });
+    // its face, the whole of what shows: the wheels' strips of digits reach far outside their windows
+    const counterFace = svgEl('rect', { x: 10, y: 130, width: 36, height: 13.5, rx: 1.5, fill: '#e0e1df', stroke: '#707275', 'stroke-width': 0.6 });
+    counter.appendChild(counterFace);
+    counter.appendChild(svgEl('rect', { x: 12.5, y: 132, width: 31, height: 9.5, fill: '#f6f6f1', stroke: '#2a2a2a', 'stroke-width': 0.5 }));
+    svg.appendChild(counter);
     const wheels = [];
     for (let i = 0; i < 4; i++) {
         const x = COUNTER_X + (i * WHEEL_PITCH);
@@ -291,7 +295,7 @@ function buildDeckArt() {
         // shading at the wheel's top and bottom, as it curves away
         holder.appendChild(svgEl('rect', { x, y: COUNTER_Y, width: WHEEL_W, height: 1.6, fill: 'rgba(0,0,0,0.18)' }));
         holder.appendChild(svgEl('rect', { x, y: COUNTER_Y + WHEEL_H - 1.6, width: WHEEL_W, height: 1.6, fill: 'rgba(0,0,0,0.18)' }));
-        svg.appendChild(holder);
+        counter.appendChild(holder);
         wheels.push(strip);
     }
 
@@ -344,6 +348,8 @@ function buildDeckArt() {
         element: svg,
         door,
         keys,
+        counter,
+        counterFace,
         // Which keys show down: a Set of names.
         setKeysDown(down) {
             for (const key in keys) {
@@ -1465,6 +1471,78 @@ export function createTapeDeck(ui, emu) {
         bubble.style.top = Math.max(4 - container.top, box.top - container.top - bubble.offsetHeight - 6) + 'px';
     }
 
+    /* A click on the counter, with the tape standing still, asks where to
+     * wind to: a reading in seconds as the counter shows it, or minutes and
+     * seconds. Enter winds there, the reels turning as for a key; Escape, or
+     * leaving the box, gives up. */
+    const counterEntry = el('div', {
+        position: 'absolute', zIndex: '95', display: 'none', padding: '5px 7px',
+        background: '#1c1e22', color: '#eee', border: '1px solid #555', borderRadius: '6px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.45)', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px',
+        lineHeight: '1.35', whiteSpace: 'nowrap',
+    });
+    counterEntry.appendChild(el('span', { marginRight: '6px' }, { textContent: 'Wind to' }));
+    const counterInput = el('input', {
+        width: '4.5em', padding: '1px 4px', border: '1px solid #666', borderRadius: '3px', background: '#f6f6f1',
+        color: '#1d1d1d', fontFamily: 'Consolas, "Courier New", monospace', fontSize: '13px', textAlign: 'right',
+    }, { type: 'text', maxLength: 7, spellcheck: false, title: 'A counter reading, 0000 to 3600, or minutes:seconds' });
+    counterEntry.appendChild(counterInput);
+    counterEntry.appendChild(el('span', { marginLeft: '6px', color: '#999', fontSize: '11px' }, { textContent: 'or m:ss' }));
+    ui.appContainer.appendChild(counterEntry);
+    for (const type of ['keydown', 'keyup', 'keypress']) counterInput.addEventListener(type, (e) => e.stopPropagation());
+
+    // Whether the counter takes a click now: a tape in, standing still, no load or save under way.
+    function counterTakesClick() {
+        const s = emu.deckStatus;
+        return !!(s && s.connected && emu.tapeKind && (s.mode === 'stop') && !s.loading && !s.saving && !anim.jump);
+    }
+    function showCounterEntry() {
+        counterInput.value = cassette.counterText(livePosition(performance.now()));
+        counterInput.style.borderColor = '#666';
+        counterEntry.style.display = 'block';
+        positionCounterEntry();
+        counterInput.focus();
+        counterInput.select();
+    }
+    function hideCounterEntry() {
+        counterEntry.style.display = 'none';
+    }
+    function positionCounterEntry() {
+        if (counterEntry.style.display === 'none') return;
+        // Always right beside the counter: to its right, level with it.
+        const box = art.counterFace.getBoundingClientRect();
+        const container = ui.appContainer.getBoundingClientRect();
+        counterEntry.style.left = (box.right - container.left + 6) + 'px';
+        counterEntry.style.top = (box.top - container.top + ((box.height - counterEntry.offsetHeight) / 2)) + 'px';
+    }
+    // The reading typed, in ms along the tape, or null for one that makes no sense.
+    function parseCounterEntry(text) {
+        const t = text.trim();
+        let seconds;
+        const clock = /^(\d{1,3}):(\d{1,2})$/.exec(t);
+        if (clock) seconds = (Number(clock[1]) * 60) + Number(clock[2]);
+        else if (/^\d{1,4}$/.test(t)) seconds = Number(t);
+        else return null;
+        return clamp(seconds * 1000, 0, emu.tapeLengthMs || cassette.CASSETTE_MS);
+    }
+    counterInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            hideCounterEntry();
+            emu.focus();
+        } else if (e.key === 'Enter') {
+            const ms = parseCounterEntry(counterInput.value);
+            if (ms === null) {
+                counterInput.style.borderColor = '#e3281c';
+                counterInput.select();
+                return;
+            }
+            hideCounterEntry();
+            if (counterTakesClick()) emu.windTape(ms);
+            emu.focus();
+        }
+    });
+    counterInput.addEventListener('blur', hideCounterEntry);
+
     /* ---------- the panel ---------- */
     let panel = null;
     function closePanel() {
@@ -1508,6 +1586,7 @@ export function createTapeDeck(ui, emu) {
         if (!show) {
             closePanel();
             hideBubble();
+            hideCounterEntry();
             ui.makeRoomOnLeft(element);
         }
         if (show && !was) {
@@ -1537,6 +1616,7 @@ export function createTapeDeck(ui, emu) {
         if (!mover.dragging()) ui.makeRoomOnLeft(element);
         positionPanel();
         positionBubble();
+        positionCounterEntry();
     }
     let leadsWidth = RIBBON_W;
     const mover = makeDeviceMovable(body, leads.element, {
@@ -1722,6 +1802,15 @@ export function createTapeDeck(ui, emu) {
         g.addEventListener('click', (e) => e.stopPropagation());
     }
     art.door.addEventListener('click', () => togglePanel());
+    // The counter: a click asks where to wind to, while the tape stands still; another click takes the question back.
+    art.counter.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); });
+    art.counter.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (counterEntry.style.display !== 'none') { hideCounterEntry(); emu.focus(); return; }
+        if (!emu.tapeKind || !controller.state.connected) return;
+        if (!counterTakesClick()) { showBubble('Stop the tape first, then click the counter to wind to a reading.'); return; }
+        showCounterEntry();
+    });
     art.element.addEventListener('pointerdown', (e) => e.preventDefault());
 
     /* ---------- following the emulator ---------- */
@@ -1736,6 +1825,8 @@ export function createTapeDeck(ui, emu) {
             const distance = Math.abs(s.jump.toMs - anim.shownMs);
             anim.jump = { from: anim.shownMs, to: s.jump.toMs, start: performance.now(), duration: clamp(distance / 20, 250, 600), kind: s.jump.kind };
         }
+        // A tape set moving while the counter's question is open takes the question away.
+        if ((counterEntry.style.display !== 'none') && !counterTakesClick()) hideCounterEntry();
         updateIndicator();
         kick();
     });
@@ -1748,6 +1839,7 @@ export function createTapeDeck(ui, emu) {
     // A hint, and an Undo offered with it, are about the tape that was in.
     const tapeLeft = () => {
         hideBubble();
+        hideCounterEntry();
         if (panel) panel.setHint(null);
     };
     emu.on('tapeEjected', tapeLeft);

@@ -188,8 +188,10 @@ const CARDS = [
         emoji: '📻', title: 'Tape recorder', colour: 'orange', full: true,
         rows: [
             [c('SAVE "name"'), 'Records onto your cassette'],
-            [c('LOAD ""'), 'Reads from where the tape is: wind there first'],
+            [c('LOAD ""'), 'Reads the next block ahead of the head: wind there first'],
+            ['Play', 'Plays from where the tape is, mid-block included'],
             ['Click the recorder', 'The tape map; click a part to wind to it'],
+            ['Click the counter', 'Type a reading (0025 or 0:25) and it winds there'],
             ['Hold Record yourself', 'Records the beeper sound too'],
             ['Opened tapes', 'Play in it, write-protected'],
             ['Spectrum off or paused', 'The recorder still winds, plays and records'],

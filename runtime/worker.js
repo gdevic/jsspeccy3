@@ -1117,7 +1117,12 @@ const trapTapeLoad = () => {
     framesSinceTapeTrap = 0;
     if (!tape.isCassette) tape.catchPlayingBlock();
     const fromMs = tapePositionMs();
-    const block = tape.getNextLoadableBlock(fromMs);
+    /* The block read is the first from the head whose pilot tone a loader
+     * can still catch. A cassette finds it from the position; a game tape
+     * too while it stands still, but playing, its queue of pulses says where
+     * the head is, and the position is only where the pulses queued so far
+     * have got to. */
+    const block = tape.getNextLoadableBlock((tape.isCassette || !tapeIsPlaying) ? fromMs : null);
     if (!block) {
         // A block only a loader can read: LD-BYTES runs on, and loader detection plays the tape to it.
         if (tape.playsInRealTime) return;

@@ -1580,13 +1580,12 @@ window.JSSpeccy = (container, opts) => {
             if (ui.isTapePopupOpen()) { ui.hideTapePopup(); return; }
             const segs = emu.tapeSegments || [];
             if (segs.length === 0) return;
-            /* Mark the part the next load will read, which is the block the
-             * tape is parked on, not where the counter sits: once a whole tape
-             * has loaded the counter stays at the end while the tape itself has
-             * wrapped back round to the first block. Where the tape says where
-             * on its timeline that block starts, the part is found by that,
-             * which tells apart the times round a loop; otherwise by the
-             * block. */
+            /* Mark the part of the block the tape stands on, which is not
+             * always where the counter sits: once a whole tape has loaded the
+             * counter stays at the end while the tape itself has wrapped back
+             * round to the first block. Where the tape says where on its
+             * timeline that block starts, the part is found by that, which
+             * tells apart the times round a loop; otherwise by the block. */
             const nextMs = emu.tapeNextBlockMs;
             const block = emu.tapeBlockIndex;
             let currentSeg = 0;
