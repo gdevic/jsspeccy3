@@ -24,6 +24,9 @@ Unreleased
 * Fix the PlayZX, Pokes and Find games dialogs: Enter loading the previous search's first result, duplicate downloads after reopening, a failed catalog load lasting until reload, Find games sticking on errors and mangling some titles, the machine left paused after closing Find games, Find games opening an item's last file rather than its first, and a game still downloading when Find games was closed being loaded and started anyway
 * Fix a restored session losing the dots of a row being printed, a session saved in the middle of a Microdrive command (`FORMAT`, `CAT`, `LOAD *`) failing it on restore, which now carries on with the drives' motors and heads as they were, a hand-edited session with an empty cassette id emptying the recorder, and the tape counter marking the first pass of a looped part
 * Fix an empty Microdrive file (`OPEN #` then `CLOSE #`) shown in the drive panel as a bad sector instead of a file
+* Fix more hardware details: the floating bus showing each screen byte a T-state late, border colour changes landing 8 pixels to the right, bit 6 of port 0xFE ignoring the EAR output, and the AY's register port reading 0 rather than 255 with register 16 or above selected
+* Fix instant tape loading hanging on a TZX block kept as a pure tone, pulses and pure data, which now plays for the ROM to load in real time, and the tape recorder still offering to undo a recording once a later one had taken the undo away
+* Fix the script API: `emu.keyboard.type` typing two Enters for a Windows line ending and refusing `^`, `emu.tape.parts` leaving out the end, and naming no data parts, on a pre-recorded tape, and `emu.tape.undo` doing nothing while a SAVE still held Record down
 
 
 3.2.3 (2026-09-25)

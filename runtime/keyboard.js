@@ -152,6 +152,7 @@ const KEY_CHARS = {
     ')': sym(SPECCY.NINE),
     '£': sym(SPECCY.X),
     '↑': sym(SPECCY.H),
+    '^': sym(SPECCY.H),  // character 94, which the Spectrum shows as ↑
 };
 KEY_CHARS[String.fromCharCode(0x2264)] = sym(SPECCY.Q); // LESS_THAN_EQUAL symbol (≤)
 KEY_CHARS[String.fromCharCode(0x2265)] = sym(SPECCY.E); // GREATER_THAN_EQUAL symbol (≥)

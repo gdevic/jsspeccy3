@@ -1405,7 +1405,9 @@ export function createTapeDeck(ui, emu) {
     });
     ui.appContainer.appendChild(bubble);
     let bubbleTimer = null;
+    let bubbleAction = null;  // the action the bubble showing offers, if any
     function showBubble(text, action) {
+        bubbleAction = action || null;
         bubble.replaceChildren(el('span', {}, { textContent: text }));
         if (action) {
             const b = el('button', {
@@ -1423,6 +1425,7 @@ export function createTapeDeck(ui, emu) {
         bubbleTimer = setTimeout(hideBubble, action ? 8000 : 5000);
     }
     function hideBubble() {
+        bubbleAction = null;
         clearTimeout(bubbleTimer);
         bubble.style.opacity = '0';
         bubbleTimer = setTimeout(() => { bubble.style.display = 'none'; }, 300);
@@ -1752,7 +1755,12 @@ export function createTapeDeck(ui, emu) {
                 break;
             case 'recordedOver':
                 if (panel) panel.setHint(hint);
-                showBubble(recordedOverText(hint.names), hint.canUndo ? { label: 'Undo', run: () => { emu.undoCassetteRecording(); if (panel) panel.setHint(null); } } : null);
+                showBubble(recordedOverText(hint.names), hint.canUndo ? { label: 'Undo', undo: true, run: () => { emu.undoCassetteRecording(); if (panel) panel.setHint(null); } } : null);
+                break;
+            case 'undoGone':
+                // A newer recording, or the undo itself, has taken the undo away: it isn't offered any more.
+                if (panel) panel.setHint(null);
+                if (bubbleAction && bubbleAction.undo) hideBubble();
                 break;
         }
     });

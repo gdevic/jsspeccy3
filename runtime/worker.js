@@ -360,7 +360,8 @@ const endSoundTake = () => {
 };
 
 /* Presses Record (and Play with it). A recording erases as it goes, so the
- * cassette as it was is kept first, for an undo. */
+ * cassette as it was is kept first, for an undo, in place of the undo of the
+ * recording before, which the UI stops offering. */
 const engageRecord = (auto) => {
     if (tapeIsPlaying) setTapePlaying(false);
     if (deckWinding()) endWind(false);
@@ -368,6 +369,7 @@ const engageRecord = (auto) => {
     deckMode = 'record';
     deckAuto = auto;
     deckReleaseFrames = 0;
+    if (undoBlocks) postDeckHint('undoGone', {});
     undoBlocks = tape.snapshotBlocks();
     erasedNames = [];
     updateCoreTapeState();
@@ -1117,6 +1119,8 @@ const trapTapeLoad = () => {
     const fromMs = tapePositionMs();
     const block = tape.getNextLoadableBlock(fromMs);
     if (!block) {
+        // A block only a loader can read: LD-BYTES runs on, and loader detection plays the tape to it.
+        if (tape.playsInRealTime) return;
         // Nothing more on the tape: LOAD waits, as it would for a real one.
         if (deckConnected && (nothingAheadAt !== fromMs)) {
             nothingAheadAt = fromMs;
@@ -1628,6 +1632,7 @@ onmessage = (e) => {
                 tape.restoreBlocks(undoBlocks);
                 tape.seekToMs(tapePositionMs());
                 undoBlocks = null;
+                postDeckHint('undoGone', {});
                 cassetteDirty = true;
                 flushCassette(false);
                 postTapeInfo();

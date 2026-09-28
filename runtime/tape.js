@@ -33,6 +33,13 @@ const MAX_CALL_STACK = 1024;
 // Where the walk through a TZX file's blocks starts (see TZXFile.controlState).
 const START_STATE = Object.freeze({ index: 0, loopTo: undefined, repeats: undefined, calls: [] });
 
+/* TZX blocks carrying a signal the tape trap can't read but a loader may: a
+ * block the ROM loads can be kept as pure data after a tone and pulses, and
+ * perhaps a signal level (LEAD_IN_BLOCK_TYPES), or as a recording of its
+ * sound. */
+const REAL_TIME_BLOCK_TYPES = new Set(['PureData', 'DirectRecording', 'CSWRecording', 'GeneralizedData']);
+const LEAD_IN_BLOCK_TYPES = new Set(['PureTone', 'PulseSequence', 'SetSignalLevel']);
+
 function msToString(ms) {
     const secs = Math.round(ms / 1000);
     return Math.floor(secs / 60) + ':' + ('0' + (secs % 60)).slice(-2);
@@ -1295,12 +1302,20 @@ export class TZXFile {
      * more from its start, so a tape with nothing loadable on it gives null.
      * lastLoadedEndMs is then where on the timeline the block it returns
      * ends. A tape whose jumps go round blocks that play but never load also
-     * gives null, once the walk comes back to where it has already been. */
+     * gives null, once the walk comes back to where it has already been.
+     * Pauses and stops are passed over, and so is a tone, pulses or a signal
+     * level leading in to a data block. A block carrying a signal other than
+     * a data block's (see REAL_TIME_BLOCK_TYPES) ends the walk before it, or
+     * before what led in to it: the tape stays there, for the loader to read
+     * in real time, and playsInRealTime is set. */
     getNextLoadableBlock() {
         this.pilotSkipTstates = 0;  // see TAPFile
+        this.playsInRealTime = false;
         let mayWrap = this.wrap && (this.nextBlockIndex > 0);
         const seen = new Set();
+        let leadInFrom = null;  // where the tone and pulses just walked past began
         while (true) {
+            const before = this.controlState();
             const block = this.getNextMeaningfulBlock();
             if (block) {
                 const key = TZXFile.stateKey(this.controlState());
@@ -1309,12 +1324,23 @@ export class TZXFile {
                     this.lastLoadedEndMs = (endMs !== undefined) ? endMs : (this.blockStartMs[this.nextBlockIndex] ?? this.totalMs);
                     return block.data;
                 }
+                if (REAL_TIME_BLOCK_TYPES.has(block.type)) {
+                    this.setControlState(leadInFrom || before);
+                    this.playsInRealTime = true;
+                    return null;
+                }
+                if (LEAD_IN_BLOCK_TYPES.has(block.type)) {
+                    if (!leadInFrom) leadInFrom = before;
+                } else {
+                    leadInFrom = null;
+                }
                 if (seen.has(key)) return null;
                 seen.add(key);
             } else {
                 if (!mayWrap) return null;
                 this.setControlState(START_STATE);
                 mayWrap = false;
+                leadInFrom = null;
             }
         }
     }

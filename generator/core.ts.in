@@ -249,12 +249,18 @@ while (true) {
 }
 
 
-function buildScreenEventsTable(mainScreenStartTstate:u32, tstatesPerRow:u32, borderTimeMask:u32):void {
+function buildScreenEventsTable(mainScreenStartTstate:u32, tstatesPerRow:u32, borderTimeMask:u32, borderDelay:u32):void {
     /* build screen events table: a list of which screen bytes should be fetched on which
     t-states. A sequence of: two u32s per event:
     - tstate number or 0xffffffff for end marker
     - screen address offset | (attr address offset << 16),
     or 0xffffffff if this is a 'fetch border' event
+    The border is sampled `borderDelay` T-states after the time its place in
+    the line gives, which puts the change of an OUT that ends at 14339 to 14342
+    on the 48K (14365 to 14368 on the 128K) exactly where the first screen byte
+    shows. The last left border sample of a line then comes a T-state after
+    the line's first screen fetch, which is taken with it, still before the
+    ULA reads that byte.
     */
     let screenEventPointer:u32 = 0;
 
@@ -262,7 +268,7 @@ function buildScreenEventsTable(mainScreenStartTstate:u32, tstatesPerRow:u32, bo
     for (let y:u32 = 0; y < 24; y++) {
         const rowTime:u32 = mainScreenStartTstate - (24 - y) * tstatesPerRow - 16;
         for (let x:u32 = 0; x < 160; x++) {
-            screenEvents[screenEventPointer++] = rowTime + (x & borderTimeMask);
+            screenEvents[screenEventPointer++] = rowTime + (x & borderTimeMask) + borderDelay;
             screenEvents[screenEventPointer++] = 0xffffffff;
         }
     }
@@ -274,7 +280,7 @@ function buildScreenEventsTable(mainScreenStartTstate:u32, tstatesPerRow:u32, bo
 
         /* left border */
         for (let x:u32 = 0; x < 16; x++) {
-            screenEvents[screenEventPointer++] = rowTime - 16 + (x & borderTimeMask);
+            screenEvents[screenEventPointer++] = rowTime - 16 + (x & borderTimeMask) + borderDelay;
             screenEvents[screenEventPointer++] = 0xffffffff;
         }
 
@@ -288,7 +294,7 @@ function buildScreenEventsTable(mainScreenStartTstate:u32, tstatesPerRow:u32, bo
 
         /* right border */
         for (let x:u32 = 0; x < 16; x++) {
-            screenEvents[screenEventPointer++] = rowTime + 128 + (x & borderTimeMask);
+            screenEvents[screenEventPointer++] = rowTime + 128 + (x & borderTimeMask) + borderDelay;
             screenEvents[screenEventPointer++] = 0xffffffff;
         }
     }
@@ -297,7 +303,7 @@ function buildScreenEventsTable(mainScreenStartTstate:u32, tstatesPerRow:u32, bo
     for (let y:u32 = 0; y < 24; y++) {
         const rowTime:u32 = mainScreenStartTstate + (192 + y) * tstatesPerRow - 16;
         for (let x:u32 = 0; x < 160; x++) {
-            screenEvents[screenEventPointer++] = rowTime + (x & borderTimeMask);
+            screenEvents[screenEventPointer++] = rowTime + (x & borderTimeMask) + borderDelay;
             screenEvents[screenEventPointer++] = 0xffffffff;
         }
     }
@@ -353,6 +359,8 @@ let framebufferIndex = 0;
 let borderColour:u8 = 0;
 let speakerState:u8 = 0;
 let micState:u8 = 0;  // the MIC output, bit 3 of port 0xfe, faintly heard in the speaker
+// Bit 6 of a port 0xfe read with no tape signal: high after a reset, then set by bit 4 (EAR) of each write, as on an issue 3 48K and every 128K; the tape signal flips it, as FUSE has it.
+let earOutput:u8 = 0x40;
 let micIn:f32 = 0.0;  // its level going into the speaker, and coming out after the DC is taken off
 let micOut:f32 = 0.0;
 let socketBits:u8 = 0;  // bits 4 and 3 of the last write to port 0xfe, as bits 1 and 0
@@ -391,7 +399,7 @@ export function setMachineType(type:u32):void {
         screenStartTstate = 14335;
         tstatesPerRow = 224;
         recalculateAYCyclesPerSample();
-        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xfc);
+        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xfc, 5);
         buildContentionTable(screenStartTstate, tstatesPerRow, frameCycleCount);
         betadiskEnabled = false;
     } else if (type == 5) {  // pentagon
@@ -399,7 +407,7 @@ export function setMachineType(type:u32):void {
         screenStartTstate = 17988;
         tstatesPerRow = 224;
         recalculateAYCyclesPerSample();
-        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xff);
+        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xff, 0);
         clearContentionTable(frameCycleCount);
         rom0Page = 12;
         rom1Page = 9;
@@ -410,7 +418,7 @@ export function setMachineType(type:u32):void {
         screenStartTstate = 14361;
         tstatesPerRow = 228;
         recalculateAYCyclesPerSample();
-        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xfc);
+        buildScreenEventsTable(screenStartTstate, tstatesPerRow, 0xfc, 5);
         buildContentionTable(screenStartTstate, tstatesPerRow, frameCycleCount);
         rom0Page = 8;
         rom1Page = 9;
@@ -451,6 +459,7 @@ export function reset():void {
     halted = false;
     opcodePrefix = 0;
     framebufferIndex = 0;
+    earOutput = 0x40;
 
     // The Pentagon's TR-DOS ROM is paged out, as the page map above has it.
     betadiskROMActive = false;
@@ -1190,7 +1199,7 @@ export function readPort(addr:u16):u8 {
             /* poll keyboard */
             result = pollKeyboard(u8(addr >> 8));
             updateTapePulses(t);
-            result |= tapeLevel;
+            result |= tapeLevel ^ earOutput;
             if (tapeInserted) detectLoader();
         } else if (zxpEnabled && !(addr & 0x0004)) {
             /* ZX Printer (an even port with A2 low is left to the ULA) */
@@ -1268,6 +1277,7 @@ export function writePort(addr:u16, val:u8):void {
         updateAudioBuffer(t);
         borderColour = val & 0x07;
         speakerState = (val & 0x10) >> 4;
+        earOutput = (val & 0x10) << 2;
         micState = (val & 0x08) >> 3;
         const bits:u8 = (val >> 3) & 0x03;
         if (soundRecording && (bits != socketBits)) {
@@ -1366,10 +1376,11 @@ function updateFramebuffer():void {
 function floatingBusAt(time:u32):u8 {
     /* What an unattached port reads at `time`: the byte the ULA is fetching
     for the display, as FUSE models it. Each 8 T-states of a screen line,
-    counted from one after the contention starts, carry the bitmap byte at
-    3, its attribute at 4, the next bitmap byte at 5 and its attribute at 6;
-    the rest of the time, and outside the screen, the bus is idle. */
-    const firstPixel:u32 = screenStartTstate + 1;
+    counted from where the contention starts, carry the bitmap byte at 3,
+    its attribute at 4, the next bitmap byte at 5 and its attribute at 6, so
+    the first bitmap byte is on the bus at 14338 on the 48K and 14364 on the
+    128K; the rest of the time, and outside the screen, the bus is idle. */
+    const firstPixel:u32 = screenStartTstate;
     if (time < firstPixel) return 0xff;
     const y:u32 = (time - firstPixel) / tstatesPerRow;
     if (y >= 192) return 0xff;
@@ -2216,7 +2227,8 @@ function readAYRegister(reg:u8):u8 {
         case 15:
             return (ayRegisters[7] & 0x80) ? ayRegisters[15] : 0xff;
         default:
-            return (reg < 16) ? ayRegisters[reg] : 0x00;
+            // A latched address of 16 or more leaves the chip deselected, so nothing drives the bus.
+            return (reg < 16) ? ayRegisters[reg] : 0xff;
     }
 }
 

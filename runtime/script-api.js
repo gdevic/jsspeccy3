@@ -64,7 +64,8 @@ export function createKeyboardApi(emu) {
         /* Types `text` a character at a time, as speccyKeysForChar types
          * each; the whole of it is checked before the first key goes down. */
         async type(text, opts) {
-            const chords = Array.from(String(text), (ch) => {
+            // a line ending, CR LF as on Windows included, is one Enter
+            const chords = Array.from(String(text).replace(/\r\n?/g, '\n'), (ch) => {
                 const keys = speccyKeysForChar(ch);
                 if (!keys) throw new Error(`No Spectrum key types ${JSON.stringify(ch)}`);
                 return keys;
@@ -117,10 +118,14 @@ export function createTapeApi(emu, deck) {
     };
     return {
         status,
-        // The parts on the tape, as the recorder's panel lists them.
+        /* The parts on the tape, as the recorder's panel lists them. A
+         * pre-recorded tape's parts are named as the panel names them, and
+         * have no type, length or load command. */
         parts() {
-            return (emu.tapeSegments || []).map(({ startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged, sound }) => (
-                { startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged: !!damaged, sound: !!sound }
+            const game = emu.tapeKind === 'game';
+            return (emu.tapeSegments || []).map(({ startMs, endMs, durationMs, name, label, typeName, length, loadCommand, damaged, sound }) => (game
+                ? { startMs, endMs: startMs + durationMs, durationMs, name: name || (label || '').split('  @')[0], typeName: null, length: null, loadCommand: null, damaged: false, sound: false }
+                : { startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged: !!damaged, sound: !!sound }
             ));
         },
         async connect() { await needDeck().setConnected(true); await settled(); },
@@ -153,7 +158,15 @@ export function createTapeApi(emu, deck) {
             await settled();
             await until(s => s.mode === 'stop', opts.timeoutMs);
         },
-        async undo() { needDeck(); emu.undoCassetteRecording(); await settled(); },
+        /* Takes back the last recording that recorded over something, once
+         * the Record a SAVE pressed has come up again, as the UI offers it;
+         * fails, as until does, if it hasn't by opts.timeoutMs. */
+        async undo(opts) {
+            needDeck();
+            await until(s => !((s.mode === 'record') && s.auto), (opts || {}).timeoutMs);
+            emu.undoCassetteRecording();
+            await settled();
+        },
         async setWriteProtect(value) { await needDeck().setWriteProtect(value); await settled(); },
         // the page's choice for now, which the visitor's own setting doesn't take on
         async setInstantLoading(value) { needDeck(); emu.setTapeTraps(!!value, true); await settled(); },
