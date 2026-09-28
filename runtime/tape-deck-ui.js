@@ -1544,7 +1544,7 @@ export function createTapeDeck(ui, emu) {
         const s = emu.deckStatus;
         if (!s || !emu.tapeKind) return anim.shownMs;
         let pos = s.positionMs;
-        if (s.speed && emu.isRunning) pos += s.speed * Math.min(150, now - emu.deckStatusTime);
+        if (s.speed && emu.deckDriven) pos += s.speed * Math.min(150, now - emu.deckStatusTime);
         return clamp(pos, 0, s.lengthMs || emu.tapeLengthMs || pos);
     }
 
@@ -1632,7 +1632,7 @@ export function createTapeDeck(ui, emu) {
             }
         }
         art.setDoor(anim.door, anim.seated);
-        return !!(s && s.speed && emu.isRunning) || !!anim.jump || (present ? (anim.seated < 1 || anim.door > 0) : (anim.door < 1 || anim.seated > 0)) || swapping;
+        return !!(s && s.speed && emu.deckDriven) || !!anim.jump || (present ? (anim.seated < 1 || anim.door > 0) : (anim.door < 1 || anim.seated > 0)) || swapping;
     }
 
     function frame(now) {

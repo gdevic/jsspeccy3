@@ -200,6 +200,7 @@ let deckRattlePhase:f32 = 0.0;
 let deckSecondClick:u32 = 0;  // samples until the eject's second click, 0 for none
 let deckSeed:u32 = 11;
 let deckSounding:bool = false;  // some sound is playing or dying away; while not, deckSample does nothing
+let machineMuted:bool = false;  // during an idle frame: only the tape and the peripherals are heard (see runIdleFrame)
 
 // ZX Printer (see the port handlers further down for the model)
 let zxpEnabled:bool = false;
@@ -1089,6 +1090,11 @@ export function setDeckSound(motor:u8, wind:f32):void {
     if (motor || (wind > 0.0)) deckSounding = true;
 }
 
+// Whether the recorder makes any sound now, or one of its sounds is still dying away.
+export function isDeckSounding():bool {
+    return deckSounding;
+}
+
 // kind: 1 = a key goes down, 2 = the keys pop up, 3 = the door opens, 4 = the tape stops at its end
 export function playDeckSound(kind:u8):void {
     const sampleRate:f32 = f32(samplesPerFrame) * 50.0;
@@ -1419,6 +1425,19 @@ function updateAudioBufferInner(targetTime:u32):void {
     }
     microslicesSinceLastSample += (targetTime - lastAudioT) * samplesPerFrame;
     while (microslicesSinceLastSample >= frameCycleCount) {
+        const peripherals:f32 = zxpBuzzSample() + mdrWhirrSample() + deckSample();
+        if (machineMuted) {
+            /* The machine stands still: the tape is heard through the
+            recorder as it always is, the speaker, the sound chip and MIC
+            stay silent and where they are. */
+            const tapeOut:f32 = (tapeLevel ? 0.25 : 0.0) * 0.70711;
+            audioBufferLeft[audioBufferPointer] = tapeOut + peripherals;
+            audioBufferRight[audioBufferPointer] = tapeOut + peripherals;
+            audioBufferPointer = (audioBufferPointer + 1) & 0x03ff;
+            microslicesSinceLastSample -= frameCycleCount;
+            continue;
+        }
+
         /* MIC reaches the speaker too, faintly, as on a real 48K, so a SAVE is
         heard. Its DC is taken off: LOAD holds MIC high throughout, and
         would otherwise shift the speaker's level for as long as it runs. Once
@@ -1510,8 +1529,6 @@ function updateAudioBufferInner(targetTime:u32):void {
         const levelA:f32 = ayVolumeLevels[finalVolumeA];
         const levelB:f32 = ayVolumeLevels[finalVolumeB];
         const levelC:f32 = ayVolumeLevels[finalVolumeC];
-
-        const peripherals:f32 = zxpBuzzSample() + mdrWhirrSample() + deckSample();
 
         audioBufferLeft[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.86603 + levelB * 0.5 + levelC * 0.70711 + peripherals;
         audioBufferRight[audioBufferPointer] = speakerLevel * 0.70711 + levelA * 0.5 + levelB * 0.86603 + levelC * 0.70711 + peripherals;
@@ -1902,10 +1919,11 @@ function recalculateAYCyclesPerSample():void {
 */
 
 
-export function runFrame():i16 {
-    screenEventPointer = 0;
-    framebufferIndex = 0;
-
+/* The audio buffer at the start of a frame: what spilled over from the
+last frame comes first. The frame starts where the last one's final
+instruction ran over to; the tape and the sound were brought up to that
+point already. */
+function startFrame():void {
     if (requestedSamplesPerFrame != samplesPerFrame) {
         samplesPerFrame = requestedSamplesPerFrame;
         recalculateAYCyclesPerSample();
@@ -1918,11 +1936,13 @@ export function runFrame():i16 {
             audioBufferRight[j] = audioBufferRight[samplesPerFrame + j];
         }
     }
-
-    /* The frame starts where the last one's final instruction ran over to;
-    the tape and the sound were brought up to that point already. */
     currentTapeTime = t;
+}
 
+export function runFrame():i16 {
+    screenEventPointer = 0;
+    framebufferIndex = 0;
+    startFrame();
     return resumeFrame();
 }
 
@@ -1941,7 +1961,29 @@ export function resumeFrame():i16 {
     updateFramebuffer();
     updateAudioBuffer(t);
     zxpUpdate();
+    endFrame();
+    return 0;
+}
 
+/* A frame in which the machine stands still, for the tape recorder running
+while the machine is off or paused: the clock moves on a frame, the tape
+plays through it, and the audio buffer is filled with what the recorder
+alone makes, the tape's signal and its own sounds (see machineMuted). The
+CPU, the screen and the printer are not run, and the frame's T-states come
+back off the clock at the end, so the machine is left exactly as it was. */
+export function runIdleFrame():void {
+    startFrame();
+    machineMuted = true;
+    t += frameCycleCount;
+    updateAudioBuffer(t);
+    machineMuted = false;
+    endFrame();
+}
+
+/* Ends a frame the clock has reached the end of: the tape pulses left over
+are kept for the next frame, and the frame's T-states are taken off every
+clock. */
+function endFrame():void {
     if (tapePulseWriteIndex > tapePulseReadIndex) {
         // copy excess from tape pulse buffer to start of buffer
         const excessPulses:u16 = tapePulseWriteIndex - tapePulseReadIndex;
@@ -1969,8 +2011,6 @@ export function resumeFrame():i16 {
     if (lastEarReadT > -100000) lastEarReadT -= i32(frameCycleCount);
     // A frame short of samples (the clock was set back) leaves none over, rather than wrapping round.
     audioBufferPointer = (audioBufferPointer > samplesPerFrame) ? (audioBufferPointer - samplesPerFrame) : 0;
-
-    return 0;
 }
 
 export function runUntil(maxT:u32):i16 {

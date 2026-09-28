@@ -126,6 +126,8 @@ export class AudioHandler {
 
         this.workletNode = null;
         this.scriptNode = null;
+        // Frames that come while the worklet is still loading, played once it is in.
+        this.pendingFrames = [];
         if (audioContext.audioWorklet && window.AudioWorkletNode) {
             // Runs on the audio thread, so a busy page can't starve the output.
             if (!workletUrl) workletUrl = URL.createObjectURL(new Blob([WORKLET_SOURCE], {type: 'application/javascript'}));
@@ -137,6 +139,8 @@ export class AudioHandler {
                     processorOptions: bufferOptions,
                 });
                 this.workletNode.connect(audioContext.destination);
+                for (const frame of this.pendingFrames) this.postFrame(frame.left, frame.right);
+                this.pendingFrames = [];
             }).catch((e) => {
                 console.warn('Audio worklet unavailable, falling back to ScriptProcessorNode:', e);
                 this.startScriptProcessor(audioContext, bufferOptions);
@@ -192,10 +196,13 @@ export class AudioHandler {
     }
 
     stop() {
+        if (!this.isActive) return;
+        this.isActive = false;
         if (this.workletNode) this.workletNode.disconnect();
         if (this.scriptNode) this.scriptNode.disconnect();
         this.workletNode = null;
         this.scriptNode = null;
+        this.pendingFrames = [];
         if (this.stopResumeWatch) this.stopResumeWatch();
         this.stopResumeWatch = null;
         this.audioContext.close();
@@ -212,16 +219,22 @@ export class AudioHandler {
         const left = new Float32Array(audioBufferLeft);
         const right = new Float32Array(audioBufferRight);
         if (this.workletNode) {
-            const leftCopy = left.slice();
-            const rightCopy = right.slice();
-            this.workletNode.port.postMessage({left: leftCopy, right: rightCopy}, [leftCopy.buffer, rightCopy.buffer]);
+            this.postFrame(left.slice(), right.slice());
         } else if (this.scriptNode) {
             this.scriptBuffer.push(left, right);
+        } else {
+            // Kept for the worklet, as many as its buffer would keep.
+            this.pendingFrames.push({ left: left.slice(), right: right.slice() });
+            if (this.pendingFrames.length > 5) this.pendingFrames.shift();
         }
 
         if (ENABLE_OSCILLOSCOPE) {
             this.drawOscilloscope(left, right);
         }
+    }
+
+    postFrame(left, right) {
+        this.workletNode.port.postMessage({left, right}, [left.buffer, right.buffer]);
     }
 
     /* A frame the worker could not run: its buffers come back unfilled, and

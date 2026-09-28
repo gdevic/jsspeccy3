@@ -45,6 +45,9 @@ const MAX_FRAME_LAG_MS = 100;
 // How long exit() waits for the worker to send back what it holds.
 const EXIT_FLUSH_TIMEOUT_MS = 2000;
 
+// Idle frames the recorder runs on in silence before it rests (see startDeckIdle).
+const DECK_REST_FRAMES = 50;
+
 // How long a display change asked for through the API takes to arrive at most.
 const API_DISPLAY_MS = 1000;
 
@@ -133,6 +136,11 @@ class Emulator extends EventEmitter {
         this.tapeWriteProtect = false;
         this.deckStatus = null;
         this.deckStatusTime = 0;
+        /* The recorder runs on its own while the machine is off or paused:
+         * while it has something going on, the tape moving or a sound to
+         * make, idle frames run in place of the machine's, at their pace, to
+         * move the tape and make its sound (see startDeckIdle). */
+        this.deckIdle = false;
         /* Tapes and cassettes sent to the worker whose fileOpened hasn't come
          * back yet (by file-open id), and the latest of them; and what the
          * files given in opts.openUrl are opened by (a promise), if any. */
@@ -237,6 +245,17 @@ class Emulator extends EventEmitter {
                     } else {
                         this.isExecutingFrame = false;
                     }
+                    break;
+                case 'idleFrameCompleted':
+                    if ('audioBufferLeft' in e.data) {
+                        this.audioHandler.frameCompleted(e.data.audioBufferLeft, e.data.audioBufferRight);
+                    }
+                    this.isExecutingFrame = false;
+                    /* Once the recorder has nothing going on it rests, until
+                     * the next thing it is asked to do: after a moment's
+                     * silence, so the end of its last sound gets out. */
+                    if (e.data.busy) this.deckQuietFrames = 0;
+                    else if (!this.isRunning && (++this.deckQuietFrames >= DECK_REST_FRAMES)) this.stopDeckIdle();
                     break;
                 case 'frameFailed':
                     // The machine stops where it failed; starting it again retries the frame.
@@ -347,6 +366,8 @@ class Emulator extends EventEmitter {
                     this.deckStatusTime = performance.now();
                     this.tapePositionMs = e.data.positionMs || 0;
                     this.emit('tapeDeckStatus', e.data);
+                    // Everything done to the recorder reports here: while the machine stands still, the recorder runs by itself.
+                    if (e.data.connected && !this.isRunning) this.startDeckIdle();
                     break;
                 case 'cassetteData':
                     // A cassette's bytes after recording on it (a TZX file, as an
@@ -392,6 +413,8 @@ class Emulator extends EventEmitter {
 
     start() {
         if (!this.isRunning) {
+            // The machine's frames drive the recorder from here; one of its own still in flight finishes first.
+            this.deckIdle = false;
             this.isRunning = true;
             this.isInitiallyPaused = false;
             this.nextFrameTime = performance.now();
@@ -401,10 +424,45 @@ class Emulator extends EventEmitter {
             if (this.joystickEnabled) {
                 this.joystickHandler.start();
             }
-            this.audioHandler.start();
+            if (!this.audioHandler.isActive) this.audioHandler.start();
             this.focus();
             this.emit('start');
             this.requestAnimationFrame();
+        }
+    }
+
+    /* Whether the recorder's tape is being moved along: by the machine's
+     * frames, or by its own while the machine stands still. */
+    get deckDriven() {
+        return this.isRunning || this.deckIdle;
+    }
+
+    /* Sets the recorder running by itself, the machine standing still
+     * (see deckIdle): the audio runs for it, and the frame loop runs its
+     * idle frames until it has nothing going on. */
+    startDeckIdle() {
+        if (this.deckIdle || this.isRunning || !this.tapeDeckConnected || !this.isReady) return;
+        this.deckIdle = true;
+        this.deckQuietFrames = 0;
+        if (!this.audioHandler.isActive) this.audioHandler.start();
+        this.nextFrameTime = performance.now();
+        this.requestAnimationFrame();
+    }
+
+    stopDeckIdle() {
+        if (!this.deckIdle) return;
+        this.deckIdle = false;
+        if (!this.isRunning) this.audioHandler.stop();
+    }
+
+    // The recorder's frame: the tape moves and its sound is made, the machine untouched.
+    runIdleFrame() {
+        this.isExecutingFrame = true;
+        if (this.audioHandler.isActive) {
+            const [audioBufferLeft, audioBufferRight] = this.audioHandler.frameBuffers;
+            this.worker.postMessage({ message: 'runIdleFrame', audioBufferLeft, audioBufferRight }, [audioBufferLeft, audioBufferRight]);
+        } else {
+            this.worker.postMessage({ message: 'runIdleFrame' });
         }
     }
 
@@ -461,8 +519,12 @@ class Emulator extends EventEmitter {
             if (this.joystickEnabled) {
                 this.joystickHandler.stop();
             }
-            this.audioHandler.stop();
             this.emit('pause');
+            /* The recorder carries on by itself, with the audio, if it has
+             * anything going on; its first idle frame tells, and the audio
+             * stops with it if not. */
+            this.startDeckIdle();
+            if (!this.deckIdle) this.audioHandler.stop();
         }
     }
 
@@ -542,6 +604,12 @@ class Emulator extends EventEmitter {
             // A machine started before the worker has its core and ROMs waits for them.
             if (time > this.nextFrameTime && !this.isExecutingFrame && this.isReady) {
                 this.runFrame();
+                this.advanceFrameTime(time);
+            }
+            this.requestAnimationFrame();
+        } else if (this.deckIdle) {
+            if (time > this.nextFrameTime && !this.isExecutingFrame) {
+                this.runIdleFrame();
                 this.advanceFrameTime(time);
             }
             this.requestAnimationFrame();
@@ -921,6 +989,7 @@ class Emulator extends EventEmitter {
      * SAVE records onto a cassette in it. */
     setTapeDeck(connected) {
         this.tapeDeckConnected = connected;
+        if (!connected) this.stopDeckIdle();
         this.worker.postMessage({ message: 'setTapeDeck', connected });
         this.emit('setTapeDeck', connected);
     }
@@ -1082,6 +1151,7 @@ class Emulator extends EventEmitter {
      * still in the worker isn't lost; resolves once the worker is gone. */
     async exit() {
         this.pause();
+        this.stopDeckIdle();
         if (this.isReady) {
             this.flushCassette();
             this.worker.postMessage({ message: 'flushMicrodrives' });

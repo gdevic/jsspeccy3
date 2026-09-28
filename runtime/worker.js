@@ -1247,33 +1247,56 @@ const editorState = () => {
     return null;
 };
 
-const runEmulatedFrame = () => {
-    if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
-
+/* At the start of a frame: the recorder's sounds for it, the motor's and
+ * winding's as they are now, and a key's still waiting to be made. */
+const startDeckSounds = () => {
     updateDeckSound();
     if (pendingDeckSound) {
         if ((performance.now() - pendingDeckSound.time) < DECK_SOUND_STALE_MS) core.playDeckSound(pendingDeckSound.kind);
         pendingDeckSound = null;
     }
+};
 
-    if (tape && tapeIsPlaying) {
-        const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
-        const tapePulseWriteIndex = core.getTapePulseWriteIndex();
-        // a 128K with paging locked is in 48K mode
-        const in48KMode = (core.getMachineType() === 48) || !!(core.getPagingValue() & 0x20);
-        const [newTapePulseWriteIndex, tstatesGenerated, tapeStopped] = tape.pulseGenerator.emitPulses(
-            tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount, in48KMode
-        );
-        core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
-        // Advance the cassette counter by the tape actually played this frame.
-        tapePositionTstates += tstatesGenerated;
-        framesSincePositionPost++;
-        if (tapeStopped || framesSincePositionPost >= 5) postTapePosition();
-        if (tapeStopped) {
-            setTapePlaying(false);
-            deckSound(4);  // the recorder's auto stop
-        }
+// A playing tape's next frame's worth of pulses, for the core to play through the frame.
+const playTapePulses = () => {
+    if (!tape || !tapeIsPlaying) return;
+    const tapePulseBufferTstateCount = core.getTapePulseBufferTstateCount();
+    const tapePulseWriteIndex = core.getTapePulseWriteIndex();
+    // a 128K with paging locked is in 48K mode
+    const in48KMode = (core.getMachineType() === 48) || !!(core.getPagingValue() & 0x20);
+    const [newTapePulseWriteIndex, tstatesGenerated, tapeStopped] = tape.pulseGenerator.emitPulses(
+        tapePulses, tapePulseWriteIndex, 80000 - tapePulseBufferTstateCount, in48KMode
+    );
+    core.setTapePulseBufferState(newTapePulseWriteIndex, tapePulseBufferTstateCount + tstatesGenerated);
+    // Advance the cassette counter by the tape actually played this frame.
+    tapePositionTstates += tstatesGenerated;
+    framesSincePositionPost++;
+    if (tapeStopped || framesSincePositionPost >= 5) postTapePosition();
+    if (tapeStopped) {
+        setTapePlaying(false);
+        deckSound(4);  // the recorder's auto stop
     }
+};
+
+/* A frame with the machine standing still, for the recorder running while
+ * the machine is off or paused: the tape moves as it would through a
+ * frame, playing, recording or winding, and the audio is what the recorder
+ * alone makes (see runIdleFrame in the core). Returns whether the recorder
+ * still has anything going on: the tape moving, or a sound of its own not
+ * yet died away, which only counts while there is audio to make it in. */
+const runIdleFrame = (withAudio) => {
+    startDeckSounds();
+    playTapePulses();
+    core.runIdleFrame();
+    serviceDeck();
+    return tapeIsPlaying || deckMoving() || (withAudio && core.isDeckSounding());
+};
+
+const runEmulatedFrame = () => {
+    if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
+
+    startDeckSounds();
+    playTapePulses();
 
     let status = core.runFrame();
     while (status) {
@@ -1368,6 +1391,22 @@ onmessage = (e) => {
                 }, [frameBuffer]);
             }
 
+            break;
+        }
+        case 'runIdleFrame': {
+            // The recorder's frame while the machine stands still: audio only.
+            let audioLength = 0;
+            if ('audioBufferLeft' in e.data) audioLength = e.data.audioBufferLeft.byteLength / 4;
+            core.setAudioSamplesPerFrame(audioLength);
+            const busy = runIdleFrame(audioLength > 0);
+            if (audioLength) {
+                const { audioBufferLeft, audioBufferRight } = e.data;
+                new Float32Array(audioBufferLeft).set(new Float32Array(core.memory.buffer, core.AUDIO_BUFFER_LEFT, audioLength));
+                new Float32Array(audioBufferRight).set(new Float32Array(core.memory.buffer, core.AUDIO_BUFFER_RIGHT, audioLength));
+                postMessage({ message: 'idleFrameCompleted', busy, audioBufferLeft, audioBufferRight }, [audioBufferLeft, audioBufferRight]);
+            } else {
+                postMessage({ message: 'idleFrameCompleted', busy });
+            }
             break;
         }
         case 'keyDown':
