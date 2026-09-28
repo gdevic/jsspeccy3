@@ -4,17 +4,67 @@ import { CharPicker } from './char-picker.js';
 import { DialogFrame } from './dialog.js';
 import playIcon from './icons/play.svg';
 
+/* The menu bar above the display and the toolbar below it: light, in the
+ * dialogs' style (dialog.js), with the four stripes of the Spectrum's case
+ * at the right end of each. The classes all start "jsb-"; .jsb-compact on
+ * a bar makes everything in it smaller, for a narrow display. */
+const ACCENT = '#33aa66';
+const STRIPES = 'linear-gradient(115deg, transparent 0 22%, #e0352b 22% 40%, #f2b705 40% 58%, #2fa84f 58% 76%, #12a4c9 76% 94%, transparent 94%)';
+
+const BAR_CSS = `
+.jsb-menubar, .jsb-toolbar { position: relative; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 2px;
+    padding: 3px 6px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #1f2328; user-select: none; }
+.jsb-menubar { top: 0; background: linear-gradient(#fbfcfd, #f0f2f5); border-bottom: 1px solid #d9dde2; }
+.jsb-toolbar { bottom: 0; background: linear-gradient(#f0f2f5, #e7eaee); border-top: 1px solid #d9dde2; }
+.jsb-menubar::after { content: ''; position: absolute; top: 0; bottom: 0; right: -4px; width: 64px;
+    background: ${STRIPES}; opacity: 0.9; pointer-events: none; }
+.jsb-menubar.jsb-compact::after { display: none; }
+.jsb-menubar *, .jsb-toolbar * { box-sizing: border-box; }
+.jsb-menu { position: relative; }
+.jsb-title { font: inherit; padding: 4px 10px; border: none; border-radius: 6px; background: transparent; color: inherit;
+    cursor: pointer; white-space: nowrap; transition: background 0.1s; }
+.jsb-title:hover { background: rgba(0, 0, 0, 0.07); }
+.jsb-title:focus-visible { outline: 2px solid ${ACCENT}; outline-offset: -1px; }
+.jsb-menu.open .jsb-title { background: #1f2328; color: #fff; }
+.jsb-compact .jsb-title { font-size: 11px; padding: 2px 6px; border-radius: 5px; }
+.jsb-list { position: absolute; left: 0; top: calc(100% + 3px); z-index: 10; display: none; min-width: 180px; margin: 0;
+    padding: 5px; list-style: none; background: #fff; border-radius: 9px; font-size: 13px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12), 0 10px 28px rgba(0, 0, 0, 0.22); }
+.jsb-menu.open .jsb-list { display: block; }
+.jsb-item { position: relative; display: block; width: 100%; padding: 6px 12px 6px 27px; border: none; border-radius: 6px;
+    background: transparent; font: inherit; color: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
+.jsb-item:hover, .jsb-item:focus-visible { background: #e6f6ea; color: #14532d; outline: none; }
+.jsb-mark { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: 15px; text-align: center;
+    font-weight: bold; color: ${ACCENT}; }
+.jsb-slider { display: flex; align-items: center; gap: 8px; padding: 7px 12px 6px; }
+.jsb-slider input { flex: 1; min-width: 0; margin: 0; accent-color: ${ACCENT}; }
+.jsb-slider span { width: 40px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; color: #5f6670; }
+.jsb-right { display: flex; flex-direction: row-reverse; align-items: center; gap: 2px; margin-left: auto; }
+.jsb-btn { flex: none; display: inline-flex; align-items: center; justify-content: center; height: 28px; min-width: 30px;
+    padding: 0; border: none; border-radius: 7px; background: transparent; color: inherit; cursor: pointer;
+    transition: background 0.1s; }
+.jsb-btn:hover { background: rgba(0, 0, 0, 0.08); }
+.jsb-btn:active { background: rgba(0, 0, 0, 0.14); }
+.jsb-btn:focus-visible { outline: 2px solid ${ACCENT}; outline-offset: -1px; }
+.jsb-btn:disabled { opacity: 0.35; cursor: default; background: transparent; }
+.jsb-btn svg { display: block; height: 20px; width: auto; }
+.jsb-btn.text { padding: 0 9px; background: #fff; border: 1px solid #c3c8cf; font-family: Consolas, Monaco, monospace;
+    font-size: 12px; font-variant-numeric: tabular-nums; letter-spacing: 0.3px; }
+.jsb-btn.text:hover { background: #f6f7f9; border-color: #aeb4bc; }
+.jsb-compact .jsb-btn { height: 22px; min-width: 24px; border-radius: 5px; }
+.jsb-compact .jsb-btn svg { height: 16px; }
+.jsb-compact .jsb-btn.text { padding: 0 5px; font-size: 10px; }
+`;
 
 export class MenuBar {
     // `teardown` is the signal that takes the menus' document listeners away
     constructor(container, teardown) {
         this.teardown = teardown;
+        const style = document.createElement('style');
+        style.textContent = BAR_CSS;
+        container.appendChild(style);
         this.elem = document.createElement('div');
-        this.elem.style.display = 'flow-root';
-        this.elem.style.backgroundColor = '#eee';
-        this.elem.style.fontFamily = 'Arial, Helvetica, sans-serif';
-        this.elem.style.top = '0';
-        this.elem.style.width = '100%';
+        this.elem.className = 'jsb-menubar';
         container.appendChild(this.elem);
         this.currentMouseenterEvent = null;
         this.currentMouseoutEvent = null;
@@ -24,7 +74,6 @@ export class MenuBar {
 
     addMenu(title) {
         const menu = new Menu(this.elem, title, this.teardown);
-        menu.setCompact(this.compact);
         this.menus.push(menu);
         return menu;
     }
@@ -32,14 +81,14 @@ export class MenuBar {
     /* Smaller menu titles, so that they fit one row on a narrow display. */
     setCompact(compact) {
         this.compact = compact;
-        for (const menu of this.menus) menu.setCompact(compact);
+        this.elem.classList.toggle('jsb-compact', compact);
     }
 
     enterFullscreen() {
         this.elem.style.position = 'absolute';
     }
     exitFullscreen() {
-        this.elem.style.position = 'static';
+        this.elem.style.position = '';
     }
     show() {
         this.elem.style.visibility = 'visible';
@@ -70,28 +119,19 @@ export class MenuBar {
 export class Menu {
     constructor(container, title, teardown) {
         this.teardown = teardown;
-        const elem = document.createElement('div');
-        elem.style.float = 'left';
-        elem.style.position = 'relative';
-        container.appendChild(elem);
+        this.elem = document.createElement('div');
+        this.elem.className = 'jsb-menu';
+        container.appendChild(this.elem);
 
         const button = document.createElement('button');
-        button.style.margin = '2px';
+        button.className = 'jsb-title';
         button.innerText = title;
-        elem.appendChild(button);
+        this.elem.appendChild(button);
         this.button = button;
 
         this.list = document.createElement('ul');
-        this.list.style.position = 'absolute';
-        this.list.style.width = '150px';
-        this.list.style.backgroundColor = '#eee';
-        this.list.style.listStyleType = 'none';
-        this.list.style.margin = '0';
-        this.list.style.padding = '0';
-        this.list.style.border = '1px solid #888';
-        this.list.style.display = 'none';
-        this.list.style.zIndex = '10';
-        elem.appendChild(this.list);
+        this.list.className = 'jsb-list';
+        this.elem.appendChild(this.list);
 
         button.addEventListener('click', () => {
             if (this.isOpen()) {
@@ -106,58 +146,37 @@ export class Menu {
     }
 
     isOpen() {
-        return this.list.style.display == 'block';
-    }
-
-    setCompact(compact) {
-        Object.assign(this.button.style, compact
-            ? { margin: '1px', padding: '1px 4px', fontSize: '11px' }
-            : { margin: '2px', padding: '', fontSize: '' });
+        return this.elem.classList.contains('open');
     }
 
     open() {
-        this.list.style.display = 'block';
+        this.elem.classList.add('open');
     }
 
     close() {
-        this.list.style.display = 'none';
+        this.elem.classList.remove('open');
     }
 
+    /* An item: its title, with a mark in the gutter before it when it is
+     * the chosen one of its kind (a bullet) or switched on (a tick). */
     addItem(title, onClick) {
         const li = document.createElement('li');
         this.list.appendChild(li);
         const button = document.createElement('button');
-        button.innerText = title;
-        button.style.width = '100%';
-        button.style.textAlign = 'left';
-        button.style.borderWidth = '0';
-        button.style.paddingTop = '4px';
-        button.style.paddingBottom = '4px';
-
-        // eww.
-        button.addEventListener('mouseenter', () => {
-            button.style.backgroundColor = '#ddd';
-        });
-        button.addEventListener('mouseout', () => {
-            button.style.backgroundColor = 'inherit';
-        });
+        button.className = 'jsb-item';
+        const mark = document.createElement('span');
+        mark.className = 'jsb-mark';
+        button.append(mark, title);
         if (onClick) {
             button.addEventListener('click', onClick);
         }
         li.appendChild(button);
+        const setMark = (text) => { mark.textContent = text; };
         return {
-            setBullet: () => {
-                button.innerText = String.fromCharCode(0x2022) + ' ' + title;
-            },
-            unsetBullet: () => {
-                button.innerText = title;
-            },
-            setCheckbox: () => {
-                button.innerText = String.fromCharCode(0x2713) + ' ' + title;
-            },
-            unsetCheckbox: () => {
-                button.innerText = title;
-            },
+            setBullet: () => setMark('•'),
+            unsetBullet: () => setMark(''),
+            setCheckbox: () => setMark('✓'),
+            unsetCheckbox: () => setMark(''),
         }
     }
 
@@ -168,10 +187,9 @@ export class Menu {
      * changes moves the page under it. */
     addSlider(opts) {
         const li = document.createElement('li');
-        Object.assign(li.style, { display: 'flex', alignItems: 'center', gap: '4px', padding: '4px 6px' });
+        li.className = 'jsb-slider';
         const input = document.createElement('input');
         Object.assign(input, { type: 'range', min: opts.min, max: opts.max, step: 'any' });
-        Object.assign(input.style, { flex: '1', minWidth: '0', margin: '0' });
         // the marks, drawn as ticks under the track
         const ticks = document.createElement('datalist');
         ticks.id = 'jsspeccy-slider-marks-' + (Menu.sliderCount = (Menu.sliderCount || 0) + 1);
@@ -182,7 +200,6 @@ export class Menu {
         }
         input.setAttribute('list', ticks.id);
         const label = document.createElement('span');
-        Object.assign(label.style, { width: '38px', textAlign: 'right', fontSize: '12px' });
         li.append(input, ticks, label);
         this.list.appendChild(li);
 
@@ -234,63 +251,53 @@ export class Menu {
 export class Toolbar {
     constructor(container) {
         this.elem = document.createElement('div');
-        this.elem.style.backgroundColor = '#ccc';
-        this.elem.style.bottom = '0';
-        this.elem.style.width = '100%';
+        this.elem.className = 'jsb-toolbar';
         container.appendChild(this.elem);
+        // Buttons aligned right stand from the right end, the first added outermost.
+        this.right = document.createElement('div');
+        this.right.className = 'jsb-right';
+        this.elem.appendChild(this.right);
         this.currentMouseenterEvent = null;
         this.currentMouseoutEvent = null;
-        this.buttons = [];
-        this.textButtons = [];
         this.compact = false;
+    }
+    place(elem, opts) {
+        if (opts.align == 'right') this.right.appendChild(elem); else this.elem.insertBefore(elem, this.right);
     }
     addButton(icon, opts, onClick) {
         opts = opts || {};
         const button = new ToolbarButton(icon, opts, onClick);
-        if (opts.align == 'right') button.elem.style.float = 'right';
-        button.setCompact(this.compact);
-        this.buttons.push(button);
-        this.elem.appendChild(button.elem);
+        this.place(button.elem, opts);
         return button;
     }
     /* Smaller buttons, so that they fit one row on a narrow display. */
     setCompact(compact) {
         this.compact = compact;
-        for (const button of this.buttons) button.setCompact(compact);
-        for (const button of this.textButtons) Toolbar.styleTextButton(button, compact);
-    }
-    static styleTextButton(button, compact) {
-        Object.assign(button.style, compact
-            ? { margin: '1px', padding: '0 3px', fontSize: '10px', height: '22px' }
-            : { margin: '2px', padding: '', fontSize: '12px', height: '26px' });
+        this.elem.classList.toggle('jsb-compact', compact);
     }
     addTextButton(text, opts, onClick) {
         /* A toolbar button that shows text (used for the cassette counter) rather
          * than an SVG icon. Returns a handle with setText/setLabel/enable/disable. */
         opts = opts || {};
         const button = document.createElement('button');
-        button.style.fontFamily = 'monospace';
-        button.style.verticalAlign = 'middle';
-        Toolbar.styleTextButton(button, this.compact);
-        this.textButtons.push(button);
+        button.className = 'jsb-btn text';
         button.innerText = text;
         if (opts.label) button.title = opts.label;
-        if (opts.align == 'right') button.style.float = 'right';
         if (onClick) button.addEventListener('click', onClick);
-        this.elem.appendChild(button);
+        this.place(button, opts);
         return {
             elem: button,
             setText: (t) => { button.innerText = t; },
             setLabel: (l) => { button.title = l; },
-            disable: () => { button.disabled = true; button.style.opacity = '0.5'; },
-            enable: () => { button.disabled = false; button.style.opacity = '1'; },
+            disable: () => { button.disabled = true; },
+            enable: () => { button.disabled = false; },
         };
     }
     enterFullscreen() {
         this.elem.style.position = 'absolute';
     }
     exitFullscreen() {
-        this.elem.style.position = 'static';
+        this.elem.style.position = '';
     }
     show() {
         this.elem.style.visibility = 'visible';
@@ -321,32 +328,22 @@ export class Toolbar {
 class ToolbarButton {
     constructor(icon, opts, onClick) {
         this.elem = document.createElement('button');
-        this.compact = false;
-        this.setCompact(false);
+        this.elem.className = 'jsb-btn';
         this.setIcon(icon);
         if (opts.label) this.setLabel(opts.label);
         this.elem.addEventListener('click', onClick);
     }
     setIcon(icon) {
         this.elem.innerHTML = icon;
-        this.elem.firstChild.style.height = this.compact ? '16px' : '20px';
-        this.elem.firstChild.style.verticalAlign = 'middle';
-    }
-    setCompact(compact) {
-        this.compact = compact;
-        Object.assign(this.elem.style, compact ? { margin: '1px', padding: '1px' } : { margin: '2px', padding: '' });
-        if (this.elem.firstChild) this.elem.firstChild.style.height = compact ? '16px' : '20px';
     }
     setLabel(label) {
         this.elem.title = label;
     }
     disable() {
         this.elem.disabled = true;
-        this.elem.firstChild.style.opacity = '0.5';
     }
     enable() {
         this.elem.disabled = false;
-        this.elem.firstChild.style.opacity = '1';
     }
 }
 
