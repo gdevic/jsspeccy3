@@ -30,6 +30,7 @@ A ZX Spectrum emulator for the browser
 * A switched-off TV screen until the machine is started, which then powers on like a picture tube
 * Click a character on the screen to see which ROM character it is and the keys that type it, and double-click it to type it
 * An on-screen keyboard where every legend can be clicked, not only the keys: hovering one shows what a click enters in the ROM's editor as it stands, and clicking it presses the shifts and modes that enter it, in 48 BASIC, 128 BASIC and TR-DOS alike; on a touchscreen each finger presses a whole key, several at once as on the real keyboard, and CAPS SHIFT and SYMBOL SHIFT latch or lock with a tap or two
+* Help → Instructions is a quick guide on colourful cards, one for each part of the emulator, with the toolbar's icons; Help → About shows the version, the links to the source and the online emulator, and where this fork comes from
 * The File menu's dialogs open in a light window over the paused machine, dragged by its title bar, resized from its corner and maximized with a double-click; each opens again where it was left, at the size it had, remembered in this browser only (not in saved sessions), and Escape closes it; the tape recorder's, Microdrives' and printer's panels, and the card asking before a session is restored, can be dragged by their title bar too, and the recorder's and Microdrives' resized from their corner; each opens again where it was left, and a double-click on its title bar puts it back
 
 ## Implementation notes

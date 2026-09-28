@@ -11,6 +11,7 @@ import { JoystickHandler } from './joystick.js';
 import { AudioHandler } from './audio.js';
 import { openPokesDialog } from './pokes.js';
 import { openPlayZXDialog } from './playzx.js';
+import { openInstructions, openAbout } from './help.js';
 import { openDialog, h, button } from './dialog.js';
 import { isPlayZXAvailable } from './playzx-session.js';
 import { validateMDRFile } from './mdr.js';
@@ -1487,6 +1488,15 @@ window.JSSpeccy = (container, opts) => {
 
         ui.on('setZoom', setZoomCheckbox);
         setZoomCheckbox(ui.zoom);
+
+        // Help menu: the last one on the bar.
+        const helpMenu = ui.menuBar.addMenu('Help');
+        helpMenu.addItem('Instructions', () => {
+            openInstructions(ui, emu, { sandbox: Boolean(opts.sandbox), playZX: isPlayZXAvailable() });
+        });
+        helpMenu.addItem('About', () => {
+            openAbout(ui, emu);
+        });
 
         emu.on('setMachine', (type) => {
             machine48Item.unsetBullet();
