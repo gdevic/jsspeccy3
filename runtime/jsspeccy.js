@@ -141,6 +141,8 @@ class Emulator extends EventEmitter {
         this.startupOpened = Promise.resolve();
         this.rom48Variant = 'standard';  // which 48K ROM is in page 10: 'standard' or 'gw03'
         this.romFont = null;  // the 48K ROM's character set, codes 32 to 127 (see char-picker.js)
+        // the ROM's line editor waiting for a key, {kind, cursor}, or null (see editorState in the worker)
+        this.editorState = null;
         this.nextSnapshotID = 0;
         this.snapshotResolutions = {};
 
@@ -222,6 +224,7 @@ class Emulator extends EventEmitter {
                     }
 
                     this.displayHandler.frameCompleted(e.data.frameBuffer);
+                    this.setEditorState(e.data.editor);
                     if (this.isRunning) {
                         const time = performance.now();
                         if (time > this.nextFrameTime) {
@@ -587,7 +590,17 @@ class Emulator extends EventEmitter {
     powerOff() {
         this.pause();
         this.isInitiallyPaused = true;
+        this.setEditorState(null);
         this.emit('powerOff');
+    }
+
+    // Emits editorState when the ROM's line editor comes, goes, or changes its cursor.
+    setEditorState(state) {
+        state = state || null;
+        const was = this.editorState;
+        if ((was && state) ? ((was.kind === state.kind) && (was.cursor === state.cursor)) : (was === state)) return;
+        this.editorState = state;
+        this.emit('editorState', this.editorState);
     }
 
     /* Switches the machine on without starting it: it stays paused, showing

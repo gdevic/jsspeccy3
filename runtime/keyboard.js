@@ -142,6 +142,16 @@ const KEY_CHARS = {
     '*': sym(SPECCY.B),
     '@': sym(SPECCY.TWO),
     '#': sym(SPECCY.THREE),
+    /* Typed on the PC with Shift and a digit, which KEY_CODES finds by its
+     * key code first; here for speccyKeysForChar. */
+    '!': sym(SPECCY.ONE),
+    '$': sym(SPECCY.FOUR),
+    '%': sym(SPECCY.FIVE),
+    '&': sym(SPECCY.SIX),
+    '(': sym(SPECCY.EIGHT),
+    ')': sym(SPECCY.NINE),
+    '£': sym(SPECCY.X),
+    '↑': sym(SPECCY.H),
 };
 KEY_CHARS[String.fromCharCode(0x2264)] = sym(SPECCY.Q); // LESS_THAN_EQUAL symbol (≤)
 KEY_CHARS[String.fromCharCode(0x2265)] = sym(SPECCY.E); // GREATER_THAN_EQUAL symbol (≥)
@@ -157,6 +167,13 @@ const preventClose = (evt) => {
     evt.preventDefault();
     evt.returnValue = '';
 };
+
+/* How long a key typed for the user is held, and then let go before the
+ * next. The ROM scans the keyboard once a frame and takes a key as let go
+ * only after five scans without it, so these see every key in, the same
+ * key twice running included. */
+export const KEY_HOLD_MS = 80;
+export const KEY_GAP_MS = 120;
 
 const DIGIT_NAMES = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
 

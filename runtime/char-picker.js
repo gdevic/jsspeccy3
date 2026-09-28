@@ -30,10 +30,6 @@ const CLICK_CLOSE_MS = 250;
 // The ROM's characters that are not the ASCII ones at their codes.
 const SPECCY_CHARS = { 0x5E: '↑', 0x60: '£', 0x7F: '©' };
 
-/* The keys that Symbol Shift types the characters speccyKeysForChar does
- * not, which have no key of their own on the PC. */
-const SYMBOL_KEYS = { '!': 'ONE', '$': 'FOUR', '%': 'FIVE', '&': 'SIX', '(': 'EIGHT', ')': 'NINE', '↑': 'H', '£': 'X' };
-
 // A key's name on the keyboard, where it differs from its name in SPECCY.
 const KEY_LABELS = {
     ONE: '1', TWO: '2', THREE: '3', FOUR: '4', FIVE: '5',
@@ -163,8 +159,7 @@ export class CharPicker {
         const found = font ? recognise(font, rows) : null;
         if (found && (found.code === 32)) return;
         const ch = found ? (SPECCY_CHARS[found.code] || String.fromCharCode(found.code)) : null;
-        let keys = ch ? speccyKeysForChar(ch) : null;
-        if (!keys && SYMBOL_KEYS[ch]) keys = [SPECCY.SYMBOL_SHIFT, SPECCY[SYMBOL_KEYS[ch]]];
+        const keys = ch ? speccyKeysForChar(ch) : null;
         this.shown = { x: cell.x, y: cell.y, keys };
 
         const home = this.ui.appContainer;

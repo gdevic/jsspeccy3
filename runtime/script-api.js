@@ -4,16 +4,9 @@
  * and emu.tape, see the README), so that what a user does with them can be
  * done, and waited for, from code: to drive tests, or a demo.
  */
-import { speccyKeyByName, speccyKeysForChar } from './keyboard.js';
+import { speccyKeyByName, speccyKeysForChar, KEY_HOLD_MS, KEY_GAP_MS } from './keyboard.js';
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-/* How long a key is held, and then let go before the next, by default. The
- * ROM scans the keyboard once a frame and takes a key as let go only after
- * five scans without it, so these see every key in, the same key twice
- * running included. */
-const HOLD_MS = 80;
-const GAP_MS = 120;
 
 // How often, and by default for how long, tape.until looks at the recorder.
 const UNTIL_POLL_MS = 20;
@@ -59,9 +52,9 @@ export function createKeyboardApi(emu) {
     const up = (keys) => keys.slice().reverse().forEach(key => emu.keyUp(key.row, key.mask));
     const tap = async (keys, opts) => {
         down(keys);
-        await sleep(opts.holdMs ?? HOLD_MS);
+        await sleep(opts.holdMs ?? KEY_HOLD_MS);
         up(keys);
-        await sleep(opts.gapMs ?? GAP_MS);
+        await sleep(opts.gapMs ?? KEY_GAP_MS);
     };
     return {
         keyDown(names) { down(keysNamed(names)); },

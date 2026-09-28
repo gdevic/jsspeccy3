@@ -1217,6 +1217,32 @@ const trapTapeLoad = () => {
     core.setPC(0x05e2);  /* address at which to exit the tape trap */
 }
 
+/* The ROM's line editor waiting for a key, if one is, for the on-screen
+ * keyboard (see runtime/keyboard-legends.js): {kind, cursor}, kind 48 or 128,
+ * cursor 'K', 'L', 'C', 'E' or 'G'; null while anything else runs. IY holds
+ * 0x5C3A whenever the ROM runs. The 48K editor (48 BASIC, INPUT in either
+ * BASIC, TR-DOS) keeps its error return on the stack, ERR_SP pointing at
+ * ED-ERROR (0x107F), where a running program's is MAIN-4. The 128 BASIC
+ * editor runs in ROM 0 and keeps its flags in bank 7 at 0xEC0D: bit 7 waiting
+ * for a key, bit 1 a menu showing. */
+const editorState = () => {
+    if (registerPairs[9] !== 0x5c3a) return null;
+    const word = (addr) => core.peek(addr) | (core.peek((addr + 1) & 0xffff) << 8);
+    const mode = core.peek(0x5c41);  // MODE: 1 extended, 2 graphics
+    const capsLock = !!(core.peek(0x5c6a) & 0x08);  // FLAGS2 bit 3
+    const cursor = (mode === 1) ? 'E' : ((mode === 2) ? 'G' : (capsLock ? 'C' : 'L'));
+    if (word(word(0x5c3d)) === 0x107f) {
+        // FLAGS bit 3 clear: a keyword comes next
+        const keyword = (mode === 0) && !(core.peek(0x5c3b) & 0x08);
+        return { kind: 48, cursor: keyword ? 'K' : cursor };
+    }
+    if ((core.getMachineType() !== 48) && !(core.getPagingValue() & 0x10) && (core.getPC() < 0x4000)) {
+        const flags = memoryData[core.MACHINE_MEMORY + (7 * 0x4000) + 0x2c0d];
+        if ((flags & 0x80) && !(flags & 0x02)) return { kind: 128, cursor };
+    }
+    return null;
+};
+
 const runEmulatedFrame = () => {
     if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
 
@@ -1315,6 +1341,7 @@ onmessage = (e) => {
             }
 
             frameData.set(workerFrameData);
+            const editor = editorState();
             if (audioLength) {
                 const leftSource = new Float32Array(core.memory.buffer, core.AUDIO_BUFFER_LEFT, audioLength);
                 const rightSource = new Float32Array(core.memory.buffer, core.AUDIO_BUFFER_RIGHT, audioLength);
@@ -1327,11 +1354,13 @@ onmessage = (e) => {
                     frameBuffer,
                     audioBufferLeft,
                     audioBufferRight,
+                    editor,
                 }, [frameBuffer, audioBufferLeft, audioBufferRight]);
             } else {
                 postMessage({
                     message: 'frameCompleted',
                     frameBuffer,
+                    editor,
                 }, [frameBuffer]);
             }
 
