@@ -352,7 +352,7 @@ export class CharPicker {
         const keys = this.shown.keys;
         if (!keys || this.typing || !this.canType()) return;
         this.typing = true;
-        // The keys are the next typed, which lets a shift latched on the on-screen keyboard go.
+        // The keys type the character alone, so a shift latched or locked on the on-screen keyboard goes first.
         this.ui.emit('typeCharacter');
         const { keycaps, panel } = this.parts;
         const press = (down) => keycaps.forEach(cap => Object.assign(cap.style, down

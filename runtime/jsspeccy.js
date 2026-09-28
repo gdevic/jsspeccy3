@@ -1124,7 +1124,7 @@ function saveDisplay(display) {
     } catch (e) { /* private browsing / quota / disabled storage: just don't persist it */ }
 }
 
-/* The File menu's Auto-load tapes and Instant tape loading, once changed,
+/* The Options menu's Auto-load tapes and Instant tape loading, once changed,
  * are remembered in localStorage and restored on the next visit, as
  * {autoLoadTapes, tapeTraps}. */
 const TAPE_SETTINGS_KEY = 'jsspeccy-tape-settings';
@@ -1154,6 +1154,24 @@ function rememberTapeSetting(name, initial) {
     };
 }
 
+/* The Options menu's Simple keyboard, once changed, is remembered in
+ * localStorage and restored on the next visit, as {simple}. */
+const KEYBOARD_SETTINGS_KEY = 'jsspeccy-keyboard';
+
+function loadKeyboardSettings() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(KEYBOARD_SETTINGS_KEY));
+        if (saved && typeof saved === 'object') return saved;
+    } catch (e) { /* unreadable: the keyboard's own default */ }
+    return {};
+}
+
+function saveKeyboardSetting(name, value) {
+    try {
+        localStorage.setItem(KEYBOARD_SETTINGS_KEY, JSON.stringify({ ...loadKeyboardSettings(), [name]: value }));
+    } catch (e) { /* private browsing / quota / disabled storage: just don't persist it */ }
+}
+
 window.JSSpeccy = (container, opts) => {
     // let benchmarkRunCount = 0;
     // let benchmarkRenderCount = 0;
@@ -1166,7 +1184,7 @@ window.JSSpeccy = (container, opts) => {
     const keyboardEnabled = ('keyboardEnabled' in opts) ? opts.keyboardEnabled : true;
     const uiEnabled = ('uiEnabled' in opts) ? opts.uiEnabled : true;
 
-    // Only a setting the File menu shows can have been changed, so only that
+    // Only a setting the Options menu shows can have been changed, so only that
     // one takes the place of the page's own.
     const savedTape = uiEnabled ? loadTapeSettings() : {};
     const savedAutoLoad = (!opts.sandbox && (typeof savedTape.autoLoadTapes === 'boolean')) ? savedTape.autoLoadTapes : null;
@@ -1221,7 +1239,8 @@ window.JSSpeccy = (container, opts) => {
     }
 
     if (uiEnabled) {
-        const fileMenu = ui.menuBar.addMenu('File');
+        // A sandbox opens nothing, so it has no File menu.
+        const fileMenu = opts.sandbox ? null : ui.menuBar.addMenu('File');
         if (!opts.sandbox) {
             fileMenu.addItem('Open...', () => {
                 openFileDialog();
@@ -1234,7 +1253,12 @@ window.JSSpeccy = (container, opts) => {
                 fileMenu.addItem('PlayZX open…', () => openPlayZXDialog(ui, emu));
             }
             fileMenu.addItem('Pokes…', () => openPokesDialog(ui, emu));
-            const autoLoadTapesMenuItem = fileMenu.addItem('Auto-load tapes', () => {
+        }
+
+        // Options menu: settings kept in this browser; the keyboard's is added with the keyboard, further down.
+        const optionsMenu = ui.menuBar.addMenu('Options');
+        if (!opts.sandbox) {
+            const autoLoadTapesMenuItem = optionsMenu.addItem('Auto-load tapes', () => {
                 emu.setAutoLoadTapes(!emu.autoLoadTapes);
                 emu.focus();
             });
@@ -1250,7 +1274,7 @@ window.JSSpeccy = (container, opts) => {
             updateAutoLoadTapesCheckbox();
         }
 
-        const tapeTrapsMenuItem = fileMenu.addItem('Instant tape loading', () => {
+        const tapeTrapsMenuItem = optionsMenu.addItem('Instant tape loading', () => {
             emu.setTapeTraps(!emu.tapeTrapsEnabled);
             emu.focus();
         });
@@ -1618,8 +1642,25 @@ window.JSSpeccy = (container, opts) => {
          * toolbar next to the fullscreen button; hidden in fullscreen. */
         const keyboard = createKeyboardOverlay(emu, new URL('zx_keyboard.png', scriptUrl).href);
         ui.appContainer.appendChild(keyboard.element);
-        // A character typed from the screen (see char-picker.js) is a key typed after a latched shift.
+        // A character typed from the screen (see char-picker.js) is typed without a latched or locked shift.
         ui.on('typeCharacter', () => keyboard.releaseShifts());
+        // Options -> Simple keyboard: a mouse presses whole keys, as a finger always does.
+        let simpleKeyboard = loadKeyboardSettings().simple === true;
+        const simpleKeyboardItem = optionsMenu.addItem('Simple keyboard', () => {
+            simpleKeyboard = !simpleKeyboard;
+            saveKeyboardSetting('simple', simpleKeyboard);
+            showSimpleKeyboard();
+            emu.focus();
+        });
+        const showSimpleKeyboard = () => {
+            keyboard.setSimple(simpleKeyboard);
+            if (simpleKeyboard) {
+                simpleKeyboardItem.setCheckbox();
+            } else {
+                simpleKeyboardItem.unsetCheckbox();
+            }
+        };
+        showSimpleKeyboard();
         let keyboardWanted = true;   // shown by default
         const keyboardButton = ui.toolbar.addButton(
             keyboardIcon,

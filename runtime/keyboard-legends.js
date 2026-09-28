@@ -151,6 +151,14 @@ export function chordLabel(keys) {
 
 const inBox = (x, y, box) => (x >= box[0]) && (x < (box[0] + box[2])) && (y >= box[1]) && (y < (box[1] + box[3]));
 
+/* The key whose cap is at (x, y), in percent of the image, as {name, entry,
+ * box}: name the key's in SPECCY, entry its legends (undefined for the keys
+ * with none) and box its cap's. Null off the caps. */
+export function capAt(x, y) {
+    const layout = KEY_LAYOUT.find(layout => inBox(x, y, layout.box));
+    return layout ? { name: layout.name, entry: LEGENDS_BY_KEY.get(layout.name), box: layout.box } : null;
+}
+
 /* The part of the keyboard at (x, y), in percent of the image, as {name,
  * entry, part}: name the key's in SPECCY, entry its legends (undefined for
  * the keys with none), and part the legend's field in the entry. A cap is
@@ -158,16 +166,16 @@ const inBox = (x, y, box) => (x >= box[0]) && (x < (box[0] + box[2])) && (y >= b
  * digit or letter is 'main' and its legends their own parts. Null where
  * nothing is. */
 export function partAt(x, y, editor) {
-    for (const layout of KEY_LAYOUT) {
-        if (!inBox(x, y, layout.box)) continue;
-        const entry = LEGENDS_BY_KEY.get(layout.name);
-        if (!editor || !entry) return { name: layout.name, entry, part: 'cap' };
-        const rx = (x - layout.box[0]) / layout.box[2];
-        const ry = (y - layout.box[1]) / layout.box[3];
+    const cap = capAt(x, y);
+    if (cap) {
+        const { name, entry, box } = cap;
+        if (!editor || !entry) return { name, entry, part: 'cap' };
+        const rx = (x - box[0]) / box[2];
+        const ry = (y - box[1]) / box[3];
         let part;
         if (entry.caps) part = (rx < 0.45) ? 'main' : ((entry.graphic && (ry < 0.5)) ? 'graphic' : 'sym');
         else part = (ry >= 0.62) ? 'keyword' : ((rx < 0.4) ? 'main' : 'sym');
-        return { name: layout.name, entry, part };
+        return { name, entry, part };
     }
     for (let r = 0; r < ROWS.length; r++) {
         const row = ROWS[r];
@@ -210,8 +218,8 @@ export function partBox(name, entry, part) {
 
 /* What a key alone gives, as the part of its entry that shows it, in the
  * editor `editor` with the on-screen keyboard's shifts `latched` ({caps,
- * sym}) held: 'cap' while no editor waits, null for nothing the keyboard
- * shows. */
+ * sym}) down, whether latched, locked or held by a finger: 'cap' while no
+ * editor waits, null for nothing the keyboard shows. */
 export function plainPart(entry, editor, latched) {
     if (!editor || !entry) return 'cap';
     const cursor = editor.cursor;
