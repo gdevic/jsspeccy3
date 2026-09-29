@@ -7,7 +7,7 @@
  * and a checksum. A .mdr file is that many blocks back to back, optionally
  * followed by one trailing write-protect byte. The hardware preamble/sync
  * pattern that precedes each half on the tape is not persisted - see
- * generator/core.ts.in and tech_notes.md for how the emulator core
+ * generator/core.ts.in and docs/tech_notes.md for how the emulator core
  * synthesises it.
  *
  * Byte layout of a 543-byte block (offsets from the block's start):

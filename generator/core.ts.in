@@ -728,7 +728,7 @@ export function poke(addr:u16, val:u8):void {
 Ported from FUSE's peripherals/if1.c (port_mdr_in/out, port_ctr_in/out,
 increment_head, microdrives_restart), which this aims to match bit-for-bit
 so the real IF1 ROM's low-level primitives (SEL-DRIVE, RD-BYTES, WR-BYTES
-etc.) work unmodified. See tech_notes.md for the block layout and the
+etc.) work unmodified. See docs/tech_notes.md for the block layout and the
 gap/sync/preamble model this implements. */
 
 function mdrGetByte(m:i32, pos:u32):u8 {
