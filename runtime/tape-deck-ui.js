@@ -64,6 +64,14 @@ function sameBytes(a, b) {
     return true;
 }
 
+// What the box says after importing tape files: those added, and those it had already.
+function importNote(added, already) {
+    const tapes = (n) => `${n} tape${(n === 1) ? '' : 's'}`;
+    if (!already) return `Imported ${tapes(added)}.`;
+    if (!added) return (already === 1) ? 'That tape is already in the box.' : `All ${tapes(already)} are already in the box.`;
+    return `Imported ${tapes(added)}, ${already} ${(already === 1) ? 'was' : 'were'} already in the box.`;
+}
+
 // Triggers a browser download of `bytes` as `filename`, with a brief pulse on `flourishEl`.
 function downloadBytes(bytes, filename, flourishEl) {
     const blob = (bytes instanceof Blob) ? bytes : new Blob([bytes], { type: 'application/octet-stream' });
@@ -612,7 +620,7 @@ function createController(emu) {
     }
 
     /* Adds a cassette to the box and puts it in the recorder: a new blank
-     * one, or a tape file from the PC. */
+     * one, or a tape file from the PC the box doesn't have yet. */
     async function insertNew(data, label, colour) {
         if (inserting.size) return null;
         const id = await store.create({ label, colour, data, positionMs: 0 });
@@ -620,6 +628,35 @@ function createController(emu) {
         const record = (id && await store.get(id)) || { id: null, label, colour, data, positionMs: 0 };
         if (!state.connected) await setConnected(true, { noInsert: true });
         await insertRecord(record);
+        return id;
+    }
+
+    /* The id of the cassette in the box with the same recording as `data`
+     * (as cassetteFromFile gives it), or null. Both are written out afresh
+     * before they are compared, so a cassette saved to the PC and opened
+     * again is found whatever it is called. Blank cassettes are all alike,
+     * so a blank one is never taken for another. */
+    async function findInBox(data) {
+        const normal = (bytes) => cassette.writeCassetteTZX({ blocks: cassette.parseCassetteFile(bytes).blocks });
+        if (sameBytes(data, blankCassette())) return null;
+        const wanted = normal(data);
+        for (const meta of await store.list()) {
+            const record = await store.get(meta.id);
+            try {
+                if (record && sameBytes(normal(record.data), wanted)) return meta.id;
+            } catch (e) { /* a cassette that can't be read is like no other */ }
+        }
+        return null;
+    }
+
+    /* Puts a tape file from the PC in the recorder: the cassette in the box
+     * with the same recording, rewound, if there is one, else a new one. */
+    async function insertImported(data, label) {
+        if (inserting.size) return null;
+        const id = await findInBox(data);
+        if (!id) return insertNew(data, label, undefined);
+        await store.update(id, { positionMs: 0 });
+        await insertFromBox(id);
         return id;
     }
 
@@ -762,7 +799,7 @@ function createController(emu) {
         state,
         onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
         busy: () => inserting.size > 0,
-        notify, persist, keepMeta, insertRecord, setConnected, insertFromBox, insertNew, eject, inRecorder,
+        notify, persist, keepMeta, insertRecord, setConnected, insertFromBox, insertNew, insertImported, findInBox, eject, inRecorder,
         rename, setColour, setWriteProtect, remove, init, currentData, warnUnstored,
     };
 }
@@ -956,7 +993,7 @@ function buildPanel(emu, controller, openBox) {
         if (!file) return;
         try {
             const { data, label } = cassetteFromFile(await readFileAsArrayBuffer(file), file.name);
-            await controller.insertNew(data, label, undefined);
+            await controller.insertImported(data, label);
         } catch (err) {
             alert((err && err.message) || err);
         }
@@ -1327,10 +1364,11 @@ function openCassetteBox(ui, emu, controller) {
         const files = Array.from(fileInput.files);
         fileInput.value = '';
         const failed = [];
-        let added = 0;
+        let added = 0, already = 0;
         for (const file of files) {
             try {
                 const { data, label } = cassetteFromFile(await readFileAsArrayBuffer(file), file.name);
+                if (await controller.findInBox(data)) { already++; continue; }
                 if (!(await store.create({ label, data, positionMs: 0 }))) { notStored(); break; }
                 added++;
             } catch (err) {
@@ -1338,7 +1376,7 @@ function openCassetteBox(ui, emu, controller) {
             }
         }
         if (failed.length) dialog.setStatus(failed.join('; '), 'error');
-        else if (added) dialog.setStatus(`Imported ${added} tape${added === 1 ? '' : 's'}.`, 'ok');
+        else if (added || already) dialog.setStatus(importNote(added, already), 'ok');
         renderGrid();
     });
 
@@ -1375,10 +1413,11 @@ function openCassetteBox(ui, emu, controller) {
         }
         const entries = [];
         zip.forEach((path, f) => { if (!f.dir && /\.(tap|tzx)$/i.test(path)) entries.push([path, f]); });
-        let added = 0;
+        let added = 0, already = 0;
         for (const [path, f] of entries) {
             try {
                 const imported = cassetteFromFile(await f.async('arraybuffer'), path);
+                if (await controller.findInBox(imported.data)) { already++; continue; }
                 const saved = manifest && Array.isArray(manifest.cassettes) && manifest.cassettes.find(c => c.file === path);
                 if (await store.create({
                     label: (saved && typeof saved.label === 'string') ? saved.label : imported.label,
@@ -1389,7 +1428,8 @@ function openCassetteBox(ui, emu, controller) {
                 })) added++;
             } catch (err) { /* a tape that can't be a cassette is left out */ }
         }
-        dialog.setStatus(`Imported ${added} of ${entries.length} cassette${entries.length === 1 ? '' : 's'} from ${file.name}.`, added ? 'ok' : 'error');
+        const alreadyNote = already ? `, ${already} ${(already === 1) ? 'was' : 'were'} already in the box` : '';
+        dialog.setStatus(`Imported ${added} of ${entries.length} cassette${entries.length === 1 ? '' : 's'} from ${file.name}${alreadyNote}.`, (added || already) ? 'ok' : 'error');
         renderGrid();
     });
 
@@ -1923,12 +1963,13 @@ export function createTapeDeck(ui, emu) {
         /* For a page's script (see runtime/script-api.js): the recorder and
          * the cassette box, worked as the toolbar, the panel and the box work
          * them. A new or imported cassette goes into the box and the
-         * recorder, and resolves to its id in the box. */
+         * recorder, and resolves to its id in the box; an imported one the
+         * box already has goes in from there, rewound. */
         setConnected(connected) { return controller.setConnected(connected); },
         newCassette(label) { return controller.insertNew(blankCassette(), label || '', undefined); },
         importCassette(data, fileName) {
             const imported = cassetteFromFile(data, fileName || '');
-            return controller.insertNew(imported.data, imported.label, undefined);
+            return controller.insertImported(imported.data, imported.label);
         },
         insertFromBox(id) { return controller.insertFromBox(id); },
         eject() { controller.eject(); },

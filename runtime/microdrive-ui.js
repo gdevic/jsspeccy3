@@ -397,13 +397,39 @@ function createController(emu) {
     }
 
     /* Adds `data` (a full .mdr image) to the box as a new cartridge and
-     * inserts it. Used for an opened or dropped .mdr file and for a new
-     * blank cartridge made at a drive. */
+     * inserts it. Used for a new blank cartridge made at a drive, and for
+     * an opened or dropped .mdr file the box doesn't have yet. */
     async function insertNew(drive, data, colour) {
         const label = mdr.cartridgeName(data) || '';
         const id = await store.create({ label, colour, data });
         const record = await store.get(id) || { label, colour, data };
         await insertRecord(drive, id || null, record);
+        return id;
+    }
+
+    /* The id of the cartridge in the box with the same bytes as `data` (a
+     * full .mdr image), or null. One in a drive is compared as it is there,
+     * with what was saved on it since it went in. Blank cartridges are all
+     * alike, so a blank one is never taken for another. */
+    async function findInBox(data) {
+        if (mdr.cartridgeName(data) === null) return null;
+        for (const meta of await store.list()) {
+            const drive = driveOf(meta.id);
+            const bytes = (drive >= 0) ? state.drives[drive].data : ((await store.get(meta.id)) || {}).data;
+            if (bytes && sameBytes(bytes, data)) return meta.id;
+        }
+        return null;
+    }
+
+    /* Puts a cartridge file from the PC in `drive`: the cartridge in the box
+     * with the same bytes if there is one, else a new one. One already in
+     * the other drive stays there. */
+    async function insertImported(drive, data) {
+        const id = await findInBox(data);
+        if (!id) return insertNew(drive, data);
+        const inDrive = driveOf(id);
+        if (inDrive < 0) await insertExisting(drive, id);
+        else if (inDrive !== drive) alert(`This cartridge is already in drive ${inDrive + 1}.`);
         return id;
     }
 
@@ -548,7 +574,7 @@ function createController(emu) {
     return {
         state, listeners,
         onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-        dataOf, reparse, driveOf, insertExisting, insertNew, eject, remove, rename, setColour,
+        dataOf, reparse, driveOf, insertExisting, insertNew, insertImported, findInBox, eject, remove, rename, setColour,
         setWriteProtect, quickFormat, setConnected, init,
     };
 }
@@ -723,7 +749,7 @@ function buildDrivePanel(emu, controller, driveIndex, openBox) {
         if (!file) return;
         const buf = await readFileAsArrayBuffer(file);
         if (!mdr.validateMDRFile(buf)) { alert('Invalid Microdrive cartridge (.mdr) file'); return; }
-        controller.insertNew(driveIndex, buf);
+        controller.insertImported(driveIndex, buf);
     });
 
     // The selected file is kept by name, so it survives the file list being
@@ -1020,6 +1046,10 @@ function openCartridgeBox(ui, emu, controller) {
             dialog.setStatus(file.name + ' is not a Microdrive cartridge (.mdr) file.', 'error');
             return;
         }
+        if (await controller.findInBox(buf)) {
+            dialog.setStatus('That cartridge is already in the box.', 'ok');
+            return;
+        }
         await store.create({ label: mdr.cartridgeName(buf) || '', data: buf });
         dialog.setStatus('Imported ' + file.name + '.', 'ok');
         renderGrid();
@@ -1058,15 +1088,17 @@ function openCartridgeBox(ui, emu, controller) {
         }
         const entries = [];
         zip.forEach((path, f) => { if (!f.dir && path.toLowerCase().endsWith('.mdr')) entries.push([path, f]); });
-        let added = 0;
+        let added = 0, already = 0;
         for (const [path, f] of entries) {
             const buf = await f.async('arraybuffer');
             if (!mdr.validateMDRFile(buf)) continue;
+            if (await controller.findInBox(buf)) { already++; continue; }
             const info = manifest && Array.isArray(manifest.cartridges) && manifest.cartridges.find(c => c.file === path);
             await store.create({ label: mdr.cartridgeName(buf) || '', colour: info && info.colour, data: buf });
             added++;
         }
-        dialog.setStatus(`Imported ${added} of ${entries.length} cartridge${entries.length === 1 ? '' : 's'} from ${file.name}.`, added ? 'ok' : 'error');
+        const alreadyNote = already ? `, ${already} ${(already === 1) ? 'was' : 'were'} already in the box` : '';
+        dialog.setStatus(`Imported ${added} of ${entries.length} cartridge${entries.length === 1 ? '' : 's'} from ${file.name}${alreadyNote}.`, (added || already) ? 'ok' : 'error');
         renderGrid();
     });
 
@@ -1168,7 +1200,7 @@ export function createMicrodriveDock(ui, emu) {
             if (!file) return;
             const buf = await readFileAsArrayBuffer(file);
             if (!mdr.validateMDRFile(buf)) { alert('Invalid Microdrive cartridge (.mdr) file'); return; }
-            await controller.insertNew(i, buf);
+            await controller.insertImported(i, buf);
             await controller.setConnected(true);
         });
     }
@@ -1226,11 +1258,12 @@ export function createMicrodriveDock(ui, emu) {
 
     // A .mdr opened with nothing else listening (File -> Open, a URL, or a
     // drop straight onto the display rather than onto a specific drive icon)
-    // lands here: add it to the box and put it wherever there's room.
+    // lands here: add it to the box, unless the box has it already, and put
+    // it wherever there's room.
     emu.on('microdriveImageOpened', async ({ data }) => {
         let drive = controller.state.drives.findIndex(d => !d);
         if (drive < 0) drive = 0;
-        await controller.insertNew(drive, data);
+        await controller.insertImported(drive, data);
         await controller.setConnected(true);
     });
 

@@ -100,7 +100,7 @@ The tape recorder calls resolve once the emulator has done what they ask, so `em
 * `emu.tape.parts()` - the parts on the tape, as the recorder's panel lists them: `{startMs, endMs, durationMs, name, typeName, length, loadCommand, damaged, sound}`; a pre-recorded tape's parts are named as the panel names them, with `typeName`, `length` and `loadCommand` null
 * `emu.tape.connect()` and `emu.tape.disconnect()` - connect or disconnect the recorder
 * `emu.tape.newCassette(label)` - put a new blank C60 in the box and in the recorder; resolves to its id in the box
-* `emu.tape.importCassette(data, fileName)` - put a `.tap` or `.tzx` file's bytes in the box as a cassette, and in the recorder; resolves to its id
+* `emu.tape.importCassette(data, fileName)` - put a `.tap` or `.tzx` file's bytes in the box as a cassette, and in the recorder; resolves to its id (a cassette the box already has, rewound, rather than a second one)
 * `emu.tape.cassettes()` - the cassettes in the box, without their bytes
 * `emu.tape.insert(id)` - put the box's cassette `id` in the recorder
 * `emu.tape.press(key)` - press one of the recorder's keys: `"play"`, `"record"`, `"rewind"`, `"ffwd"`, `"stop"` or `"eject"`
