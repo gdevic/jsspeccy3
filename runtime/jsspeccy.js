@@ -89,6 +89,41 @@ const callEach = (handlers) => {
 // A copy of a file's bytes as an ArrayBuffer of its own.
 const copyBytes = (data) => (data instanceof ArrayBuffer) ? data.slice(0) : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
 
+/* The type the Spectrum formats are listed under in the file picker. The
+ * picker adds every extension the system knows for a type, and a made-up one
+ * has none, where application/octet-stream would bring .bin into each list. */
+const SPECTRUM_FILE_TYPE = 'application/x-zx-spectrum';
+
+// The formats File > Open takes, by kind, for the dialog's list of file types.
+const OPEN_TYPES = [
+    { description: 'Tapes', accept: { [SPECTRUM_FILE_TYPE]: ['.tap', '.tzx'] } },
+    { description: 'Snapshots', accept: { [SPECTRUM_FILE_TYPE]: ['.z80', '.szx', '.sna'] } },
+    { description: 'Microdrive cartridges', accept: { [SPECTRUM_FILE_TYPE]: ['.mdr'] } },
+    { description: 'Zip archives', accept: { 'application/zip': ['.zip'] } },
+];
+const OPEN_EXTENSIONS = OPEN_TYPES.flatMap((type) => Object.values(type.accept).flat());
+
+/* Asks for a file to open. Where the browser has a file picker that takes
+ * named file types, the list offers all Spectrum files, each kind on its
+ * own, and all files; elsewhere, or where the page may not use it (inside
+ * another site's frame), the plain dialog shows the Spectrum files. Must be
+ * called straight from the click. Resolves to the file, or to null if the
+ * user cancelled. */
+async function chooseFileToOpen() {
+    if (window.showOpenFilePicker) {
+        try {
+            const [handle] = await window.showOpenFilePicker({
+                types: [{ description: 'All Spectrum files', accept: { [SPECTRUM_FILE_TYPE]: OPEN_EXTENSIONS } }, ...OPEN_TYPES],
+            });
+            return handle.getFile();
+        } catch (e) {
+            if (e && e.name === 'AbortError') return null;
+        }
+    }
+    const files = await fileDialog({ accept: OPEN_EXTENSIONS.join(',') });
+    return files[0];
+}
+
 class Emulator extends EventEmitter {
     constructor(canvas, opts) {
         super();
@@ -1937,8 +1972,8 @@ window.JSSpeccy = (container, opts) => {
     }
 
     const openFileDialog = () => {
-        fileDialog().then(files => {
-            const file = files[0];
+        chooseFileToOpen().then(file => {
+            if (!file) return;
             emu.openFile(file).then((res) => {
                 // a session starts the machine itself, once restored
                 if (emu.isInitiallyPaused && !(res && res.mediaType === 'session')) emu.start();
