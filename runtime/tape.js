@@ -1003,8 +1003,9 @@ export class TZXFile {
                     break;
                 case 0x35:
                     (() => {
-                        const identifierBytes = new Uint8Array(data, offset, 10);
-                        offset += 10;
+                        // a 16-character identifier, then the length of what follows
+                        const identifierBytes = new Uint8Array(data, offset, 16);
+                        offset += 16;
                         const identifier = String.fromCharCode.apply(null, identifierBytes);
                         const dataLength = tzx.getUint32(offset, true);
                         offset += 4;

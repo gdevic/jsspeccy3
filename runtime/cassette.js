@@ -316,7 +316,10 @@ function parseTAP(bytes) {
 function parseTZX(bytes) {
     const damaged = () => new Error('This tape file is damaged.');
     const blocks = [];
+    // What names the tape: the title in its archive info, or else its first text description.
+    let title = null;
     let label = null;
+    const printable = (from, to) => String.fromCharCode(...bytes.subarray(from, to)).replace(/[^\x20-\x7e]/g, ' ').trim();
     let pos = 10;
     let startMs = 0;
     const need = (count) => { if ((pos + count) > bytes.length) throw damaged(); };
@@ -363,17 +366,28 @@ function parseTZX(bytes) {
             case 0x30: {
                 const length = u8();
                 need(length);
-                const text = String.fromCharCode(...bytes.subarray(pos, pos + length));
+                if (label === null) label = printable(pos, pos + length);
                 pos += length;
-                if (label === null) label = text.replace(/[^\x20-\x7e]/g, ' ').trim();
+                break;
+            }
+            case 0x32: {                        // archive info: entries of {type, length, text}, type 0 the title
+                const length = u16();
+                need(length);
+                const end = pos + length;
+                let at = pos + 1;
+                for (let i = 0; (length > 0) && (i < bytes[pos]) && ((at + 2) <= end); i++) {
+                    const next = at + 2 + bytes[at + 1];
+                    if ((bytes[at] === 0x00) && (title === null) && (next <= end)) title = printable(at + 2, next);
+                    at = next;
+                }
+                pos = end;
                 break;
             }
             case 0x21: skip(u8()); break;       // group start
             case 0x22: break;                   // group end
             case 0x31: skip(1); skip(u8()); break;  // message
-            case 0x32: skip(u16()); break;      // archive info
             case 0x33: skip(u8() * 3); break;   // hardware type
-            case 0x35: skip(10); skip(u32()); break;  // custom info
+            case 0x35: skip(16); skip(u32()); break;  // custom info: a 16-character identifier, then its length
             case 0x5a: skip(9); break;          // glue
             case 0x2a:                          // stop the tape if in 48K mode
             case 0x2b: skip(u32()); break;      // signal level
@@ -381,7 +395,7 @@ function parseTZX(bytes) {
                 throw new Error('This tape uses blocks a cassette cannot hold, such as a turbo or custom loader. Open it with File > Open instead.');
         }
     }
-    return { blocks, label: label || '' };
+    return { blocks, label: title || label || '' };
 }
 
 /* Reads a .tap or .tzx file as a cassette: {blocks: [{startMs, data} or
