@@ -52,6 +52,9 @@ const DECK_REST_FRAMES = 50;
 // How long a display change asked for through the API takes to arrive at most.
 const API_DISPLAY_MS = 1000;
 
+// What the worker tells of the ROM's line editor (see editorState in the worker).
+const EDITOR_FIELDS = ['kind', 'cursor', 'command', 'input'];
+
 // The file name at the end of a path.
 const baseName = (path) => String(path).split('/').pop();
 
@@ -185,7 +188,7 @@ class Emulator extends EventEmitter {
         this.startupOpened = Promise.resolve();
         this.rom48Variant = 'standard';  // which 48K ROM is in page 10: 'standard' or 'gw03'
         this.romFont = null;  // the 48K ROM's character set, codes 32 to 127 (see char-picker.js)
-        // the ROM's line editor waiting for a key, {kind, cursor}, or null (see editorState in the worker)
+        // the ROM's line editor waiting for a key, {kind, cursor, command, input}, or null (see editorState in the worker)
         this.editorState = null;
         this.nextSnapshotID = 0;
         this.snapshotResolutions = {};
@@ -698,11 +701,11 @@ class Emulator extends EventEmitter {
         this.emit('powerOff');
     }
 
-    // Emits editorState when the ROM's line editor comes, goes, or changes its cursor.
+    // Emits editorState when the ROM's line editor comes, goes, or changes anything the worker tells of it.
     setEditorState(state) {
         state = state || null;
         const was = this.editorState;
-        if ((was && state) ? ((was.kind === state.kind) && (was.cursor === state.cursor)) : (was === state)) return;
+        if ((was && state) ? EDITOR_FIELDS.every(field => was[field] === state[field]) : (was === state)) return;
         this.editorState = state;
         this.emit('editorState', this.editorState);
     }

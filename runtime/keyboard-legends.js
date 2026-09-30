@@ -135,6 +135,15 @@ const TOKEN_SYMBOLS = new Set(['<=', '<>', '>=', 'AND', 'OR', 'AT', 'STOP', 'NOT
 // Caps Shift legends the 128 BASIC editor ignores: TRUE VIDEO and INV. VIDEO.
 const IGNORED_BY_128 = new Set(['THREE', 'FOUR']);
 
+/* The legends that enter text, as {text, name, part, keyword}: every
+ * keyword and character printed for K mode, extended mode or Symbol Shift,
+ * name the key's in SPECCY, part the legend's field in its entry, and
+ * keyword whether it is a keyword, which the 128 BASIC editor takes only
+ * spelled out, rather than a character (see runtime/type-basic.js). */
+export const TEXT_LEGENDS = LEGENDS.flatMap(entry => ['keyword', 'ext', 'sym', 'extSym']
+    .filter(part => entry[part])
+    .map(part => ({ text: entry[part][0], name: entry.key, part, keyword: isKeyword(part, entry[part][0]) })));
+
 const KEY_LABELS = {
     ONE: '1', TWO: '2', THREE: '3', FOUR: '4', FIVE: '5', SIX: '6', SEVEN: '7', EIGHT: '8', NINE: '9', ZERO: '0',
     CAPS_SHIFT: 'CAPS SHIFT', SYMBOL_SHIFT: 'SYMBOL SHIFT', BREAK_SPACE: 'SPACE',

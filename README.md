@@ -40,7 +40,7 @@ A Spectrum where the peripherals feel like real hardware on your desk, and every
 * An on-screen keyboard where every command can be clicked
 * Support for touch screens, multi-touch
 * Drag and reposition peripherals as you wish
-* Embeds in your own page with one line of JavaScript, and is scriptable: power it on, type into it, work the tape recorder and wait for the result
+* Embeds in your own page with one line of JavaScript, and is scriptable: power it on, type BASIC into it on any of its ROMs, work the tape recorder and wait for the result
 
 ## Find games
 
@@ -78,7 +78,7 @@ A portable cassette recorder that plays the Spectrum's tape deck. Connect it wit
 * **Wind to a time:** click the counter and type seconds or `m:ss`.
 * **`LOAD` reads from wherever the tape is** and never winds by itself, so wind to the part first. Land in the middle of a block and you only hear noise; `LOAD` takes the next one.
 * **Record sound too:** hold Record yourself and the beeper goes onto the tape: music, `BEEP`, even a turbo saver, which loads back in real time.
-* **Click the recorder** for its panel: a map of the tape, each part with its `LOAD` command (click one to wind there), and the cassette's name, colour and write-protect tab.
+* **Click the recorder** for its panel: a map of the tape, each part with its `LOAD` command (click one to wind there; Type in types the command into the Spectrum for you to press Enter, and clicking it copies it), and the cassette's name, colour and write-protect tab.
 * **File → Tape cassettes…** is the cassette box. It keeps cassettes in the browser and imports and saves them as `.tap` or `.tzx`, or the whole box as a ZIP.
 * It has its own power: wind, play or record while the Spectrum is off or paused.
 
@@ -91,7 +91,7 @@ A portable cassette recorder that plays the Spectrum's tape deck. Connect it wit
 Two Microdrives behind a ZX Interface 1 (edition 2 ROM). Connect them with button 10, and use a 48K machine or 48 BASIC.
 
 * **BASIC works as documented:** `FORMAT "m";1;"name"`, `SAVE *"m";1;"name"`, `LOAD *"m";1;"name"`, `VERIFY *`, `CAT 1`, `ERASE` and `OPEN #` streams. RS232 and ZX Net are not emulated.
-* **Click a drive** to insert a cartridge, or, with one in, for its panel: the tape loop, its files (click one for its `LOAD *` command), write-protect, Format, save to PC and Eject. Dropping an `.mdr` file onto a drive inserts it.
+* **Click a drive** to insert a cartridge, or, with one in, for its panel: the tape loop, its files (click one for its `LOAD *` command, which Type in types into the Spectrum for you to press Enter), write-protect, Format, save to PC and Eject. Dropping an `.mdr` file onto a drive inserts it.
 * **File → Microdrive cartridges…** is the cartridge box, kept in the browser: create, import (`.mdr` or a ZIP), rename, recolour, duplicate, save.
 
 <br clear="right">

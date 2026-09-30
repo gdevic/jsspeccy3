@@ -24,6 +24,7 @@ import * as store from './microdrive-store.js';
 import { boxCopyMovedOn } from './session.js';
 import { openDialog, h, button, confirmButton } from './dialog.js';
 import { makeMovable, makeDeviceMovable } from './movable.js';
+import { makeCommandRow } from './type-in.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -674,22 +675,7 @@ function buildDrivePanel(emu, controller, driveIndex, openBox) {
             { textContent: 'In BASIC: FORMAT "m";' + (driveIndex + 1) + ';"name"' }),
     );
 
-    const cmdRow = el('div', {
-        display: 'none', padding: '8px 10px', background: '#111', borderTop: '1px solid #333',
-        fontFamily: 'Consolas, Monaco, monospace', fontSize: '12px', alignItems: 'center', gap: '8px',
-    });
-    const cmdText = el('span', { flex: '1', color: '#8f8', overflowWrap: 'anywhere' });
-    const copyBtn = el('button', {
-        border: 'none', background: '#333', color: '#ccc', borderRadius: '4px',
-        padding: '3px 8px', cursor: 'pointer',
-    }, { textContent: 'Copy' });
-    copyBtn.addEventListener('click', () => {
-        const text = cmdText.textContent;
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(() => {});
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
-    });
-    cmdRow.append(cmdText, copyBtn);
+    const cmdRow = makeCommandRow(emu);
 
     const loadedFooter = el('div', footerStyle);
     const ejectBtn = mkBtn(ejectIcon, 'Eject');
@@ -699,7 +685,7 @@ function buildDrivePanel(emu, controller, driveIndex, openBox) {
     savePcBtn.title = 'The cartridge as an .mdr file';
     loadedFooter.append(ejectBtn, boxBtn, savePcBtn);
 
-    loaded.append(body, blankNotice, cmdRow, loadedFooter);
+    loaded.append(body, blankNotice, cmdRow.element, loadedFooter);
 
     /* ---------- an empty drive ---------- */
     const empty = el('div', part);
@@ -757,8 +743,7 @@ function buildDrivePanel(emu, controller, driveIndex, openBox) {
     let selectedName = null;
     function selectFile(file) {
         selectedName = file ? file.name : null;
-        cmdRow.style.display = file ? 'flex' : 'none';
-        if (file) cmdText.textContent = mdr.loadCommand(file, driveIndex);
+        cmdRow.setCommand(file ? mdr.loadCommand(file, driveIndex) : null);
         ring.highlightFile(selectedName);
         for (const row of fileList.children) row.style.background = (row.dataset.file === selectedName) ? '#2a2d33' : '';
     }
@@ -857,7 +842,7 @@ function buildDrivePanel(emu, controller, driveIndex, openBox) {
             const n = parsed.files.length;
             tapeInfo.textContent = `${n} file${n === 1 ? '' : 's'} · ${parsed.freeK}K free`;
         } else {
-            cmdRow.style.display = 'none';
+            cmdRow.setCommand(null);
             tapeInfo.textContent = '';
         }
     }
@@ -874,6 +859,7 @@ function buildDrivePanel(emu, controller, driveIndex, openBox) {
         element: panel, header, refresh, tick,
         // what takes up the height of a resized panel: the tape's files, or the box's cartridges
         stretch: [body, fileList, list],
+        dispose() { cmdRow.dispose(); },
         set onClose(fn) { onClose = fn; },
     };
 }
@@ -1144,6 +1130,7 @@ export function createMicrodriveDock(ui, emu) {
     function closePanel() {
         if (openPanel) {
             if (panelResize) panelResize.unobserve(openPanel.element);
+            openPanel.dispose();
             openPanel.element.remove();
             openPanel = null;
             openPanelDrive = -1;

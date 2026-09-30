@@ -5,6 +5,7 @@
  * done, and waited for, from code: to drive tests, or a demo.
  */
 import { speccyKeyByName, speccyKeysForChar, KEY_HOLD_MS, KEY_GAP_MS } from './keyboard.js';
+import { typeBasic } from './type-basic.js';
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -72,6 +73,11 @@ export function createKeyboardApi(emu) {
             });
             for (const keys of chords) await tap(keys, opts || {});
         },
+        /* Types BASIC as someone at the keyboard would, keywords and all,
+         * into whichever editor waits for it (see runtime/type-basic.js). */
+        typeBasic(text, opts) { return typeBasic(emu, text, opts || {}); },
+        // The ROM's line editor waiting for a key, {kind, cursor, command, input}, or null.
+        editor() { return emu.editorState ? { ...emu.editorState } : null; },
         releaseAll() {
             for (let row = 0; row < 8; row++) emu.keyUp(row, 0x1f);
         },

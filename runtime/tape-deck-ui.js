@@ -26,6 +26,7 @@ import { boxCopyMovedOn } from './session.js';
 import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W, buildLead } from './microdrive-ui.js';
 import { openDialog, h, button, confirmButton } from './dialog.js';
 import { makeMovable, makeDeviceMovable } from './movable.js';
+import { makeCommandRow } from './type-in.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -906,20 +907,7 @@ function buildPanel(emu, controller, openBox) {
 
     const list = el('div', { maxHeight: '170px', overflowY: 'auto', padding: '4px 6px' });
 
-    const cmdRow = el('div', {
-        display: 'none', padding: '8px 10px', background: '#111', borderTop: '1px solid #333',
-        fontFamily: 'Consolas, Monaco, monospace', fontSize: '12px', alignItems: 'center', gap: '8px',
-    });
-    const cmdText = el('span', { flex: '1', color: '#8f8', overflowWrap: 'anywhere' });
-    const copyBtn = el('button', {
-        border: 'none', background: '#333', color: '#ccc', borderRadius: '4px', padding: '3px 8px', cursor: 'pointer',
-    }, { textContent: 'Copy' });
-    copyBtn.addEventListener('click', () => {
-        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(cmdText.textContent).catch(() => {});
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
-    });
-    cmdRow.append(cmdText, copyBtn);
+    const cmdRow = makeCommandRow(emu);
 
     const notice = el('div', {
         display: 'none', padding: '8px 10px', background: '#2b2618', borderTop: '1px solid #333',
@@ -937,7 +925,7 @@ function buildPanel(emu, controller, openBox) {
     const saveBtn = mkBtn(null, 'Save to PC');
     saveBtn.title = 'The whole cassette as a .tzx file, every recording at its place on the tape';
     loadedFooter.append(ejectBtn, boxBtn, saveBtn);
-    loaded.append(map, mapLegend, list, cmdRow, notice, loadedFooter);
+    loaded.append(map, mapLegend, list, cmdRow.element, notice, loadedFooter);
 
     /* ---------- an empty recorder ---------- */
     const empty = el('div', part);
@@ -1011,8 +999,7 @@ function buildPanel(emu, controller, openBox) {
     function selectPart(part) {
         selectedStart = part ? part.startMs : null;
         const command = part && part.loadCommand;
-        cmdRow.style.display = command ? 'flex' : 'none';
-        if (command) cmdText.textContent = command;
+        cmdRow.setCommand(command);
         for (const row of list.children) row.style.background = (row.dataset.start === String(selectedStart)) ? '#2a2d33' : '';
     }
 
@@ -1142,7 +1129,7 @@ function buildPanel(emu, controller, openBox) {
             title.style.color = '#ccc';
             if (!emptyShown) loadBoxList();
             emptyShown = true;
-            cmdRow.style.display = 'none';
+            cmdRow.setCommand(null);
             return;
         }
         if (emptyShown) loadedAt = performance.now();
@@ -1206,6 +1193,7 @@ function buildPanel(emu, controller, openBox) {
         stretch: [list, boxList],
         setHint(h) { hint = h; refresh(); },
         refreshBox() { if (!emu.tapeKind) loadBoxList(); },
+        dispose() { cmdRow.dispose(); },
         set onClose(fn) { onClose = fn; },
     };
 }
@@ -1607,6 +1595,7 @@ export function createTapeDeck(ui, emu) {
     let panel = null;
     function closePanel() {
         if (!panel) return;
+        panel.dispose();
         panel.element.remove();
         panel = null;
     }

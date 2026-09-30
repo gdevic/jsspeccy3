@@ -194,9 +194,9 @@ The object returned by `JSSpeccy(...)` and the `opts` it accepts are used by thi
 ### Checking a change
 
 * The conformance suite (`npm test`) covers the Z80 core only. Anything in the core, the generator or the opcode tables must pass it.
-* For everything above the core, check in the browser: build, serve `dist/` as described above and open the page. Drive the emulator with the script API rather than by clicking. The bundled index.html keeps the emulator in the global `emu`, and `emu.machine`, `emu.keyboard` and `emu.tape` (documented in deployment.md) do what a user does by hand: `emu.machine.powerOn()` starts it, `emu.keyboard.type('PRINT 1\n')` types, `emu.tape.importCassette(bytes, name)` and `emu.tape.press('play')` work the recorder, and `emu.tape.until(status => ...)` waits for a state. Take a screenshot only to read the result, and fall back to clicking only for what the API does not reach, such as the menus.
+* For everything above the core, check in the browser: build, serve `dist/` as described above and open the page. Drive the emulator with the script API rather than by clicking. The bundled index.html keeps the emulator in the global `emu`, and `emu.machine`, `emu.keyboard` and `emu.tape` (documented in deployment.md) do what a user does by hand: `emu.machine.powerOn()` starts it, `emu.keyboard.typeBasic('PRINT 1\n')` types BASIC, `emu.tape.importCassette(bytes, name)` and `emu.tape.press('play')` work the recorder, and `emu.tape.until(status => ...)` waits for a state. Take a screenshot only to read the result, and fall back to clicking only for what the API does not reach, such as the menus.
 * The machine starts switched off, and it runs only while its page is visible, since browsers hold back animation frames from a hidden page.
-* `emu.keyboard.type` garbles keywords on the standard 48K ROM. Pick Machine → 48K gw03 first when typing BASIC, and press a key after a typed SAVE.
+* Type BASIC with `emu.keyboard.typeBasic`, which takes each editor as it comes (keywords from their keys on the standard 48K ROM, spelled out in 128 BASIC and on gw03) and waits after each Enter until the line is in, however long the program; `emu.keyboard.type` types characters only, which garbles keywords on the standard 48K ROM. Press a key after a typed SAVE.
 
 ### Documentation
 

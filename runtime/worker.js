@@ -1227,13 +1227,21 @@ const trapTapeLoad = () => {
 }
 
 /* The ROM's line editor waiting for a key, if one is, for the on-screen
- * keyboard (see runtime/keyboard-legends.js): {kind, cursor}, kind 48 or 128,
- * cursor 'K', 'L', 'C', 'E' or 'G'; null while anything else runs. IY holds
- * 0x5C3A whenever the ROM runs. The 48K editor (48 BASIC, INPUT in either
- * BASIC, TR-DOS) keeps its error return on the stack, ERR_SP pointing at
- * ED-ERROR (0x107F), where a running program's is MAIN-4. The 128 BASIC
- * editor runs in ROM 0 and keeps its flags in bank 7 at 0xEC0D: bit 7 waiting
- * for a key, bit 1 a menu showing. */
+ * keyboard (see runtime/keyboard-legends.js) and for typing BASIC (see
+ * runtime/type-basic.js): {kind, cursor, command, input}, kind 48 or 128,
+ * cursor 'K', 'L', 'C', 'E' or 'G', command whether it waits for a command
+ * on an empty line, and input whether it is a running program's INPUT; null
+ * while anything else runs. IY holds 0x5C3A whenever the ROM runs. The 48K
+ * editor (48 BASIC, INPUT in either BASIC, TR-DOS) keeps its error return on
+ * the stack, ERR_SP pointing at ED-ERROR (0x107F), where a running
+ * program's is MAIN-4. The 128 BASIC editor runs in ROM 0 and keeps its
+ * flags in bank 7 at 0xEC0D: bit 7 editing, bit 1 a menu showing. It waits
+ * for a key in the loop at 0x3683 (BIT 5,(FLAGS): JR Z), in the 128 and the
+ * Pentagon ROM alike, and only there: while it puts a line in and redraws
+ * the screen, which takes longer as the program grows, it is busy even at
+ * moments when its flags say editing. The 48K editor's line is empty when
+ * E_LINE holds only its Enter, and FLAGX bit 5 set is INPUT; the 128 BASIC
+ * editor's line is not looked into. */
 const editorState = () => {
     if (registerPairs[9] !== 0x5c3a) return null;
     const word = (addr) => core.peek(addr) | (core.peek((addr + 1) & 0xffff) << 8);
@@ -1243,11 +1251,14 @@ const editorState = () => {
     if (word(word(0x5c3d)) === 0x107f) {
         // FLAGS bit 3 clear: a keyword comes next
         const keyword = (mode === 0) && !(core.peek(0x5c3b) & 0x08);
-        return { kind: 48, cursor: keyword ? 'K' : cursor };
+        const input = !!(core.peek(0x5c71) & 0x20);
+        const command = !input && (core.peek(word(0x5c59)) === 0x0d);
+        return { kind: 48, cursor: keyword ? 'K' : cursor, command, input };
     }
-    if ((core.getMachineType() !== 48) && !(core.getPagingValue() & 0x10) && (core.getPC() < 0x4000)) {
+    const pc = core.getPC();
+    if ((core.getMachineType() !== 48) && !(core.getPagingValue() & 0x10) && (pc >= 0x3683) && (pc <= 0x3686)) {
         const flags = memoryData[core.MACHINE_MEMORY + (7 * 0x4000) + 0x2c0d];
-        if ((flags & 0x80) && !(flags & 0x02)) return { kind: 128, cursor };
+        if ((flags & 0x80) && !(flags & 0x02)) return { kind: 128, cursor, command: true, input: false };
     }
     return null;
 };
