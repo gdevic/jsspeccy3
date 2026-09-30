@@ -206,7 +206,7 @@ const CARDS = [
             [c('SAVE *"m";1;"name"'), 'Save'],
             [c('LOAD *"m";1;"name"'), 'Load'],
             [c('CAT 1'), 'List the files'],
-            ['Click a drive', 'Files, write-protect, Save to PC, Eject'],
+            ['Click a drive', 'Files, write-protect, Eject, Cartridge box, Save to PC'],
             ['Drop an .mdr on a drive', 'Inserts it'],
             [m('File', 'Microdrive cartridges…'), 'The cartridge box'],
         ],

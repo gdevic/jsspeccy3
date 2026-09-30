@@ -560,8 +560,9 @@ function createController(emu) {
  * the box that aren't in a drive, plus a new blank one or one from the PC.
  * A loaded drive shows what's on the tape, formats a blank cartridge,
  * toggles write protection and ejects. Keeping cartridges (names, colours,
- * copies, files on the PC) is the cartridge box's job. */
-function buildDrivePanel(emu, controller, driveIndex) {
+ * copies, files on the PC) is the cartridge box's job, which both open with
+ * Cartridge box. */
+function buildDrivePanel(emu, controller, driveIndex, openBox) {
     const panel = el('div', {
         position: 'absolute', width: '300px', background: '#1c1e22', color: '#eee',
         border: '1px solid #444', borderRadius: '8px', boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
@@ -621,8 +622,12 @@ function buildDrivePanel(emu, controller, driveIndex) {
     const ring = buildRing(120);
     ring.element.style.flexShrink = '0';
     ring.element.style.alignSelf = 'flex-start';
-    const fileList = el('div', { flex: '1', minWidth: '0', maxHeight: '160px', overflowY: 'auto' });
-    body.append(ring.element, fileList);
+    // beside the ring: the files, and under them how many and the room left
+    const side = el('div', { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column' });
+    const fileList = el('div', { minWidth: '0', maxHeight: '160px', overflowY: 'auto' });
+    const tapeInfo = el('div', { flexShrink: '0', paddingTop: '6px', color: '#999', fontSize: '11px' });
+    side.append(fileList, tapeInfo);
+    body.append(ring.element, side);
 
     const blankNotice = el('div', { padding: '10px', color: '#ccc', lineHeight: '1.5' });
     const formatRow = el('div', { display: 'flex', gap: '6px', marginTop: '6px' });
@@ -663,9 +668,10 @@ function buildDrivePanel(emu, controller, driveIndex) {
     const loadedFooter = el('div', footerStyle);
     const ejectBtn = mkBtn(ejectIcon, 'Eject');
     // the cartridge as the drive last saved it, which is the only copy of one the box couldn't keep
+    const boxBtn = mkBtn(null, 'Cartridge box…');
     const savePcBtn = mkBtn(null, 'Save to PC');
-    const tapeInfo = el('div', { flex: '1', textAlign: 'right', color: '#999', fontSize: '11px' });
-    loadedFooter.append(ejectBtn, savePcBtn, tapeInfo);
+    savePcBtn.title = 'The cartridge as an .mdr file';
+    loadedFooter.append(ejectBtn, boxBtn, savePcBtn);
 
     loaded.append(body, blankNotice, cmdRow, loadedFooter);
 
@@ -674,10 +680,11 @@ function buildDrivePanel(emu, controller, driveIndex) {
     const listHeading = el('div', { padding: '8px 10px 2px', color: '#aaa' });
     const list = el('div', { maxHeight: '180px', overflowY: 'auto', padding: '4px 6px' });
     const emptyFooter = el('div', footerStyle);
-    const newBtn = mkBtn(null, 'New blank cartridge');
+    const newBtn = mkBtn(null, 'New blank');
     const pcBtn = mkBtn(openIcon, 'From PC…');
+    const emptyBoxBtn = mkBtn(null, 'Cartridge box…');
     const fileInput = el('input', { display: 'none' }, { type: 'file', accept: '.mdr' });
-    emptyFooter.append(newBtn, pcBtn, fileInput);
+    emptyFooter.append(newBtn, pcBtn, emptyBoxBtn, fileInput);
     empty.append(listHeading, list, emptyFooter);
 
     panel.append(header, loaded, empty);
@@ -686,6 +693,8 @@ function buildDrivePanel(emu, controller, driveIndex) {
     let onClose = () => {};
     closeBtn.addEventListener('click', () => onClose());
     ejectBtn.addEventListener('click', () => controller.eject(driveIndex));
+    boxBtn.addEventListener('click', () => openBox());
+    emptyBoxBtn.addEventListener('click', () => openBox());
     savePcBtn.addEventListener('click', () => {
         const d = controller.state.drives[driveIndex];
         if (d) downloadBytes(d.data, (d.label || 'cartridge').replace(/[^\w-]+/g, '_') + '.mdr', savePcBtn);
@@ -1122,12 +1131,17 @@ export function createMicrodriveDock(ui, emu) {
         openPanel.element.style.top = (drive.top - container.top - panelHeight - gap) + 'px';
     }
 
+    function openBox() {
+        closePanel();
+        openCartridgeBox(ui, emu, controller);
+    }
+
     // Clicking a drive opens its panel, empty or not; clicking it again
     // closes it.
     function togglePanel(drive) {
         if (openPanelDrive === drive) { closePanel(); return; }
         closePanel();
-        openPanel = buildDrivePanel(emu, controller, drive);
+        openPanel = buildDrivePanel(emu, controller, drive, openBox);
         openPanel.onClose = closePanel;
         openPanel.mover = makeMovable(openPanel.element, openPanel.header, ui.appContainer, {
             id: 'drive' + (drive + 1), resize: { minWidth: 260, minHeight: 160, stretch: openPanel.stretch }, onReset: positionPanel,
@@ -1226,7 +1240,7 @@ export function createMicrodriveDock(ui, emu) {
         element,
         toggle() { controller.setConnected(!controller.state.connected); },
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
-        openBox() { closePanel(); openCartridgeBox(ui, emu, controller); },
+        openBox,
 
         /* For a saved session: the whole cartridge box and what is in each
          * drive. `liveDrives` are the drives' images from the snapshot,

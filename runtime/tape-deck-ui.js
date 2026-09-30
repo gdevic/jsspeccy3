@@ -774,7 +774,8 @@ function createController(emu) {
  * it, each at its place on the counter, to wind to; for one of your own
  * cassettes, where the blank tape after them starts, and the LOAD that
  * reads a part back. An empty recorder offers the cassettes in the box, a
- * new blank one, or a tape file from the PC. */
+ * new blank one, or a tape file from the PC. Either way, Cassette box opens
+ * the box itself. */
 function buildPanel(emu, controller, openBox) {
     const panel = el('div', {
         position: 'absolute', width: '300px', background: '#1c1e22', color: '#eee',
@@ -908,8 +909,9 @@ function buildPanel(emu, controller, openBox) {
     const emptyFooter = el('div', footerStyle);
     const newBtn = mkBtn(null, 'New blank C60');
     const pcBtn = mkBtn(openIcon, 'From PC…');
+    const emptyBoxBtn = mkBtn(null, 'Cassette box…');
     const fileInput = el('input', { display: 'none' }, { type: 'file', accept: '.tap,.tzx' });
-    emptyFooter.append(newBtn, pcBtn, fileInput);
+    emptyFooter.append(newBtn, pcBtn, emptyBoxBtn, fileInput);
     empty.append(listHeading, boxList, emptyFooter);
 
     panel.append(header, loaded, empty);
@@ -920,6 +922,7 @@ function buildPanel(emu, controller, openBox) {
     closeBtn.addEventListener('click', () => onClose());
     ejectBtn.addEventListener('click', () => { controller.eject(); emu.focus(); });
     boxBtn.addEventListener('click', () => openBox());
+    emptyBoxBtn.addEventListener('click', () => openBox());
     saveBtn.addEventListener('click', async () => {
         const c = own();
         const data = c && await controller.currentData();
@@ -1061,7 +1064,7 @@ function buildPanel(emu, controller, openBox) {
         const generation = ++listGeneration;
         const cassettes = await store.list();
         if (generation !== listGeneration) return;
-        listHeading.textContent = cassettes.length ? 'Put in a cassette from the box:' : 'No cassettes in the box yet.';
+        listHeading.textContent = cassettes.length ? 'Insert a cassette from the box:' : 'No cassettes in the box yet.';
         boxList.style.display = cassettes.length ? 'block' : 'none';
         boxList.replaceChildren(...cassettes.map(meta => {
             const r = el('div', {
