@@ -145,6 +145,9 @@ select.jsd-input { padding-right: 6px; }
 .jsd-card-row .jsd-faint { margin-right: 2px; }
 .jsd-card-top + * { margin-top: 2px; }
 .jsd-swatch { flex: none; width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(0, 0, 0, 0.35); cursor: pointer; }
+.jsd-swatch.static { cursor: default; }
+.jsd-starter-item { padding: 5px 0 1px; border-top: 1px solid #eef0f2; }
+.jsd-starter-item .jsd-card-row { gap: 6px; }
 .jsd-label { flex: 1; min-width: 0; font: inherit; font-weight: bold; font-size: 14px; color: #1f2328; padding: 2px 4px;
     border: 1px solid transparent; border-radius: 4px; background: transparent; }
 .jsd-label:hover:not(:disabled) { border-color: #d9dde2; }

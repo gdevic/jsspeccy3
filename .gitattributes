@@ -14,3 +14,6 @@
 *.jpeg binary
 *.gif binary
 *.db binary
+*.tzx binary
+*.tap binary
+*.mdr binary

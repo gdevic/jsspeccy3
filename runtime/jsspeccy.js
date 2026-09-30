@@ -16,6 +16,7 @@ import { openDialog, h, button } from './dialog.js';
 import { isPlayZXAvailable } from './playzx-session.js';
 import { validateMDRFile } from './mdr.js';
 import { createMicrodriveDock } from './microdrive-ui.js';
+import { createStarter } from './starter.js';
 import { createPrinter } from './printer-ui.js';
 import { createTapeDeck } from './tape-deck-ui.js';
 import { createMachineApi, createKeyboardApi, createTapeApi } from './script-api.js';
@@ -1293,6 +1294,7 @@ window.JSSpeccy = (container, opts) => {
 
     const keyboardEnabled = ('keyboardEnabled' in opts) ? opts.keyboardEnabled : true;
     const uiEnabled = ('uiEnabled' in opts) ? opts.uiEnabled : true;
+    const starterPrograms = ('starterPrograms' in opts) ? opts.starterPrograms : true;
 
     // Only a setting the Options menu shows can have been changed, so only that
     // one takes the place of the page's own.
@@ -1753,6 +1755,16 @@ window.JSSpeccy = (container, opts) => {
                 microdriveDock.setFullscreen(factor === 'fullscreen');
             });
             fileMenu.addItem('Microdrive cartridges…', () => microdriveDock.openBox());
+        }
+
+        /* The starter programs: cassettes and cartridges a first visit finds
+         * in the boxes, and File -> Starter programs…, which lists them and
+         * puts back what is missing (see runtime/starter.js). They need the
+         * menus, since without them the boxes can't be opened. */
+        if (!opts.sandbox && uiEnabled && starterPrograms) {
+            const starter = createStarter(ui, emu, { tapeDeck, microdriveDock, scriptUrl });
+            fileMenu.addItem('Starter programs…', () => starter.openDialog());
+            emu.onReady(() => { starter.seedIfFirstVisit(); });
         }
 
         /* On-screen clickable ZX Spectrum keyboard, shown under the emulation

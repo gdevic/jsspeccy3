@@ -1,7 +1,7 @@
 /*
  * tools/copy-static.js: copy the files that ship unchanged (the page, the
- * ROMs, the tape loaders, the pokes and PlayZX catalogs, the sql.js
- * WebAssembly and the documents) into dist/.
+ * ROMs, the tape loaders, the pokes and PlayZX catalogs, the starter
+ * programs, the sql.js WebAssembly and the documents) into dist/.
  *
  * Usage (run from the project root, as `npm run build:static` does):
  *   node tools/copy-static.js
@@ -25,6 +25,7 @@ const COPIES = [
     ['static/pokes/pokes.json', 'dist/jsspeccy/pokes/pokes.json'],
     ['static/zx_keyboard.png', 'dist/jsspeccy/zx_keyboard.png'],
     ['static/playzx', 'dist/jsspeccy/playzx'],
+    ['static/starter', 'dist/jsspeccy/starter'],
     ['node_modules/sql.js/dist/sql-wasm.wasm', 'dist/jsspeccy/sql-wasm.wasm'],
 ];
 

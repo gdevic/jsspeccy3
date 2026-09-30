@@ -2,6 +2,7 @@ Unreleased
 ----------
 
 
+* Add starter programs: a first visit finds the cassette and Microdrive cartridge boxes filled with original BASIC programs (Biorhythm, Invaders and Tetris; a banner, a calendar and a maze for the ZX Printer; the Mandelbrot set, line patterns and tunes; Hangman, Simon and noughts and crosses; and a guessing game of things in a home or animals that learns and keeps what it learns on a Microdrive cartridge), and File → Starter programs… lists them and puts back any that are missing
 * Add a portable cassette recorder beside the Spectrum: SAVE records onto 60-minute cassettes kept in the browser between visits and in saved sessions, LOAD reads them back from wherever the tape is wound to, holding Record yourself records the beeper's sound too, and a cassette box creates, imports, exports, renames, write-protects and duplicates cassettes
 * Add a script API (`emu.machine`, `emu.keyboard` and `emu.tape`) that switches the machine on, types into it and works the tape recorder from code, and waits for what happens, for tests and demos
 * Add recognition of a character clicked on the screen, showing which ROM character it is and the keys that type it; a double-click types it

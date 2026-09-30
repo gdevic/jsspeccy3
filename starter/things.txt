@@ -1,0 +1,269 @@
+# The guessing game's things in a home: a question starts with "?", and
+# the two lines indented under it answer it, yes first, then no; a thing
+# starts with "=" and is written as the game asks for it.
+T a thing in your home
+? Is it kept in the kitchen or bathroom?
+  ? Is it usually kept in the kitchen?
+    ? Does it need electricity to work?
+      ? Does it keep food cold?
+        ? Does it freeze food solid?
+          = a freezer
+          = a fridge
+        ? Does it heat food or boil water?
+          ? Does the food go in behind a door?
+            ? Does it cook food in a minute or two?
+              = a microwave
+              = an oven
+            ? Do you brown slices of bread in it?
+              = a toaster
+              ? Is it used to boil water?
+                ? Does it make coffee?
+                  = a coffee machine
+                  = a kettle
+                = a hob
+          ? Does it wash things?
+            ? Does it wash plates and cups?
+              = a dishwasher
+              = a washing machine
+            ? Does it turn fruit into a drink?
+              = a blender
+              ? Does it mix cake batter?
+                = a food mixer
+                = a kitchen scale
+      ? Do you eat or drink from it?
+        ? Do you drink from it?
+          ? Does it have a handle?
+            = a mug
+            = a glass
+          ? Is it flat?
+            = a plate
+            = a bowl
+        ? Do you hold it in your hand to eat with?
+          ? Does it have prongs?
+            = a fork
+            ? Does it have a sharp edge?
+              = a knife
+              = a spoon
+          ? Do you cook in it on the hob?
+            ? Does it have a lid?
+              = a saucepan
+              = a frying pan
+            ? Is it used to make tea?
+              = a teapot
+              ? Do you throw rubbish into it?
+                = a bin
+                ? Do you cut food on it?
+                  = a chopping board
+                  ? Does it open tins?
+                    = a tin opener
+                    ? Is it used to roll out pastry?
+                      = a rolling pin
+                      ? Do you dry the dishes with it?
+                        = a tea towel
+                        ? Does water drain through its holes?
+                          = a sieve
+                          = a whisk
+    ? Does water come out of it?
+      ? Do you sit in it to wash?
+        = a bath
+        ? Do you stand under it?
+          = a shower
+          ? Do you flush it?
+            = a toilet
+            = a washbasin
+      ? Do you clean your teeth with it?
+        ? Is it a paste?
+          = toothpaste
+          = a toothbrush
+        ? Do you dry yourself with it?
+          = a towel
+          ? Do you see yourself in it?
+            = a mirror
+            ? Is it made of paper?
+              = toilet paper
+              ? Does it lather up when wet?
+                ? Do you wash your hair with it?
+                  = shampoo
+                  = soap
+                ? Do you use it on your hair?
+                  ? Does it blow hot air?
+                    = a hair dryer
+                    ? Does it have bristles?
+                      = a hairbrush
+                      = a comb
+                  ? Do you stand on it to weigh yourself?
+                    = a bathroom scale
+                    = a razor
+  ? Is it usually kept in a bedroom?
+    ? Do you sleep on it or under it?
+      ? Do you sleep under it?
+        ? Is it thin and woven?
+          = a blanket
+          = a duvet
+        ? Do you rest your head on it?
+          = a pillow
+          ? Does it have legs?
+            = a bed
+            = a mattress
+      ? Do you wear it?
+        ? Do you wear it on your feet?
+          ? Do you wear it outdoors?
+            = a pair of shoes
+            ? Do you wear it inside your shoes?
+              = a pair of socks
+              = a pair of slippers
+          ? Do you wear it in bed?
+            = a pair of pyjamas
+            ? Do you wear it on your head?
+              = a hat
+              ? Do you wear it on your top half?
+                = a jumper
+                = a pair of jeans
+        ? Do you keep clothes in it?
+          ? Do you hang clothes in it?
+            = a wardrobe
+            = a chest of drawers
+          ? Does it wake you up in the morning?
+            = an alarm clock
+            ? Is it a toy?
+              ? Is it soft and cuddly?
+                = a teddy bear
+                ? Does it look like a person?
+                  = a doll
+                  = a toy car
+              ? Do you save money in it?
+                = a piggy bank
+                = a jewellery box
+    ? Is it a piece of furniture?
+      ? Do you sit on it?
+        ? Can more than one person sit on it?
+          = a sofa
+          ? Does it rock back and forth?
+            = a rocking chair
+            ? Is it soft, with arms?
+              = an armchair
+              = a chair
+        ? Do you eat or work at it?
+          ? Do you eat your meals at it?
+            = a dining table
+            = a desk
+          ? Does it hold books?
+            = a bookcase
+            ? Is it a low table by the sofa?
+              = a coffee table
+              = a cupboard
+      ? Do you watch, play or listen with it?
+        ? Does it have a screen?
+          ? Do you carry it in your pocket?
+            = a mobile phone
+            ? Do you type on its keys?
+              ? Does it have rubber keys?
+                = a ZX Spectrum
+                = a computer
+              ? Do you play games on it?
+                = a games console
+                = a television
+          ? Does it make music or sound?
+            ? Is it a musical instrument?
+              ? Does it have black and white keys?
+                = a piano
+                = a guitar
+              ? Does it play records?
+                = a record player
+                ? Does it pick up stations?
+                  = a radio
+                  ? Do you wear it over your ears?
+                    = a pair of headphones
+                    = a loudspeaker
+            ? Is it a game played on a table?
+              ? Is it played with cards?
+                = a pack of cards
+                ? Is it a picture cut into pieces?
+                  = a jigsaw puzzle
+                  = a board game
+              ? Do you read it?
+                ? Does a new one come every day?
+                  = a newspaper
+                  = a book
+                = a remote control
+        ? Is it for housework, DIY or the garden?
+          ? Is it for housework?
+            ? Does it need electricity?
+              ? Does it suck up dust?
+                = a vacuum cleaner
+                ? Does it get hot?
+                  = an iron
+                  = a tumble dryer
+              ? Do you sweep the floor with it?
+                = a broom
+                ? Do you wash the floor with it?
+                  = a mop
+                  ? Do you carry water in it?
+                    = a bucket
+                    ? Do you dust with it?
+                      = a feather duster
+                      = a clothes peg
+            ? Is it a tool for fixing things?
+              ? Do you hit nails with it?
+                = a hammer
+                ? Does it turn screws?
+                  = a screwdriver
+                  ? Does it cut wood?
+                    = a saw
+                    ? Does it make holes?
+                      = a drill
+                      = a ladder
+              ? Does it cut the grass?
+                = a lawnmower
+                ? Do you dig with it?
+                  = a spade
+                  ? Do you water plants with it?
+                    = a watering can
+                    ? Does it have one wheel?
+                      = a wheelbarrow
+                      = a flowerpot
+          ? Is it fixed to the house?
+            ? Does it open and shut?
+              ? Do you look out through it?
+                = a window
+                = a door
+              ? Does it warm the room?
+                ? Do you burn logs or coal in it?
+                  = a fireplace
+                  = a radiator
+                ? Do you walk on it?
+                  = a carpet
+                  ? Does it hang at a window?
+                    = a curtain
+                    = a doorbell
+            ? Does it give light?
+              ? Does it burn?
+                = a candle
+                ? Is it lit by batteries?
+                  = a torch
+                  ? Does it screw or plug into a lamp?
+                    = a light bulb
+                    = a lamp
+              ? Does it tell the time?
+                ? Do you wear it on your wrist?
+                  = a watch
+                  = a clock
+                ? Do you write or cut with it?
+                  ? Do you write with it?
+                    = a pen
+                    = a pair of scissors
+                  ? Does it keep you dry or warm?
+                    ? Does it keep the rain off you?
+                      = an umbrella
+                      = a hot water bottle
+                    ? Does it grow?
+                      = a houseplant
+                      ? Do you open a lock with it?
+                        = a key
+                        ? Do you put flowers in it?
+                          = a vase
+                          ? Does it hold a photo?
+                            = a picture frame
+                            ? Do you make calls on it at home?
+                              = a telephone
+                              = a battery

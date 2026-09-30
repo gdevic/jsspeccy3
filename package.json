@@ -50,6 +50,7 @@
         "static/tapeloaders/*",
         "static/pokes/*",
         "static/playzx/*",
+        "static/starter/*",
         "README.md",
         "COPYING",
         "CHANGELOG.md"

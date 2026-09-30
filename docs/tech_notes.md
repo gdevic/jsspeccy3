@@ -10,7 +10,7 @@ How the emulator is put together, written as know-how for a developer new to the
 * The core code generator
 * Data formats: the frame buffer
 * Tape playback
-* Feature notes: pokes, tape recorder, Interface 1 and Microdrives, printer, sessions, dialogs and movable panels
+* Feature notes: pokes, tape recorder, Interface 1 and Microdrives, printer, sessions, dialogs and movable panels, starter programs
 * Working on the project: rules, gotchas and how to check a change
 
 ## Orientation
@@ -21,9 +21,10 @@ Where things live:
 
 * `generator/`: the code generator that produces the AssemblyScript source of the core. `core.ts.in` is the core's source, `instructions.js` holds the Z80 instruction body templates, `opcodes_*.txt` are the opcode tables, `gencore.js` is the preprocessor.
 * `build/`: generated output (`core.ts`). Not checked in and never edited by hand.
-* `runtime/`: everything that runs in the browser. `jsspeccy.js` is the UI thread's entry point and the `Emulator` class, `worker.js` is the Web Worker that owns the core. The rest are the pieces around them: `render.js` (canvas), `audio.js` (audio output), `keyboard.js`, `keyboard-overlay.js` and `keyboard-legends.js` (keyboard input and the on-screen keyboard), `joystick.js`, `snapshot.js` (SNA, Z80 and SZX), `tape.js` (TAP and TZX playback), `cassette.js` and `cassette-store.js` (tape recorder cassettes), `mdr.js` and `microdrive-store.js` (Microdrive cartridges), `tape-deck-ui.js`, `microdrive-ui.js` and `printer-ui.js` (the peripherals beside the Spectrum), `session.js`, `pokes.js` and `pokes-db.js`, `char-picker.js`, `ui.js`, `dialog.js`, `movable.js`, `help.js` and `script-api.js`.
-* `static/`: files that ship unchanged (`index.html`, the ROMs, the tape loaders, the game catalogs, the on-screen keyboard's picture).
-* `tools/`: the Node scripts behind the npm scripts (`build-js.js`, `copy-static.js`, `watch.js`), the pokes catalog generator and a test tape generator.
+* `runtime/`: everything that runs in the browser. `jsspeccy.js` is the UI thread's entry point and the `Emulator` class, `worker.js` is the Web Worker that owns the core. The rest are the pieces around them: `render.js` (canvas), `audio.js` (audio output), `keyboard.js`, `keyboard-overlay.js` and `keyboard-legends.js` (keyboard input and the on-screen keyboard), `joystick.js`, `snapshot.js` (SNA, Z80 and SZX), `tape.js` (TAP and TZX playback), `cassette.js` and `cassette-store.js` (tape recorder cassettes), `mdr.js` and `microdrive-store.js` (Microdrive cartridges), `tape-deck-ui.js`, `microdrive-ui.js` and `printer-ui.js` (the peripherals beside the Spectrum), `session.js`, `pokes.js` and `pokes-db.js`, `starter.js`, `char-picker.js`, `ui.js`, `dialog.js`, `movable.js`, `help.js` and `script-api.js`.
+* `static/`: files that ship unchanged (`index.html`, the ROMs, the tape loaders, the game catalogs, the starter programs, the on-screen keyboard's picture).
+* `starter/`: the sources of the starter programs: a BASIC listing for each, the guessing game's trees, and `starter.json` naming each cassette and cartridge.
+* `tools/`: the Node scripts behind the npm scripts (`build-js.js`, `copy-static.js`, `watch.js`), the pokes catalog generator, a test tape generator, and the starter programs' generator (`gen-starter.js`) with the BASIC tokeniser (`zxbasic.js`) and the Spectrum run in Node (`zxheadless.js`) it uses.
 * `test/`: the FUSE-derived Z80 conformance suite.
 * `dist/`: the built site.
 * `docs/`: documentation, this file included.
@@ -173,6 +174,16 @@ Every File menu dialog opens through `openDialog(ui, emu, opts)` in runtime/dial
 The dark device panels and the restore card are made draggable (and the recorder's and Microdrives' resizable) by `makeMovable` in runtime/movable.js, which keeps their places under `jsspeccy-panels` as offsets within `appContainer`. Their owners' positioning code calls `mover.place()` first and places them itself only when it returns false.
 
 The devices themselves (recorder, drives, printer) are dragged by `makeDeviceMovable` in the same file. The owner stands its scaled element where it always did and the body inside is translated in drawn units (kept under `jsspeccy-panels` as `{dx, dy}`), the cable SVG's `draw(dx, dy)` redrawing the lead to the moved rear. Devices never overlap: a drag keeps a 2 px gap and slides along another, and a `settle()` pass puts a moved one back if it ends up overlapping. They may go off the page. A click on a cable resets that device and any moved into its place. The printer's element stands above the others (z-index 94) so its paper is never under them. `ui.makeRoomOnLeft` measures `[data-reach]` bodies so a device dragged further out still gets left margin, but never during a drag, since the page shifting under the pointer would skew it.
+
+### Starter programs
+
+The starter cassettes and cartridges hold original BASIC programs whose sources are in `starter/`: a listing for each program (`*.bas`), the guessing game's two trees (`things.txt` and `animals.txt`), and `starter.json`, which names each cassette and cartridge, its label, colour and write-protect tab, and what goes on it. `node tools/gen-starter.js`, run by hand after `npm run build`, makes `static/starter/` from them: a labelled `.tzx` file for each cassette, an `.mdr` file for each cartridge, and `index.json`, which the Starter programs dialog shows. They are committed, so the build only copies them.
+
+The generator never writes the Spectrum's formats itself. `tools/zxheadless.js` runs a 48K Spectrum in Node, from the built core and the ROMs in `static/roms`, and `tools/zxbasic.js` turns each line of a listing into what the 48K editor holds once the line is typed: its number's digits, the keywords as tokens and the rest as characters. The line is put in the editor's line and entered with Enter, so the ROM checks it, refusing a mistake as it would a typed line, and adds the hidden 5-byte form of every number. The ROM's own `SAVE "name" LINE 10` then writes the tape blocks, caught at SA-BYTES as the worker catches them, and with the Interface 1 connected its `SAVE *` writes the files onto a cartridge made by `mdr.quickFormat`. A guessing game's tree goes onto a cartridge as the character array `t$()`, filled with `LET` commands and saved with `SAVE * ... DATA t$()`.
+
+A listing is written as a listing shows it, keywords in capitals as whole words and variables in small letters, so that a mistyped keyword is refused rather than taken for a variable; inside quotes and REM, `\a` to `\u` stand for the user-defined graphics and `\xNN` for any character code. The headless Spectrum also runs a program and answers it, which is how to try one: `enter` and `command` type into the editor, `press` and `type` press keys, `screen` reads the screen as text against the ROM's character set, `report` gives the report on the bottom line, `printed` holds the ZX Printer's rows and `cartridge` gives a drive's cartridge.
+
+`runtime/starter.js` fills the boxes on a first visit, one where both boxes are empty and localStorage has no `jsspeccy-starter` entry, once the recorder and the drives are back as they were left and whatever the page opened at startup is in: every cassette and cartridge goes into the boxes, the first cassette into the recorder unless a tape is in it already, and each cartridge into its drive if that is empty. It never connects a device, and nothing goes into one that is disconnected. File → Starter programs… puts back whatever is missing the same way. A cassette the box has is found by its recording, as an import finds one, and a blank one by its label; a cartridge by its bytes or by the name it was formatted with, since the guessing game saves onto its DATA cartridge.
 
 ## Working on the project
 

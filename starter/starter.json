@@ -1,0 +1,84 @@
+{
+  "cassettes": [
+    {
+      "file": "home-games.tzx",
+      "label": "Home games",
+      "colour": "#f2d74e",
+      "writeProtect": true,
+      "about": "Three games to play at home.",
+      "programs": [
+        { "source": "biorhythm.bas", "name": "BIORHYTHM", "line": 10, "about": "Your body, feelings and mind charted for a month from your birthday; C copies the chart to the printer." },
+        { "source": "invaders.bas", "name": "INVADERS", "line": 10, "about": "Aliens march down the screen: O and P move, SPACE fires." },
+        { "source": "tetris.bas", "name": "TETRIS", "line": 10, "about": "Falling blocks: O and P move, Q turns, A drops faster, SPACE drops at once." }
+      ]
+    },
+    {
+      "file": "printer.tzx",
+      "label": "Printer fun",
+      "colour": "#e0685a",
+      "writeProtect": true,
+      "about": "Programs for the ZX Printer.",
+      "programs": [
+        { "source": "banner.bas", "name": "BANNER", "line": 10, "about": "Your words printed down the paper in letters as tall as the roll is wide." },
+        { "source": "calendar.bas", "name": "CALENDAR", "line": 10, "about": "Any month from 1753 on, on the screen and the printer, or a whole year." },
+        { "source": "maze.bas", "name": "MAZE", "line": 10, "about": "A new maze each time, to solve on the screen or copy to the printer." }
+      ]
+    },
+    {
+      "file": "demos.tzx",
+      "label": "Demos",
+      "colour": "#7fb0e0",
+      "writeProtect": true,
+      "about": "Pictures and music from a little mathematics.",
+      "programs": [
+        { "source": "mandel.bas", "name": "MANDEL", "line": 10, "about": "The Mandelbrot set, drawn in colour." },
+        { "source": "patterns.bas", "name": "PATTERNS", "line": 10, "about": "Times tables, roses, spirographs and Lissajous figures; C copies one to the printer." },
+        { "source": "tune.bas", "name": "TUNE", "line": 10, "about": "Tunes on a keyboard that lights up, or play it yourself." }
+      ]
+    },
+    {
+      "file": "projects.tzx",
+      "label": "Projects",
+      "colour": "#8fcf8a",
+      "writeProtect": true,
+      "about": "Classic type-in games.",
+      "programs": [
+        { "source": "hangman.bas", "name": "HANGMAN", "line": 10, "about": "Guess the word before the gallows are built." },
+        { "source": "simon.bas", "name": "SIMON", "line": 10, "about": "Repeat the order the coloured pads light up in, one more each round." },
+        { "source": "oxo.bas", "name": "OXO", "line": 10, "about": "Noughts and crosses against the Spectrum." }
+      ]
+    },
+    {
+      "file": "blank.tzx",
+      "label": "Blank C60",
+      "colour": "#f1e7c6",
+      "writeProtect": false,
+      "about": "A blank cassette for your own programs: SAVE onto it.",
+      "programs": []
+    }
+  ],
+  "cartridges": [
+    {
+      "file": "home.mdr",
+      "name": "HOME",
+      "drive": 1,
+      "colour": "#a33",
+      "about": "The guessing game. Type RUN for its menu.",
+      "files": [
+        { "source": "run.bas", "name": "run", "line": 10, "about": "The cartridge's menu, which RUN loads by itself." },
+        { "source": "guess.bas", "name": "guess", "line": 10, "about": "The guessing game: think of a thing in your home, or an animal." }
+      ]
+    },
+    {
+      "file": "data.mdr",
+      "name": "DATA",
+      "drive": 2,
+      "colour": "#369",
+      "about": "What the guessing game knows, and what it learns.",
+      "files": [
+        { "tree": "things.txt", "dim": [360, 48], "name": "things", "about": "The things in a home the guessing game knows." },
+        { "tree": "animals.txt", "dim": [360, 48], "name": "animals", "about": "The animals the guessing game knows." }
+      ]
+    }
+  ]
+}

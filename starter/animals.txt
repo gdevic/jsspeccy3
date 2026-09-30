@@ -1,0 +1,225 @@
+# The guessing game's animals: a question starts with "?", and the two
+# lines indented under it answer it, yes first, then no; an animal starts
+# with "=" and is written as the game asks for it.
+T an animal
+? Is it a mammal?
+  ? Does it live in the sea?
+    ? Does it come out onto land too?
+      ? Does it have long tusks?
+        = a walrus
+        = a seal
+      ? Is it bigger than a bus?
+        = a whale
+        = a dolphin
+    ? Is it often kept as a pet?
+      ? Does it bark?
+        = a dog
+        ? Does it purr?
+          = a cat
+          ? Does it hop, with long ears?
+            = a rabbit
+            ? Does it run in a wheel?
+              = a hamster
+              ? Does it squeak, with no tail?
+                = a guinea pig
+                = a ferret
+      ? Is it kept on a farm?
+        ? Do people ride it?
+          ? Does it have long ears and bray?
+            = a donkey
+            = a horse
+          ? Does it give us milk?
+            ? Does it say moo?
+              = a cow
+              = a goat
+            ? Does it give us wool?
+              ? Does it have a long neck?
+                = a llama
+                = a sheep
+              = a pig
+        ? Can it fly?
+          = a bat
+          ? Does it hunt other animals to eat?
+            ? Is it a big cat?
+              ? Does it have stripes?
+                = a tiger
+                ? Does the male have a mane?
+                  = a lion
+                  ? Is it the fastest runner on land?
+                    = a cheetah
+                    = a leopard
+              ? Is it a bear?
+                ? Is it white?
+                  = a polar bear
+                  = a brown bear
+                ? Does it howl?
+                  = a wolf
+                  ? Is it red, with a bushy tail?
+                    = a fox
+                    ? Does it make a sound like laughing?
+                      = a hyena
+                      ? Does it have a striped face?
+                        = a badger
+                        = an otter
+            ? Is it bigger than a person?
+              ? Does it have a trunk?
+                = an elephant
+                ? Does it have a very long neck?
+                  = a giraffe
+                  ? Does it have black and white stripes?
+                    = a zebra
+                    ? Does it have a horn on its nose?
+                      = a rhinoceros
+                      ? Does it spend its days in rivers?
+                        = a hippopotamus
+                        ? Does it have a hump?
+                          = a camel
+                          ? Does it have antlers?
+                            ? Does it pull Santa's sleigh?
+                              = a reindeer
+                              = a deer
+                            ? Is it a big ape?
+                              ? Does it have orange hair?
+                                = an orangutan
+                                = a gorilla
+                              ? Is it black and white?
+                                = a panda
+                                = a bison
+              ? Does it carry its baby in a pouch?
+                ? Does it hop?
+                  = a kangaroo
+                  = a koala
+                ? Does it live in trees?
+                  ? Does it move very, very slowly?
+                    = a sloth
+                    ? Does it bury nuts?
+                      = a squirrel
+                      = a monkey
+                  ? Is it covered in spines?
+                    ? Does it roll into a ball?
+                      = a hedgehog
+                      = a porcupine
+                    ? Does it build dams?
+                      = a beaver
+                      ? Does it dig tunnels?
+                        = a mole
+                        ? Is it tiny, with a long tail?
+                          = a mouse
+                          = a rat
+  ? Is it a bird?
+    ? Is it kept on a farm?
+      ? Do we eat its eggs?
+        = a chicken
+        ? Does it quack?
+          = a duck
+          ? Does it gobble?
+            = a turkey
+            = a goose
+      ? Can it fly?
+        ? Does it hunt at night?
+          = an owl
+          ? Is it a big bird of prey?
+            = an eagle
+            ? Can it learn to talk?
+              = a parrot
+              ? Is it white, with a long neck?
+                = a swan
+                ? Does it live by the sea?
+                  = a seagull
+                  ? Is it all black?
+                    = a crow
+                    ? Does it have a red breast?
+                      = a robin
+                      ? Does it hover at flowers?
+                        = a hummingbird
+                        ? Does it have a huge fan of a tail?
+                          = a peacock
+                          ? Is it pink, with long legs?
+                            = a flamingo
+                            ? Does it live in towns and coo?
+                              = a pigeon
+                              = a sparrow
+        ? Does it swim in icy seas?
+          = a penguin
+          ? Is it the biggest bird of all?
+            = an ostrich
+            ? Does it come from New Zealand?
+              = a kiwi
+              = an emu
+    ? Is it a fish?
+      ? Is it a fierce hunter with big teeth?
+        = a shark
+        ? Is it kept as a pet in a bowl?
+          = a goldfish
+          ? Does it swim up rivers to lay eggs?
+            = a salmon
+            ? Is it flat, with a long tail?
+              = a stingray
+              ? Is it long and thin, like a snake?
+                = an eel
+                ? Does it blow up like a balloon?
+                  = a pufferfish
+                  ? Does it look like a little horse?
+                    = a seahorse
+                    = a tuna
+      ? Is it a reptile, with scaly skin?
+        ? Does it have legs?
+          ? Does it carry a shell?
+            ? Does it live in the sea?
+              = a turtle
+              = a tortoise
+            ? Does it have a long snout and teeth?
+              = a crocodile
+              ? Can it change its colour?
+                = a chameleon
+                = a lizard
+          ? Does it rattle its tail?
+            = a rattlesnake
+            ? Does it squeeze its prey?
+              = a python
+              = a cobra
+        ? Does it start life as a tadpole?
+          ? Does it keep a tail when grown up?
+            = a newt
+            ? Is its skin dry and bumpy?
+              = a toad
+              = a frog
+          ? Does it have six legs?
+            ? Can it fly?
+              ? Does it sting?
+                ? Does it make honey?
+                  = a bee
+                  = a wasp
+                ? Does it have big colourful wings?
+                  = a butterfly
+                  ? Is it red with black spots?
+                    = a ladybird
+                    ? Does it drink blood?
+                      = a mosquito
+                      ? Does it hover over ponds?
+                        = a dragonfly
+                        = a fly
+              ? Does it live in a big colony?
+                = an ant
+                ? Does it jump and chirp?
+                  = a grasshopper
+                  = a beetle
+            ? Does it have eight legs?
+              ? Does it spin a web?
+                = a spider
+                = a scorpion
+              ? Does it live in the sea?
+                ? Does it have claws?
+                  ? Does it walk sideways?
+                    = a crab
+                    = a lobster
+                  ? Does it have eight arms?
+                    = an octopus
+                    ? Is it shaped like a star?
+                      = a starfish
+                      = a jellyfish
+                ? Does it carry a shell on its back?
+                  = a snail
+                  ? Does it live in the soil?
+                    = a worm
+                    = a slug

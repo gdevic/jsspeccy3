@@ -563,10 +563,12 @@ function createController(emu) {
         notify();
     });
 
+    /* Puts the drives back as they were left. A cartridge opened at startup
+     * (the openUrl option) has gone in by now, and keeps its drive. */
     async function init() {
         const saved = store.getDockState();
         for (let d = 0; d < DRIVE_COUNT; d++) {
-            if (saved.drives[d]) await insertExisting(d, saved.drives[d]);
+            if (saved.drives[d] && !state.drives[d] && (driveOf(saved.drives[d]) < 0)) await insertExisting(d, saved.drives[d]);
         }
         if (saved.connected) await setConnected(true);
         notify();
@@ -1246,19 +1248,51 @@ export function createMicrodriveDock(ui, emu) {
     // A .mdr opened with nothing else listening (File -> Open, a URL, or a
     // drop straight onto the display rather than onto a specific drive icon)
     // lands here: add it to the box, unless the box has it already, and put
-    // it wherever there's room.
-    emu.on('microdriveImageOpened', async ({ data }) => {
-        let drive = controller.state.drives.findIndex(d => !d);
-        if (drive < 0) drive = 0;
-        await controller.insertImported(drive, data);
-        await controller.setConnected(true);
+    // it wherever there's room. They go in one at a time, so that two opened
+    // together find the drives as the one before left them.
+    let opening = Promise.resolve();
+    emu.on('microdriveImageOpened', ({ data }) => {
+        opening = opening.then(async () => {
+            let drive = controller.state.drives.findIndex(d => !d);
+            if (drive < 0) drive = 0;
+            await controller.insertImported(drive, data);
+            await controller.setConnected(true);
+        }).catch(err => console.warn('Could not insert the cartridge:', err));
     });
 
-    emu.onReady(() => { controller.init(); });
+    // Settles once the drives are back as they were left, after any cartridge opened at startup.
+    let settleReady;
+    const whenReady = new Promise(resolve => { settleReady = resolve; });
+    emu.onReady(() => {
+        emu.startupOpened.then(() => opening).then(() => controller.init()).catch(() => {}).then(settleReady);
+    });
 
     return {
         element,
+        whenReady,
         toggle() { controller.setConnected(!controller.state.connected); },
+        isConnected() { return controller.state.connected; },
+        // The id of the cartridge in each drive, or null.
+        drives() { return controller.state.drives.map(d => (d ? d.id : null)); },
+        cartridges() { return store.list(); },
+
+        /* A cartridge's .mdr bytes put in the box without going into a
+         * drive, or the cartridge the box has with the same bytes: {id,
+         * added}, id null when the box can't keep it. */
+        async addToBox(data, colour) {
+            const id = await controller.findInBox(data);
+            if (id) return { id, added: false };
+            const created = await store.create({ label: mdr.cartridgeName(data) || '', colour, data });
+            return { id: created, added: !!created };
+        },
+
+        /* Puts the box's cartridge `id` in `drive` (0 or 1), unless the
+         * drive holds one or the cartridge is in the other drive; resolves
+         * to whether it went in. */
+        async insertFromBox(drive, id) {
+            if (controller.state.drives[drive] || (controller.driveOf(id) >= 0)) return false;
+            return controller.insertExisting(drive, id);
+        },
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
         openBox,
 

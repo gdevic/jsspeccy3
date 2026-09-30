@@ -1,0 +1,160 @@
+{
+  "cassettes": [
+    {
+      "file": "home-games.tzx",
+      "label": "Home games",
+      "colour": "#f2d74e",
+      "writeProtect": true,
+      "about": "Three games to play at home.",
+      "programs": [
+        {
+          "name": "BIORHYTHM",
+          "about": "Your body, feelings and mind charted for a month from your birthday; C copies the chart to the printer.",
+          "startMs": 0,
+          "bytes": 2879
+        },
+        {
+          "name": "INVADERS",
+          "about": "Aliens march down the screen: O and P move, SPACE fires.",
+          "startMs": 24105,
+          "bytes": 4320
+        },
+        {
+          "name": "TETRIS",
+          "about": "Falling blocks: O and P move, Q turns, A drops faster, SPACE drops at once.",
+          "startMs": 55273,
+          "bytes": 5067
+        }
+      ]
+    },
+    {
+      "file": "printer.tzx",
+      "label": "Printer fun",
+      "colour": "#e0685a",
+      "writeProtect": true,
+      "about": "Programs for the ZX Printer.",
+      "programs": [
+        {
+          "name": "BANNER",
+          "about": "Your words printed down the paper in letters as tall as the roll is wide.",
+          "startMs": 0,
+          "bytes": 1035
+        },
+        {
+          "name": "CALENDAR",
+          "about": "Any month from 1753 on, on the screen and the printer, or a whole year.",
+          "startMs": 14480,
+          "bytes": 2275
+        },
+        {
+          "name": "MAZE",
+          "about": "A new maze each time, to solve on the screen or copy to the printer.",
+          "startMs": 35423,
+          "bytes": 1694
+        }
+      ]
+    },
+    {
+      "file": "demos.tzx",
+      "label": "Demos",
+      "colour": "#7fb0e0",
+      "writeProtect": true,
+      "about": "Pictures and music from a little mathematics.",
+      "programs": [
+        {
+          "name": "MANDEL",
+          "about": "The Mandelbrot set, drawn in colour.",
+          "startMs": 0,
+          "bytes": 831
+        },
+        {
+          "name": "PATTERNS",
+          "about": "Times tables, roses, spirographs and Lissajous figures; C copies one to the printer.",
+          "startMs": 13505,
+          "bytes": 1803
+        },
+        {
+          "name": "TUNE",
+          "about": "Tunes on a keyboard that lights up, or play it yourself.",
+          "startMs": 32034,
+          "bytes": 4375
+        }
+      ]
+    },
+    {
+      "file": "projects.tzx",
+      "label": "Projects",
+      "colour": "#8fcf8a",
+      "writeProtect": true,
+      "about": "Classic type-in games.",
+      "programs": [
+        {
+          "name": "HANGMAN",
+          "about": "Guess the word before the gallows are built.",
+          "startMs": 0,
+          "bytes": 2572
+        },
+        {
+          "name": "SIMON",
+          "about": "Repeat the order the coloured pads light up in, one more each round.",
+          "startMs": 22391,
+          "bytes": 2131
+        },
+        {
+          "name": "OXO",
+          "about": "Noughts and crosses against the Spectrum.",
+          "startMs": 42436,
+          "bytes": 2895
+        }
+      ]
+    },
+    {
+      "file": "blank.tzx",
+      "label": "Blank C60",
+      "colour": "#f1e7c6",
+      "writeProtect": false,
+      "about": "A blank cassette for your own programs: SAVE onto it.",
+      "programs": []
+    }
+  ],
+  "cartridges": [
+    {
+      "file": "home.mdr",
+      "name": "HOME",
+      "colour": "#a33",
+      "drive": 1,
+      "about": "The guessing game. Type RUN for its menu.",
+      "files": [
+        {
+          "name": "run",
+          "about": "The cartridge's menu, which RUN loads by itself.",
+          "loadCommand": "LOAD *\"m\";1;\"run\""
+        },
+        {
+          "name": "guess",
+          "about": "The guessing game: think of a thing in your home, or an animal.",
+          "loadCommand": "LOAD *\"m\";1;\"guess\""
+        }
+      ]
+    },
+    {
+      "file": "data.mdr",
+      "name": "DATA",
+      "colour": "#369",
+      "drive": 2,
+      "about": "What the guessing game knows, and what it learns.",
+      "files": [
+        {
+          "name": "things",
+          "about": "The things in a home the guessing game knows.",
+          "loadCommand": "LOAD *\"m\";2;\"things\" DATA t$()"
+        },
+        {
+          "name": "animals",
+          "about": "The animals the guessing game knows.",
+          "loadCommand": "LOAD *\"m\";2;\"animals\" DATA t$()"
+        }
+      ]
+    }
+  ]
+}

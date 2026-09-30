@@ -1940,12 +1940,18 @@ export function createTapeDeck(ui, emu) {
         }
     });
 
-    emu.onReady(() => { controller.init(); });
+    // Settles once the recorder is back as it was left, or as a first visit finds it.
+    let settleReady;
+    const whenReady = new Promise(resolve => { settleReady = resolve; });
+    emu.onReady(() => { controller.init().catch(() => {}).then(settleReady); });
 
     return {
         element,
+        whenReady,
         toggle() { controller.setConnected(!controller.state.connected); },
         isConnected() { return controller.state.connected; },
+        // Whether a cassette can go in now: nothing in the recorder, and no tape on its way in.
+        slotFree() { return !emu.tapeKind && !emu.tapeOpening; },
         setFullscreen(value) { fullscreen = value; applyVisibility(); },
         openBox,
 
@@ -1961,6 +1967,20 @@ export function createTapeDeck(ui, emu) {
             return controller.insertImported(imported.data, imported.label);
         },
         insertFromBox(id) { return controller.insertFromBox(id); },
+
+        /* A tape file's cassette put in the box without going into the
+         * recorder, or the cassette the box has with the same recording:
+         * {id, added}, id null when the box can't keep it. A blank one is
+         * always added, as blank cassettes are all alike. */
+        async addToBox(data, fileName, opts = {}) {
+            const imported = cassetteFromFile(data, fileName || '');
+            const id = await controller.findInBox(imported.data);
+            if (id) return { id, added: false };
+            const created = await store.create({ label: imported.label, colour: opts.colour, data: imported.data, positionMs: 0, writeProtect: !!opts.writeProtect });
+            return { id: created, added: !!created };
+        },
+        // Winds the box's cassette `id` back to the start, where it goes into the recorder next.
+        rewind(id) { return store.update(id, { positionMs: 0 }); },
         eject() { controller.eject(); },
         cassettes() { return store.list(); },
         cassetteInRecorder() {

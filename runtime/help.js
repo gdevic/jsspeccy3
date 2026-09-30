@@ -118,6 +118,7 @@ const CARDS = [
             [m('File', 'Open…'), 'The same, from a file picker', { full: true }],
             [m('File', 'Find games…'), 'Search the Internet Archive', { full: true }],
             [m('File', 'PlayZX open…'), 'Browse ~10,800 tapes; Enter or double-click loads', { playZX: true }],
+            [m('File', 'Starter programs…'), 'The games, demos and printer programs that come with it', { full: true }],
             [m('Machine'), '48K, 48K gw03, 128K or Pentagon; choosing one reboots'],
         ],
         tip: 'Snapshots: SZX, Z80, SNA. Tapes: TAP, TZX. Any of them inside a ZIP.',
