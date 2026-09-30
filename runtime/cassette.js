@@ -387,7 +387,9 @@ function parseTZX(bytes) {
             case 0x22: break;                   // group end
             case 0x31: skip(1); skip(u8()); break;  // message
             case 0x33: skip(u8() * 3); break;   // hardware type
+            case 0x34: skip(8); break;          // emulation info
             case 0x35: skip(16); skip(u32()); break;  // custom info: a 16-character identifier, then its length
+            case 0x40: skip(1); skip(u24()); break;  // snapshot: its type, then its length
             case 0x5a: skip(9); break;          // glue
             case 0x2a:                          // stop the tape if in 48K mode
             case 0x2b: skip(u32()); break;      // signal level
