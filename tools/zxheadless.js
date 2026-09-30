@@ -22,6 +22,8 @@
  *   report()             the ROM's report on the bottom line, or ''
  *   editor()             the line editor's state, as the worker gives it
  *   saved                blocks SAVE has written, as a TAP holds them
+ *   tape                 blocks for LOAD to read, one after another, as
+ *                        a TAP holds them (opts.tape to start with some)
  *   printed              rows the ZX Printer has printed, 32 bytes each
  *   insertCartridge(drive, mdr) and cartridge(drive), for the Microdrives
  *
@@ -62,7 +64,7 @@ export async function createSpectrum(opts = {}) {
 
     core.setMachineType(48);
     core.reset();
-    core.setTapeTraps(false);
+    core.setTapeTraps(true);
     core.setSaveTraps(true);
     if (opts.interface1) core.setInterface1Enabled(true);
     if (opts.printer) {
@@ -76,6 +78,7 @@ export async function createSpectrum(opts = {}) {
     const setWord = (addr, value) => { poke(addr, value); poke(addr + 1, value >> 8); };
 
     const saved = [];
+    const tape = (opts.tape || []).map(block => new Uint8Array(block));
     const printed = [];
     const cartridgeBlocks = new Array(8).fill(0);
 
@@ -101,10 +104,38 @@ export async function createSpectrum(opts = {}) {
         core.setPC(0x053e);
     }
 
+    /* LD-BYTES about to load a block: the next one on the tape goes straight
+     * into memory, as the worker does with instant loading, or the ROM
+     * waits on while the tape is empty. */
+    function trapLoad() {
+        const block = tape.shift();
+        if (!block) return;
+        const wanted = registers[4] >> 8;  // the flag byte, in A'
+        const load = registers[4] & 1;     // LOAD rather than VERIFY
+        let addr = registers[8];
+        const length = registers[2];
+        let ok = (block[0] === wanted) && (block.length >= length + 2);
+        if (ok) {
+            let parity = block[0];
+            for (let i = 0; i < length; i++) {
+                parity ^= block[i + 1];
+                if (load) poke(addr, block[i + 1]);
+                else if (peek(addr) !== block[i + 1]) ok = false;
+                addr = (addr + 1) & 0xffff;
+            }
+            ok = ok && ((parity ^ block[length + 1]) === 0);
+            registers[8] = addr;
+            registers[2] = 0;
+        }
+        registers[0] = ok ? (registers[0] | 1) : (registers[0] & 0xfffe);
+        core.setPC(0x05e2);
+    }
+
     function frame() {
         let status = core.runFrame();
         while (status) {
             if (status === 3) trapSave();
+            else if (status === 2) trapLoad();
             else if (status !== 4) throw new Error(`The core stopped with status ${status} at ${core.getPC().toString(16)}`);
             status = core.resumeFrame();
         }
@@ -299,7 +330,7 @@ export async function createSpectrum(opts = {}) {
 
     return {
         core, peek, poke, word, setWord, frames, until, editor, ready, enter, enterListing, program, command, settle,
-        press, type, tap, keyDown, keyUp, screen, report, saved, printed, insertCartridge, cartridge, motorsOff,
+        press, type, tap, keyDown, keyUp, screen, report, saved, tape, printed, insertCartridge, cartridge, motorsOff,
         SPECCY,
     };
 }

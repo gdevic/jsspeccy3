@@ -67,11 +67,12 @@ export function createStarter(ui, emu, { tapeDeck, microdriveDock, scriptUrl }) 
     /* Puts every starter cassette and cartridge the boxes lack into them,
      * then the first cassette into the recorder if it is connected and
      * empty, and each cartridge into its drive if the Microdrives are
-     * connected and the drive is empty. A cassette the box has is found by
-     * its recording, a blank one by its label; a cartridge by its bytes or
-     * its name, since the guessing game saves onto its DATA cartridge.
-     * Resolves to {added, kept, unstored}, counts of cassettes and
-     * cartridges. */
+     * connected and the drive is empty. A cassette or cartridge the box has
+     * is found by its label, so that one from an earlier set of starter
+     * programs, or the DATA cartridge the guessing game has saved onto, is
+     * kept rather than added again; failing that by its bytes, as an import
+     * finds it. Resolves to {added, kept, unstored}, counts of cassettes
+     * and cartridges. */
     async function putInBoxes() {
         const index = await loadIndex();
         const counts = { added: 0, kept: 0, unstored: 0 };
@@ -85,9 +86,9 @@ export function createStarter(ui, emu, { tapeDeck, microdriveDock, scriptUrl }) 
         const cassetteIds = [];
         const boxCassettes = await tapeDeck.cassettes();
         for (const cas of index.cassettes) {
-            const blank = !cas.programs.length && boxCassettes.find(meta => meta.label === cas.label);
-            if (blank) {
-                cassetteIds.push(tally({ id: blank.id, added: false }));
+            const named = boxCassettes.find(meta => meta.label === cas.label);
+            if (named) {
+                cassetteIds.push(tally({ id: named.id, added: false }));
                 continue;
             }
             const data = await fetchFile(cas.file);

@@ -63,20 +63,26 @@
       "programs": [
         {
           "name": "MANDEL",
-          "about": "The Mandelbrot set, drawn in colour.",
+          "about": "The Mandelbrot set, drawn in colour by BASIC, taking its time.",
           "startMs": 0,
           "bytes": 831
         },
         {
+          "name": "ZOOM",
+          "about": "The Mandelbrot set again, drawn by machine code fast enough to zoom into: arrows move, Z zooms in, X out.",
+          "startMs": 13505,
+          "bytes": 1754
+        },
+        {
           "name": "PATTERNS",
           "about": "Times tables, roses, spirographs and Lissajous figures; C copies one to the printer.",
-          "startMs": 13505,
+          "startMs": 43831,
           "bytes": 1803
         },
         {
           "name": "TUNE",
           "about": "Tunes on a keyboard that lights up, or play it yourself.",
-          "startMs": 32034,
+          "startMs": 62359,
           "bytes": 4375
         }
       ]

@@ -11,7 +11,9 @@
  * entered line by line into a Spectrum 48K run in Node (tools/zxheadless.js),
  * whose ROM checks every line as it would a typed one, and is saved from
  * there: with SAVE onto a cassette, or with the Interface 1's SAVE * onto a
- * cartridge. A guessing game's tree (see readTree below) goes onto a
+ * cartridge. A program with machine code names its assembly source
+ * (assembled by tools/z80asm.js), which follows it on the tape as a CODE
+ * block, saved the same way. A guessing game's tree (see readTree below) goes onto a
  * cartridge as the character array the game loads. The results are written
  * to static/starter/: a .tzx file per cassette, labelled, a .mdr file per
  * cartridge, and index.json describing them all for the Starter programs
@@ -24,6 +26,7 @@ import path from 'path';
 
 import { createSpectrum } from './zxheadless.js';
 import { parseListing } from './zxbasic.js';
+import { assemble } from './z80asm.js';
 import { writeCassetteTAP, writeCassetteTZX, parseCassetteFile, blockMs, parseHeader } from '../runtime/cassette.js';
 import * as mdr from '../runtime/mdr.js';
 
@@ -41,13 +44,24 @@ function startTape(zx) {
     zx.ready();
 }
 
-// A program saved to tape as SAVE "name" LINE line saves it: its header and data blocks.
+/* A program saved to tape as SAVE "name" LINE line saves it: its header
+ * and data blocks, then, for a program with machine code, the code's
+ * header and data blocks as SAVE "name" CODE start,length saves them. */
 async function programBlocks(program) {
     const zx = await createSpectrum();
     zx.enterListing(listing(program.source));
     zx.command(`SAVE "${program.name}" LINE ${program.line}`, { wait: false });
     startTape(zx);
-    if (zx.saved.length !== 2) throw new Error(`${program.source}: SAVE wrote ${zx.saved.length} blocks`);
+    let blocks = 2;
+    if (program.code) {
+        const code = assemble(fs.readFileSync(path.join(SOURCE, program.code.asm), 'utf8'), program.code.asm);
+        code.bytes.forEach((byte, i) => zx.poke(code.origin + i, byte));
+        zx.command(`SAVE "${program.code.name}" CODE ${code.origin},${code.bytes.length}`, { wait: false });
+        startTape(zx);
+        blocks += 2;
+        console.log(`  ${program.code.asm}: ${code.bytes.length} bytes at ${code.origin}`);
+    }
+    if (zx.saved.length !== blocks) throw new Error(`${program.source}: SAVE wrote ${zx.saved.length} blocks`);
     return zx.saved;
 }
 
@@ -146,13 +160,17 @@ fs.mkdirSync(OUT, { recursive: true });
 
 for (const cas of manifest.cassettes) {
     const blocks = [];
-    for (const program of cas.programs) blocks.push(...await programBlocks(program));
+    const firsts = [];  // each program's first block
+    for (const program of cas.programs) {
+        firsts.push(blocks.length);
+        blocks.push(...await programBlocks(program));
+    }
     // Spaced as a TAP plays them, a second of blank tape after each block.
     const spaced = parseCassetteFile(writeCassetteTAP(blocks.map(data => ({ data })))).blocks;
     fs.writeFileSync(path.join(OUT, cas.file), writeCassetteTZX({ blocks: spaced, label: cas.label }));
     const programs = cas.programs.map((program, i) => {
-        const header = parseHeader(spaced[2 * i].data);
-        return { name: program.name, about: program.about, startMs: Math.round(spaced[2 * i].startMs), bytes: header.length };
+        const header = parseHeader(spaced[firsts[i]].data);
+        return { name: program.name, about: program.about, startMs: Math.round(spaced[firsts[i]].startMs), bytes: header.length };
     });
     const endMs = spaced.length ? spaced[spaced.length - 1].startMs + blockMs(spaced[spaced.length - 1].data) : 0;
     console.log(`${cas.file}: "${cas.label}", ${programs.length} programs, ${(endMs / 1000).toFixed(0)} s of tape`);

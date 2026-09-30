@@ -118,14 +118,14 @@ A first visit finds the cassette box and the cartridge box filled with original 
 | --- | --- |
 | Home games | **BIORHYTHM** charts your body, feelings and mind for a month from your birthday. **INVADERS**: O and P move, SPACE fires. **TETRIS**: O and P move, Q turns, A drops faster, SPACE drops at once. |
 | Printer fun | **BANNER** prints your words down the roll in letters as tall as the paper is wide. **CALENDAR** shows any month, and prints it or a whole year. **MAZE** carves a new maze to solve on the screen or on paper. |
-| Demos | **MANDEL** draws the Mandelbrot set. **PATTERNS** draws times tables round a circle, roses, spirographs and Lissajous figures. **TUNE** plays tunes on a keyboard that lights up, or lets you play it. |
+| Demos | **MANDEL** draws the Mandelbrot set in BASIC, taking its time. **ZOOM** draws it again in machine code, fast enough to zoom into: the arrow keys move a flashing square, Z zooms in on it, X zooms out. **PATTERNS** draws times tables round a circle, roses, spirographs and Lissajous figures. **TUNE** plays tunes on a keyboard that lights up, or lets you play it. |
 | Projects | **HANGMAN**, **SIMON** and **OXO** (noughts and crosses against the Spectrum). |
 | Blank C60 | Nothing yet: it is for your own `SAVE`. |
 
 * **Load one from a cassette:** Home games starts in the recorder. Click the recorder for the list of its parts, click one to wind there, then Type in puts `LOAD ""` into the Spectrum for you to press Enter. Every program starts by itself.
 * **The guessing game:** with the HOME cartridge in Microdrive 1 and DATA in Microdrive 2, as a first visit finds them, type `RUN` in 48 BASIC with no program in the Spectrum, and the Interface 1 loads the HOME cartridge's menu. Think of a thing in your home, or an animal, and the game finds out which by asking yes or no questions. When it guesses wrong, it asks what it was and for a question that tells the two apart, and keeps what it learned on the DATA cartridge.
 * **The printer programs** want the ZX Printer connected. BIORHYTHM, MAZE and PATTERNS also copy their screen to it.
-* The cassettes are write-protected, so they stay as they came. The programs' listings are in `starter/`, and how they become cassettes and cartridges is in [docs/tech_notes.md](docs/tech_notes.md).
+* The cassettes are write-protected, so they stay as they came. The programs' listings are in `starter/`, ZOOM's machine code with them as assembly, and how they become cassettes and cartridges is in [docs/tech_notes.md](docs/tech_notes.md).
 
 ## Toolbar
 

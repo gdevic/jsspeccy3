@@ -31,7 +31,8 @@
       "writeProtect": true,
       "about": "Pictures and music from a little mathematics.",
       "programs": [
-        { "source": "mandel.bas", "name": "MANDEL", "line": 10, "about": "The Mandelbrot set, drawn in colour." },
+        { "source": "mandel.bas", "name": "MANDEL", "line": 10, "about": "The Mandelbrot set, drawn in colour by BASIC, taking its time." },
+        { "source": "zoom.bas", "name": "ZOOM", "line": 10, "code": { "asm": "zoom.asm", "name": "zoomcode" }, "about": "The Mandelbrot set again, drawn by machine code fast enough to zoom into: arrows move, Z zooms in, X out." },
         { "source": "patterns.bas", "name": "PATTERNS", "line": 10, "about": "Times tables, roses, spirographs and Lissajous figures; C copies one to the printer." },
         { "source": "tune.bas", "name": "TUNE", "line": 10, "about": "Tunes on a keyboard that lights up, or play it yourself." }
       ]
