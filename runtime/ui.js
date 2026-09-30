@@ -430,7 +430,7 @@ export class UIController extends EventEmitter {
             this.screenOff = null;
         });
 
-        // Clicking a character on the screen recognises it (see char-picker.js).
+        // Clicking a character on the screen recognises it, once switched on from the Options menu (see char-picker.js).
         this.charPicker = new CharPicker(this, emulator);
 
         /* The menu bar, toolbar and on-screen keyboard are built and toggled after

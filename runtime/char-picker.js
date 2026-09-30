@@ -8,7 +8,8 @@
  * as the keyboard would, and closes the bubble soon after. Only a character typed by one key, alone or with
  * Caps Shift or Symbol Shift, is typed; one that needs extended mode is
  * shown but not typed. A space, a blank cell or a solid one, is passed
- * over, as the border is.
+ * over, as the border is. It works only while Options -> Character picker
+ * has switched it on (setEnabled), and is off at first.
  */
 import { SPECCY, speccyKeysForChar } from './keyboard.js';
 
@@ -71,6 +72,7 @@ export class CharPicker {
         this.ui = ui;
         this.emulator = emulator;
         this.canvas = ui.canvas;
+        this.enabled = false;  // switched on from the Options menu
         this.shown = null;     // the cell the bubble is open on: {x, y, keys}
         this.parts = null;     // the bubble's elements, while it is open
         this.typing = false;
@@ -122,7 +124,14 @@ export class CharPicker {
 
     // Switched off, the machine shows no picture to pick from.
     isOn() {
-        return !this.emulator.isInitiallyPaused;
+        return this.enabled && !this.emulator.isInitiallyPaused;
+    }
+
+    setEnabled(enabled) {
+        this.enabled = enabled;
+        if (enabled) return;
+        this.canvas.style.cursor = '';
+        this.close();
     }
 
     isShowing(cell) {

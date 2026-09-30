@@ -169,6 +169,7 @@ const CARDS = [
     {
         emoji: '🔍', title: 'Characters on the screen', colour: 'cyan',
         rows: [
+            [m('Options', 'Character picker'), 'Switches it on'],
             ['Click a character', 'Shows which it is, its CHR$ code and its keys'],
             ['Double-click it', 'Types it'],
             [`${k('Esc')} or click elsewhere`, 'Closes the bubble'],

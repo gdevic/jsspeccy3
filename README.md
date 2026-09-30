@@ -36,7 +36,7 @@ A Spectrum where the peripherals feel like real hardware on your desk, and every
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
 * Opens games straight from the PlayZX online catalog (~10,800 titles), or from a search of the Internet Archive
 * Game cheats: ~23,000 cheats for ~3,700 games from the Tipshop database, found for the loaded game, tick to apply and untick to undo
-* Click a character on the screen to see which ROM character it is and the keys that type it, and double-click it to type it, use it for a game option selection
+* Character picker (**Options → Character picker**): click a character on the screen to see which ROM character it is and the keys that type it, and double-click it to type it, use it for a game option selection
 * An on-screen keyboard where every command can be clicked
 * Support for touch screens, multi-touch
 * Drag and reposition peripherals as you wish
@@ -151,7 +151,7 @@ The menu option **Options → Simple keyboard** makes the mouse press whole keys
 
 ## Recognising characters on the screen
 
-Click a character on the Spectrum's screen and a bubble names the ROM character, its code and the keys that type it. **Double-click** it to type it, which is handy for picking a game's menu option. Characters that need extended mode are shown but not typed.
+Click a character on the Spectrum's screen and a bubble names the ROM character, its code and the keys that type it. **Double-click** it to type it, which is handy for picking a game's menu option. Characters that need extended mode are shown but not typed. The picker works only while **Options → Character picker** is ticked; it is off at first, and remembered in this browser.
 
 ## Deployment
 

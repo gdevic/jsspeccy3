@@ -1263,8 +1263,9 @@ function rememberTapeSetting(name, initial) {
     };
 }
 
-/* The Options menu's Simple keyboard, once changed, is remembered in
- * localStorage and restored on the next visit, as {simple}. */
+/* The Options menu's Simple keyboard and Character picker, once changed,
+ * are remembered in localStorage and restored on the next visit, as
+ * {simple, charPicker}. */
 const KEYBOARD_SETTINGS_KEY = 'jsspeccy-keyboard';
 
 function loadKeyboardSettings() {
@@ -1778,6 +1779,23 @@ window.JSSpeccy = (container, opts) => {
             }
         };
         showSimpleKeyboard();
+        // Options -> Character picker: clicking a character on the screen recognises it (see char-picker.js).
+        let charPicker = loadKeyboardSettings().charPicker === true;
+        const charPickerItem = optionsMenu.addItem('Character picker', () => {
+            charPicker = !charPicker;
+            saveKeyboardSetting('charPicker', charPicker);
+            showCharPicker();
+            emu.focus();
+        });
+        const showCharPicker = () => {
+            ui.charPicker.setEnabled(charPicker);
+            if (charPicker) {
+                charPickerItem.setCheckbox();
+            } else {
+                charPickerItem.unsetCheckbox();
+            }
+        };
+        showCharPicker();
         let keyboardWanted = true;   // shown by default
         const keyboardButton = ui.toolbar.addButton(
             keyboardIcon,
