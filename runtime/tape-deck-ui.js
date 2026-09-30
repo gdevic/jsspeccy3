@@ -267,7 +267,7 @@ function buildDeckArt() {
     door.appendChild(autoStop);
     svg.appendChild(door);
 
-    // The tape counter: four wheels of digits behind a window. A click on it, with the tape standing still, asks where to wind to.
+    // The tape counter: four wheels of digits behind a window. A click on it, with the tape standing still, asks where to wind to; with no tape in, says to insert one.
     const counter = svgEl('g', { cursor: 'pointer' });
     // its face, the whole of what shows: the wheels' strips of digits reach far outside their windows
     const counterFace = svgEl('rect', { x: 10, y: 130, width: 36, height: 13.5, rx: 1.5, fill: '#e0e1df', stroke: '#707275', 'stroke-width': 0.6 });
@@ -1474,13 +1474,15 @@ export function createTapeDeck(ui, emu) {
     /* A click on the counter, with the tape standing still, asks where to
      * wind to: a reading in seconds as the counter shows it, or minutes and
      * seconds. Enter winds there, the reels turning as for a key; Escape, or
-     * leaving the box, gives up. */
-    const counterEntry = el('div', {
+     * leaving the box, gives up. With no tape in, a note in the same place
+     * says to insert one; with a tape moving, the click does nothing. */
+    const COUNTER_BOX_STYLE = {
         position: 'absolute', zIndex: '95', display: 'none', padding: '5px 7px',
         background: '#1c1e22', color: '#eee', border: '1px solid #555', borderRadius: '6px',
         boxShadow: '0 4px 12px rgba(0,0,0,0.45)', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px',
         lineHeight: '1.35', whiteSpace: 'nowrap',
-    });
+    };
+    const counterEntry = el('div', COUNTER_BOX_STYLE);
     counterEntry.appendChild(el('span', { marginRight: '6px' }, { textContent: 'Wind to' }));
     const counterInput = el('input', {
         width: '4.5em', padding: '1px 4px', border: '1px solid #666', borderRadius: '3px', background: '#f6f6f1',
@@ -1490,6 +1492,9 @@ export function createTapeDeck(ui, emu) {
     counterEntry.appendChild(el('span', { marginLeft: '6px', color: '#999', fontSize: '11px' }, { textContent: 'or m:ss' }));
     ui.appContainer.appendChild(counterEntry);
     for (const type of ['keydown', 'keyup', 'keypress']) counterInput.addEventListener(type, (e) => e.stopPropagation());
+    const counterNote = el('div', COUNTER_BOX_STYLE, { textContent: 'Insert a tape first.' });
+    ui.appContainer.appendChild(counterNote);
+    let counterNoteTimer = null;
 
     // Whether the counter takes a click now: a tape in, standing still, no load or save under way.
     function counterTakesClick() {
@@ -1500,20 +1505,32 @@ export function createTapeDeck(ui, emu) {
         counterInput.value = cassette.counterText(livePosition(performance.now()));
         counterInput.style.borderColor = '#666';
         counterEntry.style.display = 'block';
-        positionCounterEntry();
+        positionCounterBoxes();
         counterInput.focus();
         counterInput.select();
     }
     function hideCounterEntry() {
         counterEntry.style.display = 'none';
     }
-    function positionCounterEntry() {
-        if (counterEntry.style.display === 'none') return;
+    function showCounterNote() {
+        counterNote.style.display = 'block';
+        positionCounterBoxes();
+        clearTimeout(counterNoteTimer);
+        counterNoteTimer = setTimeout(hideCounterNote, 4000);
+    }
+    function hideCounterNote() {
+        clearTimeout(counterNoteTimer);
+        counterNote.style.display = 'none';
+    }
+    function positionCounterBoxes() {
         // Always right beside the counter: to its right, level with it.
         const box = art.counterFace.getBoundingClientRect();
         const container = ui.appContainer.getBoundingClientRect();
-        counterEntry.style.left = (box.right - container.left + 6) + 'px';
-        counterEntry.style.top = (box.top - container.top + ((box.height - counterEntry.offsetHeight) / 2)) + 'px';
+        for (const shown of [counterEntry, counterNote]) {
+            if (shown.style.display === 'none') continue;
+            shown.style.left = (box.right - container.left + 6) + 'px';
+            shown.style.top = (box.top - container.top + ((box.height - shown.offsetHeight) / 2)) + 'px';
+        }
     }
     // The reading typed, in ms along the tape, or null for one that makes no sense.
     function parseCounterEntry(text) {
@@ -1587,6 +1604,7 @@ export function createTapeDeck(ui, emu) {
             closePanel();
             hideBubble();
             hideCounterEntry();
+            hideCounterNote();
             ui.makeRoomOnLeft(element);
         }
         if (show && !was) {
@@ -1616,7 +1634,7 @@ export function createTapeDeck(ui, emu) {
         if (!mover.dragging()) ui.makeRoomOnLeft(element);
         positionPanel();
         positionBubble();
-        positionCounterEntry();
+        positionCounterBoxes();
     }
     let leadsWidth = RIBBON_W;
     const mover = makeDeviceMovable(body, leads.element, {
@@ -1802,14 +1820,15 @@ export function createTapeDeck(ui, emu) {
         g.addEventListener('click', (e) => e.stopPropagation());
     }
     art.door.addEventListener('click', () => togglePanel());
-    // The counter: a click asks where to wind to, while the tape stands still; another click takes the question back.
+    // The counter: a click asks where to wind to, while the tape stands still, or says to insert a tape; another click takes either back.
     art.counter.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); });
     art.counter.addEventListener('click', (e) => {
         e.stopPropagation();
         if (counterEntry.style.display !== 'none') { hideCounterEntry(); emu.focus(); return; }
-        if (!emu.tapeKind || !controller.state.connected) return;
-        if (!counterTakesClick()) { showBubble('Stop the tape first, then click the counter to wind to a reading.'); return; }
-        showCounterEntry();
+        if (counterNote.style.display !== 'none') { hideCounterNote(); return; }
+        if (!controller.state.connected) return;
+        if (!emu.tapeKind) { showCounterNote(); return; }
+        if (counterTakesClick()) showCounterEntry();
     });
     art.element.addEventListener('pointerdown', (e) => e.preventDefault());
 
@@ -1831,6 +1850,7 @@ export function createTapeDeck(ui, emu) {
         kick();
     });
     const tapeChanged = () => {
+        if (emu.tapeKind) hideCounterNote();
         if (panel) panel.refresh();
         kick();
     };
