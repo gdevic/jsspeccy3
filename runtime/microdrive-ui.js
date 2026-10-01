@@ -98,6 +98,16 @@ const readFileAsArrayBuffer = (file) => new Promise((resolve, reject) => {
 const RAINBOW = ['#d0412e', '#e2b13c', '#5fa847', '#3a7cc4'];
 const RAINBOW_SLOPE = 0.33;
 
+/* A drive's side edges bend back as the keyboard's faceplate does
+ * (keyboard-overlay.js): a bright rim along each, fading into the flat top.
+ * The left rim is brightest at the edge and ends in a crease, the right one
+ * catches a highlight a little way in. Each stop is an offset across the rim
+ * from the edge and the opacity of white there. */
+const FOLD_STOPS = {
+    left: [[0, 0.32], [0.45, 0.17], [1, 0.09]],
+    right: [[0, 0.2], [0.15, 0.09], [0.42, 0.3], [0.7, 0.12], [1, 0]],
+};
+
 /* One drive as seen from the front and above, drawn after the real ZX
  * Microdrive: a flat top whose rear third steps up into a raised band that
  * carries the SINCLAIR and ZX Microdrive lettering, the rainbow flash across
@@ -107,6 +117,20 @@ const RAINBOW_SLOPE = 0.33;
 export const DRIVE_W = 66, DRIVE_H = 72;
 export const DOCK_SCALE = 1.2; // drawn size relative to the display, before the zoom factor
 const TOP_Y = 1, STEP_Y = 25, FRONT_Y = 57, BOTTOM_Y = 70;
+
+/* The bent edge follows the drive's three levels, so it is not one flat strip.
+ * The raised rear band stands highest, so its bend is the widest, but its
+ * surface is matte, so the rim is the dullest; the sloped bevel steps it down
+ * to the deck's narrower, shinier bend; the front face, lowest, has the
+ * narrowest. Each section runs from y0 to y1, wide w0 at the
+ * top and w1 at the bottom (drawing units in from the edge), with the rim's
+ * opacity scaled by `strength`. */
+const FOLD_SECTIONS = [
+    { y0: TOP_Y, y1: STEP_Y, w0: 5.5, w1: 5.5, strength: 0.3 },
+    { y0: STEP_Y, y1: STEP_Y + 4, w0: 5.5, w1: 3.5, strength: 0.5 },
+    { y0: STEP_Y + 4, y1: FRONT_Y, w0: 3.5, w1: 3.5, strength: 0.85 },
+    { y0: FRONT_Y, y1: BOTTOM_Y, w0: 3, w1: 3, strength: 0.75 },
+];
 
 let driveArtId = 0;
 
@@ -215,6 +239,26 @@ function buildDriveIcon(driveIndex) {
     });
     number.textContent = String(driveIndex + 1);
     front.appendChild(number);
+
+    // The bent side edges, over everything but clear of clicks, and inside the body's rounded corners.
+    const foldClip = svgEl('clipPath', { id: uid + 'e' });
+    foldClip.appendChild(svgEl('rect', { x: 1, y: TOP_Y, width: W - 2, height: BOTTOM_Y - TOP_Y, rx: 3.5 }));
+    defs.appendChild(foldClip);
+    const folds = svgEl('g', { 'clip-path': `url(#${uid}e)`, 'pointer-events': 'none' });
+    for (const [side, stops] of Object.entries(FOLD_STOPS)) {
+        const rim = svgEl('linearGradient', { id: uid + side, x1: (side === 'left') ? 0 : 1, y1: 0, x2: (side === 'left') ? 1 : 0, y2: 0 });
+        stops.forEach(([offset, opacity]) => rim.appendChild(svgEl('stop', { offset, 'stop-color': '#fff', 'stop-opacity': opacity })));
+        defs.appendChild(rim);
+        const edge = (side === 'left') ? 1 : (W - 1);
+        const inward = (side === 'left') ? 1 : -1;
+        for (const { y0, y1, w0, w1, strength } of FOLD_SECTIONS) {
+            folds.appendChild(svgEl('polygon', {
+                points: `${edge},${y0} ${edge + (inward * w0)},${y0} ${edge + (inward * w1)},${y1} ${edge},${y1}`,
+                fill: `url(#${uid}${side})`, opacity: strength,
+            }));
+        }
+    }
+    svg.appendChild(folds);
 
     return {
         element: svg,

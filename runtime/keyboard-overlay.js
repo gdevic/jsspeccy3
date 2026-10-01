@@ -64,6 +64,18 @@ const DOUBLE_TAP_MS = 400;
 // A shift held down longer than this is pressed, not tapped: it goes up with the finger rather than latching.
 const TAP_MS = 300;
 
+// Where the CAPS SHIFT cap's left edge is, in percent of the image's width.
+const CAPS_SHIFT_LEFT = KEY_LAYOUT.find(layout => layout.name === 'CAPS_SHIFT').box[0];
+
+// How wide each bent side edge is, in percent of the image; the first and last caps stand just inside it.
+const FOLD_WIDTH = 2.2;
+// What the bend of each side looks like, from the edge inwards. The left rim is brightest at the edge and ends in a
+// crease, the right one catches a highlight a little way in.
+const FOLDS = {
+    left: 'linear-gradient(to right, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.13) 45%, rgba(255, 255, 255, 0.07))',
+    right: 'linear-gradient(to left, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.07) 15%, rgba(255, 255, 255, 0.24) 42%, rgba(255, 255, 255, 0.09) 70%, rgba(255, 255, 255, 0))',
+};
+
 // The highlight reaches this far past a legend's text, in percent of the image.
 const HIGHLIGHT_PAD_X = 0.4;
 const HIGHLIGHT_PAD_Y = 0.9;
@@ -77,10 +89,10 @@ const el = (tag, style, text) => {
     return e;
 };
 
-// A key as the char picker's bubble shows one (see char-picker.js).
+// A key as the char picker's bubble shows one (see char-picker.js), outlined to stand out on the page's grey.
 const keycap = (text) => el('span', {
     padding: '1px 5px', borderRadius: '3px', fontSize: '10px', fontWeight: 'bold', whiteSpace: 'nowrap',
-    background: '#3a3a3a', color: '#fff', border: '1px solid #5a5a5a', borderBottom: '3px solid #1a1a1a',
+    background: '#3a3a3a', color: '#fff', border: '1px solid #8c8c8c', borderBottom: '3px solid #1a1a1a',
 }, text);
 
 export function createKeyboardOverlay(emu, imageUrl) {
@@ -104,15 +116,24 @@ export function createKeyboardOverlay(emu, imageUrl) {
     img.style.display = 'block';
     stage.appendChild(img);
 
+    // The faceplate's side edges bend back: a bright rim along each, fading into the flat face.
+    for (const side of Object.keys(FOLDS)) {
+        stage.appendChild(el('div', {
+            position: 'absolute', top: '0', bottom: '0', [side]: '0', width: FOLD_WIDTH + '%', pointerEvents: 'none',
+            background: FOLDS[side],
+        }));
+    }
+
     const highlight = el('div', {
         position: 'absolute', display: 'none', pointerEvents: 'none', borderRadius: '4px',
         transition: 'left 60ms, top 60ms, width 60ms, height 60ms',
     });
     stage.appendChild(highlight);
 
+    // Under the image, on the page, starting beneath the left edge of the CAPS SHIFT cap.
     const status = el('div', {
-        display: 'flex', alignItems: 'center', gap: '5px', height: '24px', padding: '0 10px', overflow: 'hidden',
-        background: '#000', color: '#999', lineHeight: 'normal', whiteSpace: 'nowrap',
+        display: 'flex', alignItems: 'center', gap: '5px', height: '24px', padding: '0 10px 0 ' + CAPS_SHIFT_LEFT + '%', overflow: 'hidden',
+        color: '#ccc', lineHeight: 'normal', whiteSpace: 'nowrap',
         fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '12px',
     });
     container.appendChild(status);
@@ -281,11 +302,11 @@ export function createKeyboardOverlay(emu, imageUrl) {
             steps = [{ keys: [...(held.caps ? [CAPS] : []), ...(held.sym ? [SYM] : []), key] }];
         }
         steps.forEach((step, i) => {
-            if (i > 0) status.appendChild(el('span', { color: '#666' }, '›'));
+            if (i > 0) status.appendChild(el('span', { color: '#bbb' }, '›'));
             if (step.keys) status.appendChild(keycap(chordLabel(step.keys)));
-            else status.appendChild(el('span', { color: '#ccc' }, `types "${step.text}"`));
+            else status.appendChild(el('span', { color: '#e4e4e4' }, `types "${step.text}"`));
         });
-        if (shift) status.appendChild(el('span', { color: '#888', marginLeft: '4px' }, shiftHint(shift, pointer.touch ? 'tap' : 'click')));
+        if (shift) status.appendChild(el('span', { color: '#c8c8c8', marginLeft: '4px' }, shiftHint(shift, pointer.touch ? 'tap' : 'click')));
     };
 
     const refresh = () => {
