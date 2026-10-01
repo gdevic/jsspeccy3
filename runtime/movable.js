@@ -194,6 +194,7 @@ export function makeMovable(panel, handle, container, opts) {
 /* ==================== the devices beside the Spectrum ==================== */
 
 const DEVICE_GAP = 2;   // pixels of daylight a drag keeps between two devices
+const CABLE_Z = '89';   // the cables' layer, below every device
 const devices = [];     // every device made movable, shown or not
 
 // Whether a and b are within `gap` pixels of each other.
@@ -256,10 +257,45 @@ export function makeDeviceMovable(body, cable, opts) {
     const rect = () => body.getBoundingClientRect();
     const scale = () => rect().width / body.offsetWidth;
 
+    /* Every cable runs under every device, its own included, so it is not
+     * drawn inside its owner's scaled element (a stacking context of its
+     * own, which another device's cable could not go below) but in a layer
+     * of its own beneath them all, laid over the slot it leaves there at the
+     * same place and scale. */
+    const slot = document.createElement('div');
+    slot.style.flex = 'none';
+    cable.replaceWith(slot);
+    const layer = document.createElement('div');
+    Object.assign(layer.style, { position: 'absolute', left: '0', top: '0', zIndex: CABLE_Z, transformOrigin: '0 0', pointerEvents: 'none', display: 'none' });
+    layer.appendChild(cable);
+
+    function placeCable() {
+        slot.style.width = cable.getAttribute('width') + 'px';
+        slot.style.height = cable.getAttribute('height') + 'px';
+        const host = slot.offsetParent;  // the owner's element; none while it is hidden
+        const container = host && host.parentNode;
+        if (!container || !slot.offsetHeight) {
+            layer.style.display = 'none';
+            return;
+        }
+        if (layer.parentNode !== container) container.appendChild(layer);
+        const r = slot.getBoundingClientRect();
+        const c = container.getBoundingClientRect();
+        Object.assign(layer.style, {
+            display: 'block',
+            left: (r.left - c.left - container.clientLeft + container.scrollLeft) + 'px',
+            top: (r.top - c.top - container.clientTop + container.scrollTop) + 'px',
+            transform: `scale(${r.height / slot.offsetHeight})`,
+        });
+    }
+    // Shown and hidden with its owner's element, which may not tell.
+    if (window.ResizeObserver) new ResizeObserver(placeCable).observe(slot);
+
     function apply(x, y) {
         offset = { x, y };
         body.style.transform = (x || y) ? `translate(${x}px, ${y}px)` : '';
         draw(x, y);
+        placeCable();
     }
 
     const saved = loadPlaces()[id] || {};
@@ -324,6 +360,7 @@ export function makeDeviceMovable(body, cable, opts) {
         dragging: () => drag !== null,
         update() {
             draw(offset.x, offset.y);
+            placeCable();
             scheduleSettle();
         },
     };
