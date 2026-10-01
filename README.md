@@ -10,7 +10,9 @@ A ZX Spectrum emulator for the browser
 
 ## Why JSSpeccy3 / dev
 
-A Spectrum where the peripherals feel like real hardware on your desk, and everything you need to play is already in the browser.
+Most Spectrum emulators treat peripherals as menu items and forget your work when the window closes. JSSpeccy3 / dev puts the hardware on your desk: a cassette recorder, two Microdrives and a ZX Printer that you can drag around, and that work and sound like the originals. The recorder's keys clunk, its motor hums and the tape whines as it winds, the Microdrives whirr, and the printer buzzes as its paper rises. Your cassettes, cartridges and printouts are still there on your next visit.
+
+It runs in any browser and loads thousands of games in one click, with cheats you can switch on and off. Plug in a joystick or gamepad and play as on the real machine, or click any keyword on the on-screen keyboard and it is typed for you. On a first visit the cassette and cartridge boxes already hold starter programs, from Tetris and Invaders to a Mandelbrot set you can zoom into and a guessing game that learns, so there is something to play straight away.
 
 * **A tape recorder you can use:** `SAVE` onto your own cassettes, wind anywhere and `LOAD` from there, record the beeper.
 * **Devices, not menu items:** Microdrives and a ZX Printer stand beside the Spectrum on their leads, and you drag them wherever you like.
