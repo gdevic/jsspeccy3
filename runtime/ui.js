@@ -427,6 +427,15 @@ export class UIController extends EventEmitter {
         emulator.on('notice', (text) => {
             if (this.uiEnabled) this.showNotice(text);
         });
+        // Warp's label, with the speed it reaches once measured.
+        emulator.on('warp', (on) => {
+            if (!this.uiEnabled) return;
+            if (on) this.showWarpBadge('Warp');
+            else this.hideWarpBadge();
+        });
+        emulator.on('warpRate', (rate) => {
+            if (this.uiEnabled && emulator.warp) this.showWarpBadge(`Warp ×${Math.round(rate)}`);
+        });
         emulator.on('powerOnPaused', () => {
             // on, with its picture, but not running: no power-on to watch
             if (this.screenOff) this.screenOff.remove();
@@ -595,6 +604,7 @@ export class UIController extends EventEmitter {
                 width: this.canvas.offsetWidth + 'px', height: canvasHeight + 'px',
             });
         }
+        if (this.warpBadge) this.placeWarpBadge();
     }
 
     /* The tape recorder and the Microdrives stand out past the container's
@@ -769,6 +779,30 @@ export class UIController extends EventEmitter {
         notice.style.opacity = '1';
         clearTimeout(this.noticeTimer);
         this.noticeTimer = setTimeout(() => { notice.style.opacity = '0'; }, 1200);
+    }
+    /* A label over the top right of the picture, in the notice's style, that
+     * stays for as long as Warp is on: its own element, so a notice comes
+     * and goes beside it. */
+    showWarpBadge(text) {
+        if (!this.warpBadge) {
+            const badge = document.createElement('div');
+            badge.style.cssText = 'position: absolute; transform: translateX(-100%); z-index: 3; '
+                + 'padding: 4px 12px; border-radius: 4px; background: rgba(0, 0, 0, 0.7); color: #fff; '
+                + 'font: bold 13px Arial, Helvetica, sans-serif; font-variant-numeric: tabular-nums; '
+                + 'white-space: nowrap; pointer-events: none;';
+            this.appContainer.appendChild(badge);
+            this.warpBadge = badge;
+        }
+        this.warpBadge.textContent = text;
+        this.warpBadge.style.display = 'block';
+        this.placeWarpBadge();
+    }
+    hideWarpBadge() {
+        if (this.warpBadge) this.warpBadge.style.display = 'none';
+    }
+    placeWarpBadge() {
+        this.warpBadge.style.top = (this.canvas.offsetTop + 8) + 'px';
+        this.warpBadge.style.left = (this.canvas.offsetLeft + this.canvas.offsetWidth - 8) + 'px';
     }
     /* Opens the dialog window, empty, and returns it; see DialogFrame.show
      * for `opts`. Dialogs open through openDialog in dialog.js. */

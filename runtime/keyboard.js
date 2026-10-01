@@ -208,10 +208,13 @@ export class BaseKeyboardHandler {
         this.eventsAreBound = false;
         this.closeGuarded = false;  // see guardClose
         /* Keys that act on the emulator instead of reaching the Spectrum,
-         * by KeyboardEvent.code: {F3: () => ...}. Like every other key they
-         * work only while the machine runs, as the handler is stopped when it
-         * is paused. */
+         * by KeyboardEvent.code: a function acts as the key goes down ({F3:
+         * () => ...}), and {down, up} acts for as long as the key is held,
+         * up() coming as it is let go or as every key is released. Like
+         * every other key they work only while the machine runs, as the
+         * handler is stopped when it is paused. */
         this.hotkeys = {};
+        this.heldHotkeys = new Set();  // codes of the {down, up} hotkeys held down
 
         this.keypressHandler = (evt) => {
             if (!evt.metaKey) evt.preventDefault();
@@ -248,12 +251,31 @@ export class BaseKeyboardHandler {
     }
 
     /* Runs the hotkey `evt` is, if any, and returns whether it was one; an
-     * auto-repeat is taken but does not run it again. A key held with Ctrl,
-     * Alt or Meta is the browser's or the Spectrum's, not a hotkey. */
+     * auto-repeat is taken but does not run it again. A held hotkey takes
+     * an auto-repeat as its key going down when it isn't held: the key
+     * kept down while focus was away, and released then, comes back
+     * through its repeats. A key held with Ctrl, Alt or Meta is the
+     * browser's or the Spectrum's, not a hotkey. */
     handleHotkey(evt) {
         const action = Object.prototype.hasOwnProperty.call(this.hotkeys, evt.code) ? this.hotkeys[evt.code] : null;
         if (!action || evt.ctrlKey || evt.altKey || evt.metaKey) return false;
-        if (!evt.repeat) action();
+        if (typeof action === 'function') {
+            if (!evt.repeat) action();
+        } else if (!this.heldHotkeys.has(evt.code)) {
+            this.heldHotkeys.add(evt.code);
+            action.down();
+        }
+        evt.preventDefault();
+        return true;
+    }
+
+    /* Lets go of the held hotkey `evt` is, if it is held, and returns
+     * whether it was. Whatever modifiers are down by now, it is the key
+     * that went down as the hotkey. */
+    handleHotkeyUp(evt) {
+        if (!this.heldHotkeys.has(evt.code)) return false;
+        this.heldHotkeys.delete(evt.code);
+        this.hotkeys[evt.code].up();
         evt.preventDefault();
         return true;
     }
@@ -263,6 +285,9 @@ export class BaseKeyboardHandler {
             this.worker.postMessage({ message: 'keyUp', row, mask: 0x1f });
         }
         this.guardClose(false);
+        const held = [...this.heldHotkeys];
+        this.heldHotkeys.clear();
+        for (const code of held) this.hotkeys[code].up();
         if (this.onReleaseAll) this.onReleaseAll();
     }
 
@@ -331,6 +356,7 @@ export class StandardKeyboardHandler extends BaseKeyboardHandler {
         };
 
         this.keyupHandler = (evt) => {
+            if (this.handleHotkeyUp(evt)) return;
             if (evt.keyCode === CTRL_KEY_CODE) this.guardClose(false);
             const keyInfo = (evt.code === CAPS_SHIFT_CODE) ? SPECCY.CAPS_SHIFT : KEY_CODES[evt.keyCode];
             if (keyInfo) {
@@ -452,6 +478,7 @@ export class RecreatedZXSpectrumHandler extends BaseKeyboardHandler {
         };
 
         this.keyupHandler = (evt) => {
+            if (this.handleHotkeyUp(evt)) return;
             if (!evt.metaKey) evt.preventDefault();
         };
     }

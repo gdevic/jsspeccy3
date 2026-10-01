@@ -44,6 +44,14 @@ const scriptUrl = document.currentScript.src;
 // How far behind time the frame loop catches up (see advanceFrameTime).
 const MAX_FRAME_LAG_MS = 100;
 
+/* Warp (F8 held): how many times real time the machine runs at most;
+ * Infinity runs it as fast as the computer can. A value of 1 or below is
+ * taken as Infinity. */
+const WARP_SPEED = Infinity;
+
+// How often the speed Warp reaches is measured and told (see the warpRate event).
+const WARP_RATE_MS = 500;
+
 // How long exit() waits for the worker to send back what it holds.
 const EXIT_FLUSH_TIMEOUT_MS = 2000;
 
@@ -143,6 +151,7 @@ class Emulator extends EventEmitter {
             this.keyboardHandler.hotkeys = {
                 F3: () => this.quickRecall(),
                 F2: () => this.quickSave(),
+                F8: { down: () => this.setWarp(true), up: () => this.setWarp(false) },
             };
         }
         this.joystickEnabled = ('joystickEnabled' in opts) ? opts.joystickEnabled : true;
@@ -200,8 +209,17 @@ class Emulator extends EventEmitter {
         this.quickState = null;  // the Spectrum as F2 saved it, for F3 (see quickSave)
 
         this.msPerFrame = 20;
+        /* Warp: the machine running as fast as WARP_SPEED lets it, silent,
+         * for as long as F8 is held (see setWarp). warpRate is how many
+         * times real time it reached over the last WARP_RATE_MS, counted
+         * from warpFrames frames run since warpSince. */
+        this.warp = false;
+        this.warpRate = 0;
+        this.warpFrames = 0;
+        this.warpSince = 0;
 
         this.isExecutingFrame = false;
+        this.frameRequest = null;  // the frame in flight: {warp, period} it was asked for under
         this.nextFrameTime = null;
         this.machineType = null;
 
@@ -270,20 +288,27 @@ class Emulator extends EventEmitter {
                 case 'coreFailed':
                     alert('The emulator could not load its core: ' + e.data.error);
                     break;
-                case 'frameCompleted':
+                case 'frameCompleted': {
                     // benchmarkRunCount++;
+                    const request = this.frameRequest || { warp: false, period: this.msPerFrame };
+                    this.frameRequest = null;
+                    const frames = e.data.frames ?? 1;
                     if ('audioBufferLeft' in e.data) {
                         this.audioHandler.frameCompleted(e.data.audioBufferLeft, e.data.audioBufferRight);
                     }
 
-                    this.displayHandler.frameCompleted(e.data.frameBuffer);
+                    this.displayHandler.frameCompleted(e.data.frameBuffer, frames);
                     this.setEditorState(e.data.editor);
                     if (this.isRunning) {
                         const time = performance.now();
-                        if (time > this.nextFrameTime) {
-                            // behind time: run the next frame straight away, to catch up
-                            this.runFrame();
-                            this.advanceFrameTime(time);
+                        // A frame at the Spectrum's pace is one on the clock, however many fast loading ran in it.
+                        this.advanceFrameTime(time, request.warp ? frames : 1, request.period);
+                        if (this.warp && request.warp) this.countWarpFrames(time, frames);
+                        /* Behind time, or warping: the next frame straight
+                         * away. Never for a hidden page, which runs no frames
+                         * of its own, so that Warp too stops there. */
+                        if (this.frameDue(time) && !document.hidden) {
+                            this.runFrame(time);
                         } else {
                             this.isExecutingFrame = false;
                         }
@@ -291,6 +316,7 @@ class Emulator extends EventEmitter {
                         this.isExecutingFrame = false;
                     }
                     break;
+                }
                 case 'idleFrameCompleted':
                     if ('audioBufferLeft' in e.data) {
                         this.audioHandler.frameCompleted(e.data.audioBufferLeft, e.data.audioBufferRight);
@@ -308,6 +334,7 @@ class Emulator extends EventEmitter {
                         this.audioHandler.frameFailed(e.data.audioBufferLeft, e.data.audioBufferRight);
                     }
                     this.displayHandler.frameFailed(e.data.frameBuffer);
+                    this.frameRequest = null;
                     this.isExecutingFrame = false;
                     this.pause();
                     alert('The emulator stopped because of an error: ' + e.data.error);
@@ -337,7 +364,8 @@ class Emulator extends EventEmitter {
                     }
                     break;
                 case 'screenRendered':
-                    this.displayHandler.frameCompleted(e.data.frameBuffer);
+                    // the picture alone: no frame was run for it
+                    this.displayHandler.frameCompleted(e.data.frameBuffer, 0);
                     this.displayHandler.show();
                     if (this.screenRenderedResolution) this.screenRenderedResolution();
                     this.screenRenderedResolution = null;
@@ -557,6 +585,7 @@ class Emulator extends EventEmitter {
 
     pause() {
         if (this.isRunning) {
+            this.setWarp(false);
             this.isRunning = false;
             if (this.keyboardEnabled) {
                 this.keyboardHandler.stop();
@@ -609,9 +638,15 @@ class Emulator extends EventEmitter {
     }
 
 
-    runFrame() {
+    /* Asks the worker for the frames due at `time`: one at the Spectrum's
+     * pace, a burst in Warp (see framesOwed). The clock moves on for them
+     * once they are back, by how many were run. */
+    runFrame(time) {
         this.isExecutingFrame = true;
         const frameBuffer = this.displayHandler.getNextFrameBuffer();
+        const warp = this.warp;
+        const frames = this.framesOwed(time);
+        this.frameRequest = { warp, period: this.framePeriod };
 
         if (this.audioHandler.isActive) {
             const [audioBufferLeft, audioBufferRight] = this.audioHandler.frameBuffers;
@@ -621,23 +656,53 @@ class Emulator extends EventEmitter {
                 frameBuffer,
                 audioBufferLeft,
                 audioBufferRight,
+                warp,
+                frames,
             }, [frameBuffer, audioBufferLeft, audioBufferRight]);
         } else {
             this.worker.postMessage({
                 message: 'runFrame',
                 frameBuffer,
+                warp,
+                frames,
             }, [frameBuffer]);
         }
+    }
+
+    /* How long a frame takes in real time: msPerFrame at the Spectrum's
+     * pace, WARP_SPEED times less in Warp, and 0 in a Warp with no limit. */
+    get framePeriod() {
+        if (!this.warp) return this.msPerFrame;
+        return (WARP_SPEED > 1) ? (this.msPerFrame / WARP_SPEED) : 0;
+    }
+
+    // Whether the machine has a frame to run at `time`: always, in a Warp with no limit.
+    frameDue(time) {
+        return (this.framePeriod === 0) || (time > this.nextFrameTime);
+    }
+
+    /* How many frames to ask the worker for at `time`: one at the
+     * Spectrum's pace; in Warp, those due by then, at least one, or 0 for
+     * as many as it fits in a burst when Warp has no limit. */
+    framesOwed(time) {
+        if (!this.warp) return 1;
+        const period = this.framePeriod;
+        if (period === 0) return 0;
+        return Math.max(1, Math.floor((time - this.nextFrameTime) / period) + 1);
     }
 
     /* A frame is due every msPerFrame, however late the last one ran, so a
      * display refreshing slower than 50 Hz, or a slow round trip to the
      * worker, is made up by running frames back to back. Once more than
      * MAX_FRAME_LAG_MS behind (a stalled tab, or a machine too slow to keep
-     * up) the lost time is let go. */
-    advanceFrameTime(time) {
-        this.nextFrameTime += this.msPerFrame;
+     * up) the lost time is let go. `frames` frames were run, each taking
+     * `period`, the frame period they were asked for under; the clock never
+     * runs more than a frame ahead of `time`, so a burst that comes back
+     * after the warp ended is not made up for by standing still. */
+    advanceFrameTime(time, frames, period) {
+        this.nextFrameTime += frames * period;
         if ((time - this.nextFrameTime) > MAX_FRAME_LAG_MS) this.nextFrameTime = time;
+        this.nextFrameTime = Math.min(this.nextFrameTime, time + this.framePeriod);
     }
 
     runAnimationFrame(time) {
@@ -647,19 +712,49 @@ class Emulator extends EventEmitter {
         }
         if (this.isRunning) {
             // A machine started before the worker has its core and ROMs waits for them.
-            if (time > this.nextFrameTime && !this.isExecutingFrame && this.isReady) {
-                this.runFrame();
-                this.advanceFrameTime(time);
+            if (this.frameDue(time) && !this.isExecutingFrame && this.isReady) {
+                this.runFrame(time);
             }
             this.requestAnimationFrame();
         } else if (this.deckIdle) {
             if (time > this.nextFrameTime && !this.isExecutingFrame) {
                 this.runIdleFrame();
-                this.advanceFrameTime(time);
+                this.advanceFrameTime(time, 1, this.msPerFrame);
             }
             this.requestAnimationFrame();
         }
     };
+
+    /* Warp (F8 held): the machine runs as fast as WARP_SPEED lets it, with
+     * every device, and silent, since its sound at that speed is noise.
+     * Only while the machine runs: pausing it ends the warp. Returns
+     * whether it is warping. */
+    setWarp(on) {
+        on = !!on && this.isRunning;
+        if (on === this.warp) return on;
+        this.warp = on;
+        this.audioHandler.muted = on;
+        // The clock starts afresh both ways: Warp waits for no frame not yet due, and the frames it ran are not owed afterwards.
+        const now = performance.now();
+        this.nextFrameTime = now;
+        this.warpRate = 0;
+        this.warpFrames = 0;
+        this.warpSince = now;
+        this.emit('warp', on);
+        if (on && !this.isExecutingFrame && this.isReady) this.runFrame(now);
+        return on;
+    }
+
+    // Counts frames run in Warp, and tells the speed reached every WARP_RATE_MS.
+    countWarpFrames(time, frames) {
+        this.warpFrames += frames;
+        const elapsed = time - this.warpSince;
+        if (elapsed < WARP_RATE_MS) return;
+        this.warpRate = (this.warpFrames * this.msPerFrame) / elapsed;
+        this.warpFrames = 0;
+        this.warpSince = time;
+        this.emit('warpRate', this.warpRate);
+    }
 
     setMachine(type) {
         if (type != 128 && type != 5) type = 48;

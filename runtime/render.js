@@ -49,7 +49,10 @@ export class CanvasRenderer {
         }
     }
 
-    showFrame(frameBuffer) {
+    /* Draws a frame; `frames` is how many the machine has run since the last
+     * one drawn, which FLASH counts on by, so it keeps the machine's time
+     * however many frames are never drawn. */
+    showFrame(frameBuffer, frames = 1) {
         const frameBytes = new Uint8Array(frameBuffer);
         let pixelPtr = 0;
         let bufferPtr = 0;
@@ -104,7 +107,7 @@ export class CanvasRenderer {
             }
         }
         this.ctx.putImageData(this.imageData, 0, 0);
-        this.flashPhase = (this.flashPhase + 1) & 0x1f;
+        this.flashPhase = (this.flashPhase + frames) & 0x1f;
     }
 }
 
@@ -128,12 +131,15 @@ export class DisplayHandler {
         this.bufferBeingShown = null;
         this.bufferAwaitingShow = null;
         this.lockedBuffer = null;
+        this.framesSinceShown = 0;  // frames the machine has run since the last one shown
     }
 
-    frameCompleted(newFrameBuffer) {
+    // A filled frame buffer back from the worker, after `frames` frames run (none for a picture alone).
+    frameCompleted(newFrameBuffer, frames = 1) {
         this.frameBuffers[this.lockedBuffer] = newFrameBuffer;
         this.bufferAwaitingShow = this.lockedBuffer;
         this.lockedBuffer = null;
+        this.framesSinceShown += frames;
     }
 
     /* A frame the worker could not run: its buffer comes back unfilled, and
@@ -161,7 +167,8 @@ export class DisplayHandler {
     show() {
         this.bufferBeingShown = this.bufferAwaitingShow;
         this.bufferAwaitingShow = null;
-        this.renderer.showFrame(this.frameBuffers[this.bufferBeingShown]);
+        this.renderer.showFrame(this.frameBuffers[this.bufferBeingShown], this.framesSinceShown);
+        this.framesSinceShown = 0;
         this.bufferBeingShown = null;
     }
 }

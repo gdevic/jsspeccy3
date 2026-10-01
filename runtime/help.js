@@ -150,6 +150,7 @@ const CARDS = [
             [`${k('"')} ${k(';')} ${k(':')} ${k('+')} ${k('=')} …`, 'Typed as on the PC, via SYMBOL SHIFT'],
             ['Numeric keypad', 'Digits'],
             [`${k('F2')} ${k('F3')}`, 'Instant save · instant recall of the Spectrum'],
+            [`Hold ${k('F8')}`, 'Warp: everything runs as fast as it can'],
         ],
         tip: 'Keys reach the Spectrum only while it runs and has the focus: click the screen first.',
     },

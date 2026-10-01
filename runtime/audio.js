@@ -92,6 +92,8 @@ const isHeld = (audioContext) => (audioContext.state === 'suspended') || (audioC
 export class AudioHandler {
     constructor() {
         this.isActive = false;
+        // While muted (Warp), frames still come and go but none of their sound is played.
+        this.muted = false;
 
         if (ENABLE_OSCILLOSCOPE) {
             this.canvas = document.createElement('canvas');
@@ -212,7 +214,7 @@ export class AudioHandler {
         this.frameBuffers[0] = audioBufferLeft;
         this.frameBuffers[1] = audioBufferRight;
 
-        if (!this.isActive) return;
+        if (!this.isActive || this.muted) return;
 
         // frameBuffers go back to the worker for the next frame, so the
         // output gets its own copy of the samples.

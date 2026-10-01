@@ -37,6 +37,11 @@ export function createMachineApi(emu) {
             emu.start();
             return state();
         },
+        /* Warp, as holding F8 does: the machine runs as fast as it can,
+         * silent, until setWarp(false) or a pause. Only a running machine
+         * warps; returns whether it is warping. */
+        setWarp(on) { return emu.setWarp(on); },
+        warp() { return emu.warp; },
     };
 }
 

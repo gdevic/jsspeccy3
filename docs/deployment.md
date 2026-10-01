@@ -87,6 +87,7 @@ This fork adds `emu.machine`, `emu.keyboard` and `emu.tape`, which do from code 
 * `emu.machine.powerOn()` - switch the machine on and run it, as the play button over the screen does; returns the new state
 * `emu.machine.powerOff()` - switch the machine off: it stops, showing a switched-off screen; returns the new state
 * `emu.machine.pause()` and `emu.machine.resume()` - pause a running machine, and run a paused one again, as the toolbar's pause button does; `resume` throws for a machine that is switched off
+* `emu.machine.setWarp(on)` - run the machine as fast as it can, silently, as holding F8 does, until `setWarp(false)` or a pause; only a running machine warps, and it returns whether it is warping. `emu.machine.warp()` tells whether it is
 
 Keys are named `A` to `Z`, `0` to `9`, `ENTER`, `SPACE` (or `BREAK_SPACE`), `CAPS_SHIFT` and `SYMBOL_SHIFT`, in any case; where a method takes keys, it takes one name or an array of names held together. Methods that take time return a promise. Every key is held for 80ms and let go for 120ms before the next, long enough for the ROM to take each one, the same key twice included; `opts` can set `holdMs` and `gapMs`.
 

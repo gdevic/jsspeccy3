@@ -120,6 +120,15 @@ const TRAP_IDLE_FRAMES = 50;
  * milliseconds while the detected loader has the tape playing. */
 const FAST_LOAD_MS = 12;
 
+/* In Warp, a frame request runs frames back to back for up to this many
+ * milliseconds: long enough to be worth the trip between the threads, short
+ * enough that a picture is shown, keys are read and the end of the warp is
+ * taken up between one burst and the next. While a burst runs (inBurst), the
+ * posts that go out every few frames to keep the UI moving wait for its end
+ * and go once; those that tell of a change still go at once. */
+const WARP_BURST_MS = 15;
+let inBurst = false;
+
 /* An auto-started tape is stopped once this many frames (~0.5s) have read the
  * port without a loader sampling it in an edge-timing loop, so a multi-load game
  * waiting between levels finds the tape where the last load left it. A frame is
@@ -727,7 +736,7 @@ const serviceDeck = () => {
     framesSinceDeckStatus++;
     const moving = tapeIsPlaying || deckMode === 'record' || deckWinding();
     const loading = framesSinceTrapLoad < TRAP_LOAD_SHOWN_FRAMES;
-    if ((moving && (framesSinceDeckStatus >= DECK_STATUS_FRAMES)) || (loading !== loadingPosted)) postDeckStatus();
+    if ((moving && !inBurst && (framesSinceDeckStatus >= DECK_STATUS_FRAMES)) || (loading !== loadingPosted)) postDeckStatus();
     if (moving && (framesSinceDeckStatus === 0)) postTapePosition();
 };
 
@@ -938,6 +947,24 @@ const flushMicrodrive = (drive, force) => {
     return true;
 };
 
+const postMicrodriveStatus = (motors) => {
+    mdrLastMotors = motors;
+    mdrFramesSinceStatus = 0;
+    const heads = [];
+    for (let d = 0; d < 8; d++) heads.push(core.getMicrodriveHeadPos(d));
+    postMessage({ message: 'microdriveStatus', motors, heads });
+};
+
+/* At the end of a Warp burst: the posts held back while it ran (see
+ * WARP_BURST_MS), once each, for whatever is moving. */
+const postBurstStatus = () => {
+    const deckMovingNow = deckConnected && (tapeIsPlaying || (deckMode === 'record') || deckWinding());
+    if (deckMovingNow) postDeckStatus();
+    if (tapeIsPlaying || deckMovingNow) postTapePosition();
+    const motors = core.getMicrodriveMotors ? core.getMicrodriveMotors() : 0;
+    if (motors) postMicrodriveStatus(motors);
+};
+
 /* Called once per frame: posts LED/head-position status on change (or at
  * least every MDR_STATUS_INTERVAL_FRAMES, so the UI's head animation stays
  * smooth), and flushes a dirty drive once its motor stops, or periodically
@@ -946,12 +973,8 @@ const serviceMicrodrives = () => {
     if (!core.getMicrodriveMotors) return; // core predates this feature (shouldn't happen, but be defensive)
     const motors = core.getMicrodriveMotors();
     mdrFramesSinceStatus++;
-    if (motors !== mdrLastMotors || mdrFramesSinceStatus >= MDR_STATUS_INTERVAL_FRAMES) {
-        mdrLastMotors = motors;
-        mdrFramesSinceStatus = 0;
-        const heads = [];
-        for (let d = 0; d < 8; d++) heads.push(core.getMicrodriveHeadPos(d));
-        postMessage({ message: 'microdriveStatus', motors, heads });
+    if ((motors !== mdrLastMotors) || (!inBurst && (mdrFramesSinceStatus >= MDR_STATUS_INTERVAL_FRAMES))) {
+        postMicrodriveStatus(motors);
     }
     const modifiedMask = core.getMicrodriveModified();
     for (let d = 0; d < 8; d++) {
@@ -1303,7 +1326,7 @@ const playTapePulses = () => {
     // Advance the cassette counter by the tape actually played this frame.
     tapePositionTstates += tstatesGenerated;
     framesSincePositionPost++;
-    if (tapeStopped || framesSincePositionPost >= 5) postTapePosition();
+    if (tapeStopped || (!inBurst && (framesSincePositionPost >= 5))) postTapePosition();
     if (tapeStopped) {
         setTapePlaying(false);
         deckSound(4);  // the recorder's auto stop
@@ -1376,13 +1399,27 @@ onmessage = (e) => {
                 audioLength = audioBufferLeft.byteLength / 4;
             }
 
+            /* One frame at the Spectrum's pace. In Warp, frames back to back
+             * for WARP_BURST_MS: as many as `frames` asks for, or as many as
+             * fit when it is 0. Only the last one's picture and sound go
+             * back, with how many were run. */
+            const warp = !!e.data.warp;
+            const wanted = e.data.frames ?? 1;
+            let frames = 0;
             try {
                 core.setAudioSamplesPerFrame(audioLength);
-                runEmulatedFrame();
-                if (tapeTrapsEnabled) {
+                inBurst = warp;
+                const start = performance.now();
+                do {
+                    runEmulatedFrame();
+                    frames++;
+                } while (warp && ((wanted === 0) || (frames < wanted)) && ((performance.now() - start) < WARP_BURST_MS));
+                if (tapeTrapsEnabled && !warp) {
                     const fastLoadStart = performance.now();
-                    while (tapeIsPlaying && tapeAutoPlayed && (performance.now() - fastLoadStart) < FAST_LOAD_MS)
+                    while (tapeIsPlaying && tapeAutoPlayed && (performance.now() - fastLoadStart) < FAST_LOAD_MS) {
                         runEmulatedFrame();
+                        frames++;
+                    }
                 }
             } catch (err) {
                 /* The UI waits for every frame it sends to come back, so a
@@ -1397,7 +1434,10 @@ onmessage = (e) => {
                     ...(audioLength ? { audioBufferLeft, audioBufferRight } : {}),
                 }, buffers);
                 break;
+            } finally {
+                inBurst = false;
             }
+            if (warp) postBurstStatus();
 
             frameData.set(workerFrameData);
             const editor = editorState();
@@ -1414,12 +1454,14 @@ onmessage = (e) => {
                     audioBufferLeft,
                     audioBufferRight,
                     editor,
+                    frames,
                 }, [frameBuffer, audioBufferLeft, audioBufferRight]);
             } else {
                 postMessage({
                     message: 'frameCompleted',
                     frameBuffer,
                     editor,
+                    frames,
                 }, [frameBuffer]);
             }
 
