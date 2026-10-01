@@ -278,7 +278,14 @@ export function makeDeviceMovable(body, cable, opts) {
             layer.style.display = 'none';
             return;
         }
-        if (layer.parentNode !== container) container.appendChild(layer);
+        if (layer.parentNode !== container) {
+            container.appendChild(layer);
+            // Only the body takes the pointer: the rest of the owner's
+            // element, the slot and wherever the body stood before it was
+            // moved, lets it through to the cables below.
+            for (let e = slot; e !== container; e = e.parentNode) e.style.pointerEvents = 'none';
+            body.style.pointerEvents = 'auto';
+        }
         const r = slot.getBoundingClientRect();
         const c = container.getBoundingClientRect();
         Object.assign(layer.style, {

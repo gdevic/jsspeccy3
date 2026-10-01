@@ -259,7 +259,8 @@ function buildRibbon() {
         lines.push(svgEl('path', { fill: 'none', stroke: '#85878c', 'stroke-width': 0.35 }));
         svg.appendChild(lines[i - 1]);
     }
-    svg.appendChild(svgEl('rect', { x: W - plugW, y: y1 - 1.5, width: plugW, height: thick + 3, rx: 0.8, fill: '#151618', stroke: '#000', 'stroke-width': 0.4 }));
+    // Its outline ends at the side of the Spectrum, never over the screen.
+    svg.appendChild(takesClick(svgEl('rect', { x: W - plugW - 0.2, y: y1 - 1.5, width: plugW, height: thick + 3, rx: 0.8, fill: '#151618', stroke: '#000', 'stroke-width': 0.4 })));
     function draw(dx, dy) {
         // Its bends stay in proportion however far it is stretched.
         const cx = (f) => dx + ((W - dx) * f);
@@ -284,6 +285,13 @@ export function buildLead(colour, sheen, { width, shine, lift }) {
     Object.assign(hit.style, { pointerEvents: 'stroke', cursor: 'pointer' });
     g.append(line, gloss, hit);
     return { g, setPath(d) { for (const p of [line, gloss, hit]) p.setAttribute('d', d); } };
+}
+
+/* Lets a part of a cable SVG (a plug, a jack) take the pointer, in a cable
+ * that otherwise lets it through, for the same click as the lead. */
+export function takesClick(part) {
+    Object.assign(part.style, { pointerEvents: 'visiblePainted', cursor: 'pointer' });
+    return part;
 }
 
 /* ==================== the tape-loop ring ==================== */

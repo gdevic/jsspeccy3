@@ -3,7 +3,7 @@
  *
  * createPrinter(ui, emu) builds the printer standing to the right of the
  * Spectrum, joined to it by its cable, with the printout rising out of it up
- * to the top of the screen (visible = connected). Clicking the printer opens
+ * to the top of the page (visible = connected). Clicking the printer opens
  * its panel: the paper left on the roll, loading a new roll, and tearing off
  * or saving the printout. The FEED button on the printer feeds paper while
  * it is held down. The printer itself is emulated in generator/core.ts.in;
@@ -11,7 +11,7 @@
  */
 
 import JSZip from 'jszip';
-import { DOCK_SCALE, RIBBON_PLUG_Y, buildLead } from './microdrive-ui.js';
+import { DOCK_SCALE, RIBBON_PLUG_Y, buildLead, takesClick } from './microdrive-ui.js';
 import { makeMovable, makeDeviceMovable } from './movable.js';
 import closeIcon from './icons/close.svg';
 import mouseWheelIcon from './icons/mouse-wheel.svg';
@@ -173,7 +173,7 @@ function buildPrinterArt() {
     });
     paperWrap.append(hanging, bend);
     // A mouse with its wheel in the top right corner, while there is more of
-    // the printout above the top of the screen to scroll to.
+    // the printout above the top of the page to scroll to.
     const scrollHint = el('div', {
         position: 'absolute', top: '1.5px', right: '1.5px', width: '6.5px', height: '9.75px',
         display: 'none', filter: 'drop-shadow(0 0 0.4px rgba(255,255,255,0.9))',
@@ -239,6 +239,12 @@ function buildPrinterArt() {
     front.appendChild(feed);
     box.appendChild(front);
 
+    // The paper's box reaches from the slot up to the top of the page, but
+    // only as far as there is paper in it: above the printout it would be
+    // empty, and would take clicks from whatever is under it.
+    let reach = 0, printed = 0;
+    const sizePaper = () => { paperWrap.style.height = Math.min(reach, printed) + 'px'; };
+
     return {
         element: box,
         faces: [face, strip],  // what a click on opens the panel
@@ -256,13 +262,14 @@ function buildPrinterArt() {
             light.setAttribute('fill', on ? '#ff3b30' : '#3a1210');
             light.style.filter = on ? 'drop-shadow(0 0 2px #ff3b30)' : 'none';
         },
-        // Sizes the paper: `height` from the slot up to the top of the screen,
+        // Sizes the paper: `height` from the slot up to the top of the page,
         // plus `drop` pulled down below the slot, hanging folded over the
         // front of the printer.
         setDrop(drop, height) {
             const folded = drop > 0;
             paperWrap.style.bottom = (PRINTER_H - SLOT_Y - drop) + 'px';
-            paperWrap.style.height = (height + drop) + 'px';
+            reach = height + drop;
+            sizePaper();
             paperWrap.style.zIndex = folded ? '1' : '';
             paperWrap.style.boxShadow = folded ? '0 1px 1.5px rgba(0,0,0,0.6)' : 'none';
             const hangingHeight = SLOT_Y + drop - BAR_Y;
@@ -270,6 +277,11 @@ function buildPrinterArt() {
             bend.style.bottom = (hangingHeight - 0.7) + 'px';
             hanging.style.display = folded ? 'block' : 'none';
             bend.style.display = folded ? 'block' : 'none';
+        },
+        // How high the printout drawn on the paper reaches above its bottom edge.
+        setPrinted(height) {
+            printed = height;
+            sizePaper();
         },
         setScrollHint(shown) {
             scrollHint.style.display = shown ? 'block' : 'none';
@@ -299,8 +311,9 @@ function buildCable() {
     Object.assign(svg.style, { display: 'block', overflow: 'visible', pointerEvents: 'none' });
     const lead = buildLead('#111113', '#3c3c41', { width: 3.4, shine: 0.7, lift: 0.8 });
     svg.appendChild(lead.g);
-    svg.appendChild(svgEl('rect', { x: plugW, y: y - 2.2, width: 2.6, height: 4.4, rx: 0.6, fill: '#222225' }));
-    svg.appendChild(svgEl('rect', { x: 0, y: y - 6, width: plugW, height: 12, rx: 0.8, fill: '#151618', stroke: '#000', 'stroke-width': 0.4 }));
+    // The plug's outline ends at the side of the Spectrum, never over the screen.
+    svg.appendChild(takesClick(svgEl('rect', { x: plugW + 0.2, y: y - 2.2, width: 2.6, height: 4.4, rx: 0.6, fill: '#222225' })));
+    svg.appendChild(takesClick(svgEl('rect', { x: 0.2, y: y - 6, width: plugW, height: 12, rx: 0.8, fill: '#151618', stroke: '#000', 'stroke-width': 0.4 })));
     function draw(dx, dy) {
         const sx = W + 2 + dx, sy = 17 + dy, ex = plugW + 1.5, span = sx - ex;
         lead.setPath(`M ${sx} ${sy} C ${ex + (span * 0.35)} ${sy + 1} ${ex + (span * 0.3)} ${y} ${ex} ${y}`);
@@ -598,7 +611,7 @@ export function createPrinter(ui, emu) {
     /* ---------- drawing the printout ---------- */
     const ctx = art.paper.getContext('2d');
     let visibleRows = 1;
-    let paperHeight = 0;  // from the slot up to the top of the screen
+    let paperHeight = 0;  // from the slot up to the top of the page
 
     /* Scrolled back with the mouse wheel, the paper is pulled down: first it
      * slides out over the front of the printer until it hangs folded down to
@@ -626,11 +639,17 @@ export function createPrinter(ui, emu) {
         art.setGrab(canScroll, !!drag);
     }
 
+    // The paper's box reaches as high as the printout drawn on it.
+    function sizePrinted() {
+        art.setPrinted(Math.max(0, Math.min(printout.length - scrollOffset, visibleRows)) * DOT_UNITS);
+    }
+
     function redrawPaper() {
         updateScrollHint();
         const end = printout.length - scrollOffset;
         const shown = Math.min(end, visibleRows);
         ctx.clearRect(0, 0, PAPER_DOTS, visibleRows);
+        sizePrinted();
         if (shown <= 0) return;
         const img = ctx.createImageData(PAPER_DOTS, shown);
         const first = end - shown;
@@ -689,7 +708,7 @@ export function createPrinter(ui, emu) {
     const dockScale = () => DOCK_SCALE * (typeof ui.zoom === 'number' ? ui.zoom : 1);
 
     // Wheel down pulls the paper down, wheel up takes it back up. Only once
-    // the printout's top is cut off at the top of the screen is there
+    // the printout's top is cut off at the top of the page is there
     // anything to pull down to; once folded, the fold is as far as it goes
     // back up.
     art.paperWrap.addEventListener('wheel', (e) => {
@@ -739,6 +758,7 @@ export function createPrinter(ui, emu) {
     function addRows(count) {
         if (count >= visibleRows) { redrawPaper(); return; }
         updateScrollHint();
+        sizePrinted();
         ctx.globalCompositeOperation = 'copy';
         ctx.drawImage(art.paper, 0, -count);
         ctx.globalCompositeOperation = 'source-over';
@@ -976,9 +996,11 @@ export function createPrinter(ui, emu) {
         element.style.transform = `scale(${scale})`;
         mover.update();
         // The paper reaches from the slot, wherever the printer has been
-        // moved to, up to the top of the screen.
-        const screenTop = emu.canvas.getBoundingClientRect().top - ui.appContainer.getBoundingClientRect().top;
-        const height = Math.max(0, SLOT_Y + ((top + (mover.offset().y * scale) - screenTop) / scale));
+        // moved to, up to the top of the page, as high as a device can be
+        // dragged on it.
+        const container = ui.appContainer;
+        const pageTop = -(container.getBoundingClientRect().top + window.scrollY + container.clientTop);
+        const height = Math.max(0, SLOT_Y + ((top + (mover.offset().y * scale) - pageTop) / scale));
         if (height !== paperHeight) {
             paperHeight = height;
             layoutPaper();

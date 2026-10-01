@@ -23,7 +23,7 @@ import JSZip from 'jszip';
 import * as cassette from './cassette.js';
 import * as store from './cassette-store.js';
 import { boxCopyMovedOn } from './session.js';
-import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W, buildLead } from './microdrive-ui.js';
+import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W, buildLead, takesClick } from './microdrive-ui.js';
 import { openDialog, h, button, confirmButton } from './dialog.js';
 import { makeMovable, makeDeviceMovable } from './movable.js';
 import { makeCommandRow } from './type-in.js';
@@ -463,7 +463,7 @@ function buildLeads() {
         const jack = () => {
             const tip = svgEl('rect', { width: 1.8, height: 1.6, fill: '#c9cbce' });
             const shell = svgEl('rect', { width: 5, height: 3.8, rx: 0.8, fill: colour, stroke: '#000', 'stroke-width': 0.3 });
-            g.append(tip, shell);
+            g.append(takesClick(tip), takesClick(shell));
             return (x, tipX, y) => {
                 tip.setAttribute('x', tipX);
                 tip.setAttribute('y', y - 0.8);
@@ -477,7 +477,8 @@ function buildLeads() {
             const sx = 5 + dx, sy = y0 + dy, ex = width - 5, span = ex - sx;
             setPath(`M ${sx} ${sy} C ${sx + (span * 0.9)} ${sy + 6} ${sx} ${y1 - 30} ${ex} ${y1}`);
             nearJack(dx + 0.6, dx - 1.2, sy);
-            farJack(width - 5.6, width - 0.6, y1);
+            // its tip ending at the side of the Spectrum, never over the screen
+            farJack(width - 6.8, width - 1.8, y1);
         });
         return g;
     };
