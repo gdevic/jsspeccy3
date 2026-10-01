@@ -619,9 +619,10 @@ export function createPrinter(ui, emu) {
      * printing. `pull` is how far it has been pulled, in rows, easing towards
      * `pullTarget` a little every animation frame so it glides; FOLD_ROWS of
      * it bring the paper down to the fold, and the rest is scrollOffset, how
-     * many rows back from the newest its bottom edge is. It stays folded until
-     * printer activity - the Spectrum printing, FEED, or the panel - slides it
-     * back up into the normal view. */
+     * many rows back from the newest its bottom edge is. Taken back up, the
+     * fold shrinks again until the paper is back in the slot, in the normal
+     * view; printer activity - the Spectrum printing, FEED, or the panel -
+     * slides it back there too. */
     const FOLD_ROWS = (FOLD_Y - SLOT_Y) / DOT_UNITS;
     let pull = 0, pullTarget = 0, gliding = false;
     let scrollOffset = 0;
@@ -629,7 +630,7 @@ export function createPrinter(ui, emu) {
     let drag = null;             // the paper held by the pointer: {id, y, from, moved}
 
     // The mouse wheel hint shows while the printout goes on above the top of
-    // the screen.
+    // the page.
     function updateScrollHint() {
         const drop = Math.min(pull, FOLD_ROWS) * DOT_UNITS;
         const rowsInView = Math.ceil((paperHeight + drop) / DOT_UNITS);
@@ -709,8 +710,10 @@ export function createPrinter(ui, emu) {
 
     // Wheel down pulls the paper down, wheel up takes it back up. Only once
     // the printout's top is cut off at the top of the page is there
-    // anything to pull down to; once folded, the fold is as far as it goes
-    // back up.
+    // anything to pull down to, and pulling it down folds it over the front
+    // of the printer straight away. Taken back up past the newest printing,
+    // the fold shrinks as it goes, until the paper's bottom edge is back at
+    // the print head.
     art.paperWrap.addEventListener('wheel', (e) => {
         const normalRows = Math.floor(paperHeight / DOT_UNITS);
         if (pullTarget === 0 && (e.deltaY <= 0 || printout.length <= normalRows)) return;
@@ -718,12 +721,15 @@ export function createPrinter(ui, emu) {
         const pixels = e.deltaY * (e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 400 : 1));
         const rows = pixels / (DOT_UNITS * dockScale());
         const maxPull = FOLD_ROWS + Math.max(0, printout.length - visibleRows);
-        pullTo(Math.max(FOLD_ROWS, Math.min(maxPull, Math.max(pullTarget, FOLD_ROWS) + rows)));
+        const from = (rows > 0) ? Math.max(pullTarget, FOLD_ROWS) : pullTarget;
+        pullTo(Math.max(0, Math.min(maxPull, from + rows)));
     }, { passive: false });
 
     /* Dragging the paper moves it with the hand, as the wheel does: down to
-     * pull it over the printer, up to take it back as far as the fold. Let
-     * go part way into the fold, it folds the rest of the way. */
+     * pull it over the printer, up to take it back, through the fold and
+     * into the slot. Let go part way into the fold while pulling it out, it
+     * folds the rest of the way; taking it back, it stays where it is let
+     * go. */
     art.paperWrap.addEventListener('pointerdown', (e) => {
         if (e.button !== 0 || !canScroll) return;
         drag = { id: e.pointerId, y: e.clientY, from: pullTarget, moved: false };
@@ -738,17 +744,16 @@ export function createPrinter(ui, emu) {
         if (!drag.moved && Math.abs(dy) < 3) return;
         drag.moved = true;
         const maxPull = FOLD_ROWS + Math.max(0, printout.length - visibleRows);
-        const least = drag.from > 0 ? FOLD_ROWS : 0;
-        pull = pullTarget = Math.max(least, Math.min(maxPull, drag.from + (dy / (DOT_UNITS * dockScale()))));
+        pull = pullTarget = Math.max(0, Math.min(maxPull, drag.from + (dy / (DOT_UNITS * dockScale()))));
         layoutPaper();
     });
     const endDrag = (e) => {
         if (!drag || e.pointerId !== drag.id) return;
-        const moved = drag.moved;
+        const { moved, from } = drag;
         drag = null;
         art.setGrab(canScroll, false);
         if (!moved) return;
-        if (pullTarget > 0 && pullTarget < FOLD_ROWS) pullTo(FOLD_ROWS);
+        if ((pullTarget > from) && (pullTarget > 0) && (pullTarget < FOLD_ROWS)) pullTo(FOLD_ROWS);
     };
     art.paperWrap.addEventListener('pointerup', endDrag);
     art.paperWrap.addEventListener('pointercancel', endDrag);
@@ -1062,11 +1067,10 @@ export function createPrinter(ui, emu) {
             releaseFeed();
             closePanel();
             printout = session.rows.map(row => row.some(b => b) ? row : BLANK_ROW);
-            // Scrolled back as it was, folded over the printer; the limits are
-            // those of the display as it is now.
+            // Scrolled back as it was, as far over the printer as it was; the
+            // limits are those of the display as it is now.
             const maxPull = FOLD_ROWS + Math.max(0, printout.length - visibleRows);
-            const scroll = Math.min(maxPull, Math.max(0, session.scroll || 0));
-            pull = pullTarget = (scroll > 0) ? Math.max(FOLD_ROWS, scroll) : 0;
+            pull = pullTarget = Math.min(maxPull, Math.max(0, session.scroll || 0));
             printoutSaved = !!session.saved;
             state.paper = Math.max(0, Math.min(ROLL_ROWS, session.paper));
             emu.setPrinterPaper(state.paper);
