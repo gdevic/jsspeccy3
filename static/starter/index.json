@@ -71,19 +71,19 @@
           "name": "ZOOM",
           "about": "The Mandelbrot set again, drawn by machine code fast enough to zoom into: arrows move, Z zooms in, X out.",
           "startMs": 13505,
-          "bytes": 1754
+          "bytes": 1793
         },
         {
           "name": "PATTERNS",
           "about": "Times tables, roses, spirographs and Lissajous figures; C copies one to the printer.",
-          "startMs": 43831,
+          "startMs": 44036,
           "bytes": 1803
         },
         {
           "name": "TUNE",
           "about": "Tunes on a keyboard that lights up, or play it yourself.",
-          "startMs": 62359,
-          "bytes": 4375
+          "startMs": 62565,
+          "bytes": 4414
         }
       ]
     },

@@ -22,6 +22,7 @@
 600 REM the keyboard played from the keys
 610 PRINT AT 7,0;"Keys A S D F G H J K play the   ";AT 8,0;"white keys, W E T Y U the black.";AT 9,0;"0 goes back to the menu.        "
 620 LET k$=INKEY$: IF k$="" THEN GO TO 620
+622 IF k$>="A" AND k$<="Z" THEN LET k$=CHR$ (CODE k$+32)
 625 IF k$="0" THEN GO TO 100
 630 FOR j=1 TO 13: IF m$(j)=k$ THEN LET p=j-1: GO SUB 700: BEEP .1,p: GO SUB 750: GO TO 620
 640 NEXT j: GO TO 620

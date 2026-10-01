@@ -26,6 +26,7 @@
 200 REM the flashing square
 210 LET a=22528+32*r+c: POKE a,PEEK a+128
 220 LET k$=INKEY$: IF k$="" THEN GO TO 220
+225 IF k$>="A" AND k$<="Z" THEN LET k$=CHR$ (CODE k$+32)
 230 POKE a,PEEK a-128
 240 LET r=r-(k$="q" OR k$="7" OR k$=CHR$ 11)+(k$="a" OR k$="6" OR k$=CHR$ 10)
 250 LET c=c-(k$="o" OR k$="5" OR k$=CHR$ 8)+(k$="p" OR k$="8" OR k$=CHR$ 9)
