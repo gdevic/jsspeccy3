@@ -1046,8 +1046,9 @@ const loadSnapshot = (snapshot) => {
  * snapshot parsers produce, plus what a saved session keeps beside it: the
  * Interface 1 paging, the printer mechanism, the live image of every
  * cartridge in a drive (it may hold writes not yet flushed), and the drives'
- * mechanism. */
-const takeSnapshot = () => {
+ * mechanism. With `spectrumOnly`, just the Spectrum: processor, memory,
+ * border, paging and AY, with none of the peripherals' or the tape's state. */
+const takeSnapshot = (spectrumOnly) => {
     const model = core.getMachineType();
     const registers = {};
     ['AF', 'BC', 'DE', 'HL', 'AF_', 'BC_', 'DE_', 'HL_', 'IX', 'IY', 'SP', 'IR'].forEach((r, i) => {
@@ -1067,6 +1068,21 @@ const takeSnapshot = () => {
 
     const ayRegisters = [];
     for (let reg = 0; reg < 16; reg++) ayRegisters.push(core.getAYRegister(reg));
+
+    if (spectrumOnly) {
+        return {
+            model,
+            registers,
+            memoryPages,
+            tstates: core.getTStates(),
+            halted: !!core.getHalted(),
+            eilast: !core.getInterruptible(),
+            ulaState: { borderColour: core.getBorderColour(), pagingFlags: core.getPagingValue() },
+            ay: { selected: core.getSelectedAYRegister(), registers: ayRegisters },
+            interface1Paged: !!core.getInterface1Paged(),
+            betadiskPaged: !!core.getBetadiskPaged(),
+        };
+    }
 
     // the sound being recorded goes in the cassette as far as it has got
     syncSoundTake();
@@ -1466,13 +1482,13 @@ onmessage = (e) => {
         case 'getSnapshot': {
             let snapshot = null;
             try {
-                snapshot = takeSnapshot();
+                snapshot = takeSnapshot(!!e.data.spectrumOnly);
             } catch (err) {
                 postMessage({ message: 'snapshot', id: e.data.id, snapshot: null, error: String(err) });
                 break;
             }
             const transfers = Object.values(snapshot.memoryPages).map(p => p.buffer)
-                .concat(snapshot.drives.map(d => d.data.buffer));
+                .concat((snapshot.drives || []).map(d => d.data.buffer));
             if (snapshot.cassette) transfers.push(snapshot.cassette.data.buffer);
             postMessage({ message: 'snapshot', id: e.data.id, snapshot }, transfers);
             break;

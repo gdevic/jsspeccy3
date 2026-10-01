@@ -149,6 +149,7 @@ const CARDS = [
             [`${k('←')} ${k('↑')} ${k('↓')} ${k('→')}`, 'Cursor keys'],
             [`${k('"')} ${k(';')} ${k(':')} ${k('+')} ${k('=')} …`, 'Typed as on the PC, via SYMBOL SHIFT'],
             ['Numeric keypad', 'Digits'],
+            [`${k('F2')} ${k('F3')}`, 'Instant save · instant recall of the Spectrum'],
         ],
         tip: 'Keys reach the Spectrum only while it runs and has the focus: click the screen first.',
     },

@@ -207,6 +207,11 @@ export class BaseKeyboardHandler {
         this.rootElement = rootElement;  // where we attach keyboard event listeners
         this.eventsAreBound = false;
         this.closeGuarded = false;  // see guardClose
+        /* Keys that act on the emulator instead of reaching the Spectrum,
+         * by KeyboardEvent.code: {F3: () => ...}. Like every other key they
+         * work only while the machine runs, as the handler is stopped when it
+         * is paused. */
+        this.hotkeys = {};
 
         this.keypressHandler = (evt) => {
             if (!evt.metaKey) evt.preventDefault();
@@ -240,6 +245,17 @@ export class BaseKeyboardHandler {
         // With the listeners gone no keyup arrives, so nothing may stay held
         if (this.eventsAreBound) this.releaseAllKeys();
         this.eventsAreBound = false;
+    }
+
+    /* Runs the hotkey `evt` is, if any, and returns whether it was one; an
+     * auto-repeat is taken but does not run it again. A key held with Ctrl,
+     * Alt or Meta is the browser's or the Spectrum's, not a hotkey. */
+    handleHotkey(evt) {
+        const action = Object.prototype.hasOwnProperty.call(this.hotkeys, evt.code) ? this.hotkeys[evt.code] : null;
+        if (!action || evt.ctrlKey || evt.altKey || evt.metaKey) return false;
+        if (!evt.repeat) action();
+        evt.preventDefault();
+        return true;
     }
 
     releaseAllKeys() {
@@ -295,6 +311,7 @@ export class StandardKeyboardHandler extends BaseKeyboardHandler {
         this.seenKeyCodes = {};
 
         this.keydownHandler = (evt) => {
+            if (this.handleHotkey(evt)) return;
             if (evt.keyCode === CTRL_KEY_CODE) this.guardClose(true);
             let keyInfo = (evt.code === CAPS_SHIFT_CODE) ? SPECCY.CAPS_SHIFT : KEY_CODES[evt.keyCode];
             if (keyInfo) {
@@ -424,6 +441,7 @@ export class RecreatedZXSpectrumHandler extends BaseKeyboardHandler {
         super(worker, rootElement);
 
         this.keydownHandler = (evt) => {
+            if (this.handleHotkey(evt)) return;
             const specialCode = recreatedUpDown[evt.key];
             if (specialCode) {
                 this.worker.postMessage({

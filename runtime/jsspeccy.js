@@ -140,6 +140,10 @@ class Emulator extends EventEmitter {
                 : new StandardKeyboardHandler(this.worker, opts.keyboardEventRoot || document);
             // every key let go at once (pause, focus leaving), which the on-screen keyboard's latches follow
             this.keyboardHandler.onReleaseAll = () => this.emit('keysReleased');
+            this.keyboardHandler.hotkeys = {
+                F3: () => this.quickRecall(),
+                F2: () => this.quickSave(),
+            };
         }
         this.joystickEnabled = ('joystickEnabled' in opts) ? opts.joystickEnabled : true;
         this.joystickType = opts.joystickType || 'kempston';
@@ -193,6 +197,7 @@ class Emulator extends EventEmitter {
         this.editorState = null;
         this.nextSnapshotID = 0;
         this.snapshotResolutions = {};
+        this.quickState = null;  // the Spectrum as F2 saved it, for F3 (see quickSave)
 
         this.msPerFrame = 20;
 
@@ -665,6 +670,7 @@ class Emulator extends EventEmitter {
                 type,
             });
         }
+        if (type !== this.machineType) this.quickState = null;  // it belongs to the machine it was saved on
         this.machineType = type;
         this.activePokes.clear();  // the new machine starts with its memory cleared
         this.emit('setMachine', type);
@@ -685,12 +691,39 @@ class Emulator extends EventEmitter {
     /* The machine as it stands between two frames: a snapshot in the
      * structure the snapshot parsers produce, with the extras a saved
      * session keeps (see takeSnapshot in the worker). */
-    getSnapshot() {
+    getSnapshot(spectrumOnly) {
         const id = this.nextSnapshotID++;
-        this.worker.postMessage({ message: 'getSnapshot', id });
+        this.worker.postMessage({ message: 'getSnapshot', id, spectrumOnly: !!spectrumOnly });
         return new Promise((resolve) => {
             this.snapshotResolutions[id] = resolve;
         });
+    }
+
+    /* Instant save and recall (F2 and F3): the Spectrum alone, held in this
+     * object. The keys held, the joystick, the tape and every peripheral are
+     * left as they are, and the saved state is not part of a saved session.
+     * Both work only while the machine runs. */
+    async quickSave() {
+        if (!this.isRunning) return false;
+        const snapshot = await this.getSnapshot(true);
+        if (!snapshot) return false;
+        this.quickState = snapshot;
+        this.emit('notice', 'State saved');
+        return true;
+    }
+
+    async quickRecall() {
+        if (!this.isRunning) return false;
+        if (!this.quickState) {
+            this.emit('notice', 'No saved state');
+            return false;
+        }
+        // The Interface 1's ROM can be paged in only while the Interface 1 is connected.
+        const state = { ...this.quickState, interface1Paged: this.quickState.interface1Paged && this.interface1Enabled };
+        const result = await this.loadSnapshot(state);
+        if (result.error) return false;
+        this.emit('notice', 'State recalled');
+        return true;
     }
 
     /* Switches the machine off: it stops, and shows the switched-off
@@ -752,6 +785,7 @@ class Emulator extends EventEmitter {
         return new Promise((resolve) => {
             this.fileOpenPromiseResolutions[fileID] = (result) => {
                 if (!result.error) {
+                    if (snapshot.model !== this.machineType) this.quickState = null;
                     this.machineType = snapshot.model;
                     this.activePokes.clear();  // memory holds the snapshot's now
                     this.emit('setMachine', snapshot.model);

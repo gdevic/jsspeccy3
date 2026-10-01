@@ -424,6 +424,9 @@ export class UIController extends EventEmitter {
         emulator.on('powerOff', () => {
             this.showScreenOff();
         });
+        emulator.on('notice', (text) => {
+            if (this.uiEnabled) this.showNotice(text);
+        });
         emulator.on('powerOnPaused', () => {
             // on, with its picture, but not running: no power-on to watch
             if (this.screenOff) this.screenOff.remove();
@@ -749,6 +752,23 @@ export class UIController extends EventEmitter {
             this.menuBar.show();
             this.toolbar.show();
         }
+    }
+    // A short message over the top of the picture that fades by itself.
+    showNotice(text) {
+        if (!this.noticeElement) {
+            const notice = document.createElement('div');
+            notice.style.cssText = 'position: absolute; left: 50%; transform: translateX(-50%); z-index: 3; '
+                + 'padding: 4px 12px; border-radius: 4px; background: rgba(0, 0, 0, 0.7); color: #fff; '
+                + 'font: 13px Arial, Helvetica, sans-serif; pointer-events: none; transition: opacity 0.4s;';
+            this.appContainer.appendChild(notice);
+            this.noticeElement = notice;
+        }
+        const notice = this.noticeElement;
+        notice.textContent = text;
+        notice.style.top = (this.canvas.offsetTop + 8) + 'px';
+        notice.style.opacity = '1';
+        clearTimeout(this.noticeTimer);
+        this.noticeTimer = setTimeout(() => { notice.style.opacity = '0'; }, 1200);
     }
     /* Opens the dialog window, empty, and returns it; see DialogFrame.show
      * for `opts`. Dialogs open through openDialog in dialog.js. */

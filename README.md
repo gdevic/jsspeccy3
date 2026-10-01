@@ -17,7 +17,7 @@ It runs in any browser and loads thousands of games in one click, with cheats yo
 * **A tape recorder you can use:** `SAVE` onto your own cassettes, wind anywhere and `LOAD` from there, record the beeper.
 * **Devices, not menu items:** Microdrives and a ZX Printer stand beside the Spectrum on their leads, and you drag them wherever you like.
 * **A keyboard that knows the ROM:** click any legend and the right shifts and modes are pressed for you.
-* **Games, cheats and sessions built in:** PlayZX, the Internet Archive, Tipshop pokes, and a whole session in one file.
+* **Games, cheats and sessions built in:** PlayZX, the Internet Archive, Tipshop pokes, a whole session in one file, and F2 / F3 to save and recall a good position instantly.
 * **Something to play with at once:** cassettes and Microdrive cartridges of original BASIC programs are in the boxes on a first visit.
 * **Embed it, script it:** one line of JavaScript on your page, and an API to drive it.
 
@@ -34,6 +34,7 @@ It runs in any browser and loads thousands of games in one click, with cheats yo
 * Detects custom tape loaders (Speedlock and other turbo loaders) and plays the tape for them automatically, fast-forwarded when instant loading is on
 * Drop any of the above files, or a ZIP holding them, onto the screen and it opens; an opened tape loads itself (Options → Auto-load tapes)
 * Saves and restores the whole session as one file: the running machine, tape, tape recorder cassettes, Microdrive cartridges, printout and settings
+* Instant save and recall (**F2** and **F3**): keep a good position while playing and return to it at once; see [Instant save and recall](#instant-save-and-recall)
 * A portable cassette recorder: SAVE records onto 60-minute cassettes kept in the browser between visits, and LOAD reads them back, with working keys, turning reels and a tape counter in seconds; holding Record yourself records the machine's beeper sound too
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
@@ -158,6 +159,14 @@ Button 1 saves everything to one file, and button 2 brings it back: the running 
 * **It resumes where it was saved**, running, paused or switched off, except in the middle of a tape playing or recording in real time.
 * **It is a plain ZIP** of standard files (`.szx` snapshot, `.tzx` cassettes, `.mdr` cartridges, `printout.png`), so any part opens on its own.
 * Needs the toolbar, so it is not offered on a page with `sandbox` or `uiEnabled` off.
+
+## Instant save and recall
+
+**F2** saves the Spectrum as it is and **F3** puts it back, to return to a good position while playing. A brief message over the picture confirms each.
+
+* **Only the Spectrum:** processor, memory, border, memory paging and sound chip. The keys held, the joystick, the tape and the connected devices are left as they are, so recalling does not release a key you are holding.
+* **One slot, kept in memory:** a new F2 replaces the last, and it is lost when the page is closed. It is not part of a saved session. Changing the machine, for example from 48K to Pentagon, clears it.
+* **Only while the machine runs:** the keys do nothing when it is paused or switched off, and are off when the page is embedded with `keyboardEnabled` off.
 
 ## On-screen keyboard
 
