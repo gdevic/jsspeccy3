@@ -41,6 +41,19 @@ const DOT_UNITS = PAPER_W / PAPER_DOTS;
 const SLOT_Y = 38;
 const FOLD_Y = 58;                          // pulled down, the paper hangs to half way down ZX PRINTER
 const BAR_Y = 33, BAR_H = 14;
+
+/* Pulled down, the paper hangs over the cutter bar in a flap that does not
+ * lie flat: it rolls over the bar's top and curls back in towards the
+ * printer's face, darkening down to its bottom edge, and its bottom corners
+ * drawn in. The curl builds up as the paper is pulled down, from none as it
+ * starts over the bar to all of it at the full FLAP_H hang: there, the
+ * corners are drawn in by FLAP_TUCK and the flap is FLAP_DARK_MID dark half
+ * way down and FLAP_DARK_EDGE at its bottom edge. FLAP_CURVE is the curl's
+ * shape: how far down the flap, and how much of the tuck there. */
+const FLAP_H = FOLD_Y - BAR_Y;
+const FLAP_TUCK = 1.2;
+const FLAP_DARK_MID = 0.2, FLAP_DARK_EDGE = 0.65;
+const FLAP_CURVE = [[0, 0], [0.4, 0.1], [0.6, 0.28], [0.75, 0.5], [0.88, 0.75], [1, 1]];
 const ROLL_BASE_Y = 36, ROLL_FULL_D = 28, ROLL_CORE_D = 7;
 const CABLE_W = 26;
 const TEAR_ROWS = 4;                        // depth of the serrated edge a tear leaves
@@ -130,6 +143,25 @@ function printoutBlob(rows, first) {
 
 let printerArtId = 0;
 
+/* The paper's outline with a flap hanging `flap` units below the fold, its
+ * bottom corners drawn in where it curls back, by `curl` (0 to 1) of the
+ * full tuck (see FLAP_CURVE). */
+function flapOutline(flap, curl) {
+    const tuck = FLAP_TUCK * curl;
+    const side = FLAP_CURVE.map(([down, part]) => [+(part * tuck).toFixed(2), +((1 - down) * flap).toFixed(2)]);
+    const right = side.map(([inset, up]) => `calc(100% - ${inset}px) max(0px, 100% - ${up}px)`);
+    const left = side.slice().reverse().map(([inset, up]) => `${inset}px max(0px, 100% - ${up}px)`);
+    return `polygon(0 0, 100% 0, ${right.join(', ')}, ${left.join(', ')})`;
+}
+
+/* The flap's shading, its curve: from the fold, with no crease, it darkens
+ * down to its bottom edge, by `curl` (0 to 1) of the full FLAP_DARK_MID and
+ * FLAP_DARK_EDGE. */
+function flapShade(curl) {
+    const dark = (alpha) => `rgba(0,0,0,${+(alpha * curl).toFixed(3)})`;
+    return `linear-gradient(to bottom, rgba(0,0,0,0), ${dark(FLAP_DARK_MID)} 50%, ${dark(FLAP_DARK_EDGE)})`;
+}
+
 function buildPrinterArt() {
     const id = 'zxp' + (printerArtId++);
     const box = el('div', { position: 'relative', width: PRINTER_W + 'px', height: PRINTER_H + 'px' });
@@ -157,21 +189,19 @@ function buildPrinterArt() {
         bottom: (PRINTER_H - SLOT_Y) + 'px', height: '0px', overflow: 'hidden',
     });
     paperWrap.dataset.noDrag = '';  // a press on the paper never drags the printer: the paper has its own drag
+    /* The paper and its shading, in a sheet of their own that the flap's curl
+     * clips; the shadow is a filter on paperWrap, so it follows the outline. */
+    const sheet = el('div', { position: 'absolute', left: '0', top: '0', right: '0', bottom: '0' });
     const paper = el('canvas', { position: 'absolute', left: '0', bottom: '0', width: PAPER_W + 'px', display: 'block' });
     paper.width = PAPER_DOTS;
     paper.height = 1;
-    paperWrap.appendChild(paper);
-    // Folded over the cutter bar, the hanging part is a shade darker, with a
-    // highlight along the bend.
+    // Folded over the cutter bar, the flap is shaded as a curve (see flapShade).
     const hanging = el('div', {
-        position: 'absolute', left: '0', right: '0', bottom: '0', height: (FOLD_Y - BAR_Y) + 'px',
-        background: 'rgba(0,0,0,0.08)', display: 'none', pointerEvents: 'none',
+        position: 'absolute', left: '0', right: '0', bottom: '0', height: FLAP_H + 'px',
+        display: 'none', pointerEvents: 'none',
     });
-    const bend = el('div', {
-        position: 'absolute', left: '0', right: '0', bottom: (FOLD_Y - BAR_Y - 0.7) + 'px', height: '1.4px',
-        background: 'linear-gradient(to bottom, rgba(255,255,255,0.6), rgba(0,0,0,0.25))', display: 'none', pointerEvents: 'none',
-    });
-    paperWrap.append(hanging, bend);
+    sheet.append(paper, hanging);
+    paperWrap.appendChild(sheet);
     // A mouse with its wheel in the top right corner, while there is more of
     // the printout above the top of the page to scroll to.
     const scrollHint = el('div', {
@@ -271,12 +301,13 @@ function buildPrinterArt() {
             reach = height + drop;
             sizePaper();
             paperWrap.style.zIndex = folded ? '1' : '';
-            paperWrap.style.boxShadow = folded ? '0 1px 1.5px rgba(0,0,0,0.6)' : 'none';
-            const hangingHeight = SLOT_Y + drop - BAR_Y;
-            hanging.style.height = hangingHeight + 'px';
-            bend.style.bottom = (hangingHeight - 0.7) + 'px';
+            paperWrap.style.filter = folded ? 'drop-shadow(0 1px 1.5px rgba(0,0,0,0.6))' : 'none';
+            const flap = SLOT_Y + drop - BAR_Y;
+            const curl = Math.min(1, drop / (FOLD_Y - SLOT_Y));  // how far the curl has built up
+            hanging.style.height = flap + 'px';
+            hanging.style.background = flapShade(curl);
             hanging.style.display = folded ? 'block' : 'none';
-            bend.style.display = folded ? 'block' : 'none';
+            sheet.style.clipPath = folded ? flapOutline(flap, curl) : 'none';
         },
         // How high the printout drawn on the paper reaches above its bottom edge.
         setPrinted(height) {
