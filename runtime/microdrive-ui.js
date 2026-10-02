@@ -25,6 +25,7 @@ import { boxCopyMovedOn } from './session.js';
 import { openDialog, h, button, confirmButton } from './dialog.js';
 import { makeMovable, makeDeviceMovable } from './movable.js';
 import { makeCommandRow } from './type-in.js';
+import { RAINBOW, RAINBOW_SLOPE } from './rainbow.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -91,12 +92,6 @@ const readFileAsArrayBuffer = (file) => new Promise((resolve, reject) => {
 });
 
 /* ==================== the drive icon (dock art) ==================== */
-
-/* Rainbow colours and slope taken from the keyboard image (zx_keyboard.png):
- * red, yellow, green, blue from left to right, each band leaning right as it
- * rises, about 0.33 across for every 1 up. */
-const RAINBOW = ['#d0412e', '#e2b13c', '#5fa847', '#3a7cc4'];
-const RAINBOW_SLOPE = 0.33;
 
 /* A drive's side edges bend back as the keyboard's faceplate does
  * (keyboard-overlay.js): a bright rim along each, fading into the flat top.

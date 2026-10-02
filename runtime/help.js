@@ -14,6 +14,7 @@
  */
 
 import { openDialog, h } from './dialog.js';
+import { rainbowStripes } from './rainbow.js';
 
 import sessionSaveIcon from './icons/session-save.svg';
 import sessionRestoreIcon from './icons/session-restore.svg';
@@ -44,15 +45,16 @@ const COLOURS = {
     magenta: ['#c43dab', '#8e2179', '#f9e8f6'],
 };
 
-// The four stripes on the Spectrum's case.
-const RAINBOW = 'linear-gradient(115deg, transparent 0 28%, #e0352b 28% 42%, #f2b705 42% 56%, #2fa84f 56% 70%, #12a4c9 70% 84%, transparent 84%)';
+// The four stripes on the Spectrum's case, at the right end of each box's header.
+const HELP_STRIPES = rainbowStripes(20, 12), ABOUT_STRIPES = rainbowStripes(22, 15);
 
 const HELP_CSS = `
 .jsh-scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 4px; background: #f3f4f7; }
 .jsh-hero { position: relative; overflow: hidden; display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
     padding: 11px 150px 11px 16px; border-radius: 12px; background: #16181d; color: #e9ecf1; font-size: 13px; }
 .jsh-hero b { color: #fff; font-size: 15px; }
-.jsh-hero::after { content: ''; position: absolute; top: 0; right: -6px; bottom: 0; width: 140px; background: ${RAINBOW}; }
+.jsh-hero::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: ${HELP_STRIPES.width}px;
+    background: ${HELP_STRIPES.background}; }
 .jsh-cards { column-width: 300px; column-gap: 14px; }
 .jsh-card { break-inside: avoid; margin-bottom: 14px; background: #fff; border-radius: 12px; overflow: hidden;
     border-top: 4px solid var(--c); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 4px 14px rgba(0, 0, 0, 0.06); }
@@ -78,7 +80,8 @@ const HELP_CSS = `
 
 .jsa-scroll { flex: 1; min-height: 0; overflow: auto; background: #fff; }
 .jsa-hero { position: relative; overflow: hidden; padding: 20px 20px 18px; background: #16181d; color: #fff; }
-.jsa-hero::after { content: ''; position: absolute; top: 0; right: -10px; bottom: 0; width: 150px; background: ${RAINBOW}; }
+.jsa-hero::after { content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: ${ABOUT_STRIPES.width}px;
+    background: ${ABOUT_STRIPES.background}; }
 .jsa-name { position: relative; z-index: 1; font-size: 28px; font-weight: bold; letter-spacing: 0.5px; }
 .jsa-version { display: inline-block; vertical-align: middle; margin-left: 8px; padding: 2px 9px; border-radius: 10px;
     background: #f2b705; color: #16181d; font-size: 13px; font-weight: bold; letter-spacing: 0; }

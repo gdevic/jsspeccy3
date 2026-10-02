@@ -2,22 +2,26 @@ import EventEmitter from 'events';
 
 import { CharPicker } from './char-picker.js';
 import { DialogFrame } from './dialog.js';
+import { rainbowStripes } from './rainbow.js';
 import playIcon from './icons/play.svg';
 
 /* The menu bar above the display and the toolbar below it: light, in the
  * dialogs' style (dialog.js), with the four stripes of the Spectrum's case
- * at the right end of each. The classes all start "jsb-"; .jsb-compact on
- * a bar makes everything in it smaller, for a narrow display. */
+ * at the right end of the menu bar. The classes all start "jsb-"; .jsb-compact
+ * on a bar makes everything in it smaller, for a narrow display. */
 const ACCENT = '#33aa66';
-const STRIPES = 'linear-gradient(115deg, transparent 0 22%, #e0352b 22% 40%, #f2b705 40% 58%, #2fa84f 58% 76%, #12a4c9 76% 94%, transparent 94%)';
+
+// The stripes, parallel to the keyboard's just below, run down over the
+// bar's bottom border to the display.
+const STRIPES = rainbowStripes(13, 5);
 
 const BAR_CSS = `
 .jsb-menubar, .jsb-toolbar { position: relative; box-sizing: border-box; width: 100%; display: flex; align-items: center; gap: 2px;
     padding: 3px 6px; font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #1f2328; user-select: none; }
 .jsb-menubar { top: 0; background: linear-gradient(#fbfcfd, #f0f2f5); border-bottom: 1px solid #d9dde2; }
 .jsb-toolbar { bottom: 0; background: linear-gradient(#f0f2f5, #e7eaee); border-top: 1px solid #d9dde2; }
-.jsb-menubar::after { content: ''; position: absolute; top: 0; bottom: 0; right: -4px; width: 64px;
-    background: ${STRIPES}; opacity: 0.9; pointer-events: none; }
+.jsb-menubar::after { content: ''; position: absolute; top: 0; bottom: -1px; right: 0; width: ${STRIPES.width}px;
+    background: ${STRIPES.background}; pointer-events: none; }
 .jsb-menubar.jsb-compact::after { display: none; }
 .jsb-menubar *, .jsb-toolbar * { box-sizing: border-box; }
 .jsb-menu { position: relative; }

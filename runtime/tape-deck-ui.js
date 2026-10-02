@@ -27,6 +27,7 @@ import { DOCK_SCALE, RIBBON_PLUG_Y, RIBBON_W, buildLead, takesClick } from './mi
 import { openDialog, h, button, confirmButton } from './dialog.js';
 import { makeMovable, makeDeviceMovable } from './movable.js';
 import { makeCommandRow } from './type-in.js';
+import { RAINBOW } from './rainbow.js';
 
 import ejectIcon from './icons/eject.svg';
 import openIcon from './icons/open.svg';
@@ -135,7 +136,6 @@ const KEYS = [
     { key: 'eject', label: 'Eject' },
 ];
 const COUNTER_X = 13.5, COUNTER_Y = 132.5, WHEEL_W = 6.6, WHEEL_PITCH = 7.6, WHEEL_H = 8.5;
-const RAINBOW = ['#d0412e', '#e2b13c', '#5fa847', '#3a7cc4'];
 
 // How big a pack of tape is with `fraction` of the tape wound onto it.
 const packRadius = (fraction) => Math.sqrt((PACK_HUB * PACK_HUB) + (((PACK_FULL * PACK_FULL) - (PACK_HUB * PACK_HUB)) * clamp(fraction, 0, 1)));
