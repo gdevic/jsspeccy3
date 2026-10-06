@@ -53,6 +53,14 @@ let deckJump = null;              // an instant SAVE or LOAD's jump along the ta
 let pendingDeckSound = null;      // {kind, time}: a key's sound, made when the next frame runs
 let inFrame = false;              // a trap is being handled, part way through a frame
 
+/* The machine reads its keys only while a frame runs, so a key that goes
+ * down and up between two frames, a quick tap or a press and release
+ * delivered together after the page was busy, would never be seen. A key
+ * let go before any frame has run since it went down goes up only once the
+ * next frame has run, which sees it held throughout. */
+const keysUnseen = new Uint8Array(8);  // per row, keys gone down since the last frame
+const keysLetGo = new Uint8Array(8);   // per row, those of them already let go
+
 /* The machine's sound going onto a cassette while the user holds Record, as
  * a real recorder takes whatever is at the MIC socket (see setSoundRecording
  * in the core). The level changes are gathered, placed where the tape was at
@@ -1347,6 +1355,15 @@ const runIdleFrame = (withAudio) => {
     return tapeIsPlaying || deckMoving() || (withAudio && core.isDeckSounding());
 };
 
+// A frame has run, and seen every key down: the keys let go before it go up now.
+const releaseSeenKeys = () => {
+    for (let row = 0; row < 8; row++) {
+        if (keysLetGo[row]) core.keyUp(row, keysLetGo[row]);
+        keysUnseen[row] = 0;
+        keysLetGo[row] = 0;
+    }
+};
+
 const runEmulatedFrame = () => {
     if (framesSinceTapeTrap < TRAP_IDLE_FRAMES) framesSinceTapeTrap++;
 
@@ -1375,6 +1392,7 @@ const runEmulatedFrame = () => {
 
         status = core.resumeFrame();
     }
+    releaseSeenKeys();
     serviceLoaderDetection();
     serviceDeck();
     serviceMicrodrives();
@@ -1483,12 +1501,21 @@ onmessage = (e) => {
             }
             break;
         }
-        case 'keyDown':
-            core.keyDown(e.data.row, e.data.mask);
+        case 'keyDown': {
+            const { row, mask } = e.data;
+            keysUnseen[row] |= mask;
+            keysLetGo[row] &= ~mask;
+            core.keyDown(row, mask);
             break;
-        case 'keyUp':
-            core.keyUp(e.data.row, e.data.mask);
+        }
+        case 'keyUp': {
+            // A key no frame has seen yet stays down until one has (see keysUnseen).
+            const { row, mask } = e.data;
+            const unseen = mask & keysUnseen[row];
+            keysLetGo[row] |= unseen;
+            if (mask & ~unseen) core.keyUp(row, mask & ~unseen);
             break;
+        }
         case 'joystickKeyDown':
             core.joystickKeyDown(e.data.row, e.data.mask);
             break;
