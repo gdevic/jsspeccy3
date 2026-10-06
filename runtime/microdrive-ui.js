@@ -1176,13 +1176,17 @@ export function createMicrodriveDock(ui, emu) {
     // re-placed.
     const panelResize = window.ResizeObserver ? ui.keepObserver(new ResizeObserver(() => positionPanel())) : null;
 
+    // Focus inside the panel (its close button, after a click) goes with it,
+    // so it is handed back to the emulator rather than left on the page.
     function closePanel() {
         if (openPanel) {
+            const hadFocus = openPanel.element.contains(document.activeElement);
             if (panelResize) panelResize.unobserve(openPanel.element);
             openPanel.dispose();
             openPanel.element.remove();
             openPanel = null;
             openPanelDrive = -1;
+            if (hadFocus) emu.focus();
         }
     }
 

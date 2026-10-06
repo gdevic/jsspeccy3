@@ -808,12 +808,16 @@ export function createPrinter(ui, emu) {
     let panel = null;
     const panelResize = window.ResizeObserver ? ui.keepObserver(new ResizeObserver(() => positionPanel())) : null;
 
+    // Focus inside the panel (its close button, after a click) goes with it,
+    // so it is handed back to the emulator rather than left on the page.
     function closePanel() {
         if (!panel) return;
+        const hadFocus = panel.element.contains(document.activeElement);
         releaseFeed();
         if (panelResize) panelResize.unobserve(panel.element);
         panel.element.remove();
         panel = null;
+        if (hadFocus) emu.focus();
     }
     function positionPanel() {
         if (!panel || panel.mover.place()) return;

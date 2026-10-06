@@ -1594,11 +1594,15 @@ export function createTapeDeck(ui, emu) {
 
     /* ---------- the panel ---------- */
     let panel = null;
+    // Focus inside the panel (its close button, after a click) goes with it,
+    // so it is handed back to the emulator rather than left on the page.
     function closePanel() {
         if (!panel) return;
+        const hadFocus = panel.element.contains(document.activeElement);
         panel.dispose();
         panel.element.remove();
         panel = null;
+        if (hadFocus) emu.focus();
     }
     function positionPanel() {
         if (!panel || panel.mover.place()) return;

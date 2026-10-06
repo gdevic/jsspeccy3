@@ -551,9 +551,10 @@ class Emulator extends EventEmitter {
         });
     }
 
-    focus() {
+    // `options` are those of HTMLElement.focus(), such as { preventScroll: true }.
+    focus(options) {
         if (this.keyboardEnabled && this.keyboardHandler.rootElement.focus) {
-            this.keyboardHandler.rootElement.focus();
+            this.keyboardHandler.rootElement.focus(options);
         }
     }
 
@@ -1479,6 +1480,19 @@ window.JSSpeccy = (container, opts) => {
         emu.setKeyboardEventRoot(ui.appContainer);
     }
 
+    /* Pointing at the display or the on-screen keyboard gives the emulator
+     * the keys, unless a text field has them, so typing works without a
+     * click first. Without scrolling: the page stays where the reader left it. */
+    const focusOnHover = (element) => {
+        if (!keyboardEnabled) return;
+        element.addEventListener('pointerenter', () => {
+            const active = document.activeElement;
+            if (active && active.matches('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+            emu.focus({ preventScroll: true });
+        });
+    };
+    focusOnHover(emu.canvas);
+
     if (uiEnabled) {
         // A sandbox opens nothing, so it has no File menu.
         const fileMenu = opts.sandbox ? null : ui.menuBar.addMenu('File');
@@ -1901,6 +1915,7 @@ window.JSSpeccy = (container, opts) => {
          * toolbar next to the fullscreen button; hidden in fullscreen. */
         const keyboard = createKeyboardOverlay(emu, new URL('zx_keyboard.png', scriptUrl).href);
         ui.appContainer.appendChild(keyboard.element);
+        focusOnHover(keyboard.element);
         // A character typed from the screen (see char-picker.js) is typed without a latched or locked shift.
         ui.on('typeCharacter', () => keyboard.releaseShifts());
         // Options -> Simple keyboard: a mouse presses whole keys, as a finger always does.
