@@ -81,6 +81,26 @@
         { "tree": "things.txt", "dim": [360, 48], "name": "things", "about": "The things in a home the guessing game knows." },
         { "tree": "animals.txt", "dim": [360, 48], "name": "animals", "about": "The animals the guessing game knows." }
       ]
+    },
+    {
+      "file": "intro2.mdr",
+      "name": "INTRO2",
+      "drive": 1,
+      "colour": "#555",
+      "kept": true,
+      "about": "Sinclair's own Microdrive demonstration cartridge, its second edition of 1984, by John Mathieson and Andrew Pennell. In Microdrive 1 in place of HOME, type RUN for its menu.",
+      "files": [
+        { "name": "run", "about": "The menu, which RUN loads by itself: what each program shows, and how to load it." },
+        { "name": "title SCREEN$", "about": "The title screen the menu loads first." },
+        { "name": "net game", "about": "Guess the other player's number, over the ZX Net, which the emulator does not have." },
+        { "name": "P server", "about": "Shares an RS232 printer over the ZX Net, which the emulator does not have." },
+        { "name": "Dbase prog", "about": "Looks up each keyword the Interface 1 adds to BASIC: type the keyword as usual." },
+        { "name": "Database", "about": "The keywords Dbase prog reads, a file written with PRINT # and read with INPUT #." },
+        { "name": "copier", "about": "Adds * MOVE, which copies files between cartridges and cassettes." },
+        { "name": "copy code", "about": "The machine code of * MOVE, which copier loads." },
+        { "name": "cat", "about": "Adds * CAT, which catalogues a cartridge or a cassette with each file's type and length." },
+        { "name": "cat code", "about": "The machine code of * CAT, which cat loads." }
+      ]
     }
   ]
 }

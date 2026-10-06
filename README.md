@@ -39,7 +39,7 @@ It runs in any browser and loads thousands of games in one click, with cheats yo
 * A portable cassette recorder: SAVE records onto 60-minute cassettes kept in the browser between visits, and LOAD reads them back, with working keys, turning reels and a tape counter in seconds; holding Record yourself records the machine's beeper sound too
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
-* Starter programs (**File → Starter programs…**): a first visit finds cassettes of games, demos and printer programs in the cassette box, and a guessing game that learns on two Microdrive cartridges
+* Starter programs (**File → Starter programs…**): a first visit finds cassettes of games, demos and printer programs in the cassette box, and a guessing game that learns on two Microdrive cartridges, with Sinclair's own Microdrive demonstration cartridge
 * A full-screen BASIC editor for the 48K in 42 columns, on the Projects cassette: keywords typed as words, the cursor anywhere on the listing, find, auto line numbers and renumbering, and programs exactly as the ROM's own editor makes them; see [docs/editor.md](docs/editor.md)
 * Opens games straight from the PlayZX online catalog (~10,800 titles), or from a search of the Internet Archive
 * Game cheats: ~23,000 cheats for ~3,700 games from the Tipshop database, found for the loaded game, tick to apply and untick to undo
@@ -117,7 +117,7 @@ Connect it with button 11. `LPRINT`, `LLIST` and `COPY` print onto a roll of sil
 
 ## Starter programs
 
-A first visit finds the cassette box and the cartridge box filled with original BASIC programs written for this emulator, so there is something to play with straight away, and something to show off every device with. **File → Starter programs…** lists them, and puts back any that were taken out of the boxes.
+A first visit finds the cassette box and the cartridge box filled with original BASIC programs written for this emulator, and Sinclair's own Microdrive demonstration cartridge, so there is something to play with straight away, and something to show off every device with. **File → Starter programs…** lists them, and puts back any that were taken out of the boxes.
 
 | Cassette | Programs |
 | --- | --- |
@@ -129,6 +129,7 @@ A first visit finds the cassette box and the cartridge box filled with original 
 
 * **Load one from a cassette:** Home games starts in the recorder. Click the recorder for the list of its parts, click one to wind there, then Type in puts `LOAD ""` into the Spectrum for you to press Enter. Every program starts by itself.
 * **The guessing game:** with the HOME cartridge in Microdrive 1 and DATA in Microdrive 2, as a first visit finds them, type `RUN` in 48 BASIC with no program in the Spectrum, and the Interface 1 loads the HOME cartridge's menu. Think of a thing in your home, or an animal, and the game finds out which by asking yes or no questions. When it guesses wrong, it asks what it was and for a question that tells the two apart, and keeps what it learned on the DATA cartridge.
+* **The INTRO2 cartridge** is the second edition, of 1984, of the demonstration cartridge Sinclair Research made for the Microdrive, under the name Sinclair gave it. It waits in the cartridge box: put it in Microdrive 1 in place of HOME and type `RUN` for its menu, which explains each program and loads it. Its `cat` and `copier` add the `* CAT` and `* MOVE` commands, and `Dbase prog` looks up each keyword the Interface 1 adds. Its net game and printer server need the ZX Net, which is not emulated.
 * **The printer programs** want the ZX Printer connected. BIORHYTHM, MAZE and PATTERNS also copy their screen to it.
 * **EDITOR** loads its machine code above RAMTOP and starts on an empty program; type and run programs in it as in the ROM's editor. [docs/editor.md](docs/editor.md) has its keys and commands. A box that already holds a Projects cassette keeps it as it is: to get the one with EDITOR, take that cassette out of the box and use **File → Starter programs…**.
 * The cassettes are write-protected, so they stay as they came. The programs' listings are in `starter/`, ZOOM's and EDITOR's machine code with them as assembly, and how they become cassettes and cartridges is in [docs/tech_notes.md](docs/tech_notes.md).

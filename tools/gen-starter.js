@@ -14,9 +14,11 @@
  * cartridge. A program with machine code names its assembly source
  * (assembled by tools/z80asm.js), which follows it on the tape as a CODE
  * block, saved the same way. A guessing game's tree (see readTree below) goes onto a
- * cartridge as the character array the game loads. The results are written
- * to static/starter/: a .tzx file per cassette, labelled, a .mdr file per
- * cartridge, and index.json describing them all for the Starter programs
+ * cartridge as the character array the game loads. A cartridge made
+ * elsewhere is kept in static/starter/ as it is, and only checked
+ * (checkCartridge below). The results are written to static/starter/: a
+ * .tzx file per cassette, labelled, a .mdr file per made cartridge, and
+ * index.json describing them all for the Starter programs
  * dialog (runtime/starter.js). They are committed, so the build only copies
  * them; run this again after changing anything in starter/.
  */
@@ -25,7 +27,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { createSpectrum } from './zxheadless.js';
-import { parseListing } from './zxbasic.js';
+import { parseListing, KEYWORDS, FIRST_TOKEN } from './zxbasic.js';
 import { assemble } from './z80asm.js';
 import { writeCassetteTAP, writeCassetteTZX, parseCassetteFile, blockMs, parseHeader } from '../runtime/cassette.js';
 import * as mdr from '../runtime/mdr.js';
@@ -155,6 +157,34 @@ async function makeCartridge(cartridge) {
     return { image, files, freeK: Math.floor(parsed.freeSectors / 2) };
 }
 
+// A file's name as CAT lists it, each keyword's token spelled out.
+const spelledName = (name) => Array.from(name, ch => {
+    const code = ch.charCodeAt(0);
+    return (code >= FIRST_TOKEN) ? ` ${KEYWORDS[code - FIRST_TOKEN]} ` : ch;
+}).join('').replace(/ +/g, ' ').trim();
+
+/* A cartridge made elsewhere, kept in static/starter/ as it is rather than
+ * made here, is only checked: its name, and that CAT finds the files listed
+ * for it and no others, each with its last record. */
+function checkCartridge(cartridge) {
+    const image = new Uint8Array(fs.readFileSync(path.join(OUT, cartridge.file)));
+    const parsed = mdr.parse(mdr.splitMDRFile(image).data, false);
+    if (parsed.cartridgeName !== cartridge.name) throw new Error(`${cartridge.file}: named ${parsed.cartridgeName}, expected ${cartridge.name}`);
+    const broken = parsed.files.filter(f => !f.complete).map(f => spelledName(f.name));
+    if (broken.length) throw new Error(`${cartridge.file}: ${broken.join(', ')} has no last record`);
+    const names = parsed.files.map(f => spelledName(f.name)).sort().join(',');
+    const wanted = cartridge.files.map(f => f.name).sort().join(',');
+    if (names !== wanted) throw new Error(`${cartridge.file}: CAT gives ${names}, expected ${wanted}`);
+    const files = cartridge.files.map(file => {
+        const found = parsed.files.find(f => spelledName(f.name) === file.name);
+        const loadCommand = found.isPrintFile
+            ? `MOVE "m";${cartridge.drive};"${file.name}" TO #2`
+            : mdr.loadCommand({ ...found, name: file.name }, cartridge.drive - 1);
+        return { name: file.name, about: file.about, loadCommand };
+    });
+    return { files, freeK: Math.floor(parsed.freeSectors / 2) };
+}
+
 const index = { cassettes: [], cartridges: [] };
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -180,8 +210,8 @@ for (const cas of manifest.cassettes) {
 
 for (const cartridge of manifest.cartridges) {
     console.log(`${cartridge.file}: "${cartridge.name}"`);
-    const made = await makeCartridge(cartridge);
-    fs.writeFileSync(path.join(OUT, cartridge.file), made.image);
+    const made = cartridge.kept ? checkCartridge(cartridge) : await makeCartridge(cartridge);
+    if (!cartridge.kept) fs.writeFileSync(path.join(OUT, cartridge.file), made.image);
     console.log(`  ${made.files.map(f => f.name).join(', ')}; ${made.freeK}K free`);
     index.cartridges.push({ file: cartridge.file, name: cartridge.name, colour: cartridge.colour, drive: cartridge.drive, about: cartridge.about, files: made.files });
 }

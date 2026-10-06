@@ -167,6 +167,65 @@
           "loadCommand": "LOAD *\"m\";2;\"animals\" DATA t$()"
         }
       ]
+    },
+    {
+      "file": "intro2.mdr",
+      "name": "INTRO2",
+      "colour": "#555",
+      "drive": 1,
+      "about": "Sinclair's own Microdrive demonstration cartridge, its second edition of 1984, by John Mathieson and Andrew Pennell. In Microdrive 1 in place of HOME, type RUN for its menu.",
+      "files": [
+        {
+          "name": "run",
+          "about": "The menu, which RUN loads by itself: what each program shows, and how to load it.",
+          "loadCommand": "LOAD *\"m\";1;\"run\""
+        },
+        {
+          "name": "title SCREEN$",
+          "about": "The title screen the menu loads first.",
+          "loadCommand": "LOAD *\"m\";1;\"title SCREEN$\" CODE"
+        },
+        {
+          "name": "net game",
+          "about": "Guess the other player's number, over the ZX Net, which the emulator does not have.",
+          "loadCommand": "LOAD *\"m\";1;\"net game\""
+        },
+        {
+          "name": "P server",
+          "about": "Shares an RS232 printer over the ZX Net, which the emulator does not have.",
+          "loadCommand": "LOAD *\"m\";1;\"P server\""
+        },
+        {
+          "name": "Dbase prog",
+          "about": "Looks up each keyword the Interface 1 adds to BASIC: type the keyword as usual.",
+          "loadCommand": "LOAD *\"m\";1;\"Dbase prog\""
+        },
+        {
+          "name": "Database",
+          "about": "The keywords Dbase prog reads, a file written with PRINT # and read with INPUT #.",
+          "loadCommand": "MOVE \"m\";1;\"Database\" TO #2"
+        },
+        {
+          "name": "copier",
+          "about": "Adds * MOVE, which copies files between cartridges and cassettes.",
+          "loadCommand": "LOAD *\"m\";1;\"copier\""
+        },
+        {
+          "name": "copy code",
+          "about": "The machine code of * MOVE, which copier loads.",
+          "loadCommand": "LOAD *\"m\";1;\"copy code\" CODE"
+        },
+        {
+          "name": "cat",
+          "about": "Adds * CAT, which catalogues a cartridge or a cassette with each file's type and length.",
+          "loadCommand": "LOAD *\"m\";1;\"cat\""
+        },
+        {
+          "name": "cat code",
+          "about": "The machine code of * CAT, which cat loads.",
+          "loadCommand": "LOAD *\"m\";1;\"cat code\" CODE"
+        }
+      ]
     }
   ]
 }

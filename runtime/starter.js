@@ -190,7 +190,8 @@ export function createStarter(ui, emu, { tapeDeck, microdriveDock, scriptUrl }) 
             help.innerHTML = 'On a cassette, each program has its place on the tape counter. Click the recorder for the list of its parts: '
                 + 'click one to wind there, then Type in puts <code>LOAD ""</code> into the Spectrum, in 48 BASIC, for you to press Enter.<br>'
                 + 'With the HOME cartridge in Microdrive 1 and DATA in Microdrive 2, type <code>RUN</code> in 48 BASIC with no program in the '
-                + 'Spectrum for the HOME cartridge\'s menu.<br>The printer programs want the ZX Printer connected.';
+                + 'Spectrum for the HOME cartridge\'s menu.<br>For Sinclair\'s own demonstration cartridge, put INTRO2 in Microdrive 1 '
+                + 'in place of HOME and type <code>RUN</code>.<br>The printer programs want the ZX Printer connected.';
             scroll.append(grid, help);
             put.disabled = false;
             dlg.setStatus('', null);
