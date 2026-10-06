@@ -46,7 +46,8 @@
       "programs": [
         { "source": "hangman.bas", "name": "HANGMAN", "line": 10, "about": "Guess the word before the gallows are built." },
         { "source": "simon.bas", "name": "SIMON", "line": 10, "about": "Repeat the order the coloured pads light up in, one more each round." },
-        { "source": "oxo.bas", "name": "OXO", "line": 10, "about": "Noughts and crosses against the Spectrum." }
+        { "source": "oxo.bas", "name": "OXO", "line": 10, "about": "Noughts and crosses against the Spectrum." },
+        { "source": "editor.bas", "name": "EDITOR", "line": 10, "code": { "asm": "editor.asm", "name": "editcode" }, "about": "A full-screen BASIC editor in 42 columns, for typing in programs: keywords are typed as words, and the cursor goes anywhere on the listing." }
       ]
     },
     {

@@ -111,6 +111,12 @@
           "about": "Noughts and crosses against the Spectrum.",
           "startMs": 42436,
           "bytes": 2895
+        },
+        {
+          "name": "EDITOR",
+          "about": "A full-screen BASIC editor in 42 columns, for typing in programs: keywords are typed as words, and the cursor goes anywhere on the listing.",
+          "startMs": 66263,
+          "bytes": 187
         }
       ]
     },

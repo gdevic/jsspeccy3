@@ -40,6 +40,7 @@ It runs in any browser and loads thousands of games in one click, with cheats yo
 * ZX Interface 1 with two ZX Microdrives: format, save and load cartridges, and keep them in the browser between visits
 * ZX Printer: LPRINT, LLIST and COPY print onto a scrolling roll of silver paper, which can be torn off or saved as a PNG
 * Starter programs (**File → Starter programs…**): a first visit finds cassettes of games, demos and printer programs in the cassette box, and a guessing game that learns on two Microdrive cartridges
+* A full-screen BASIC editor for the 48K in 42 columns, on the Projects cassette: keywords typed as words, the cursor anywhere on the listing, find, auto line numbers and renumbering, and programs exactly as the ROM's own editor makes them; see [docs/editor.md](docs/editor.md)
 * Opens games straight from the PlayZX online catalog (~10,800 titles), or from a search of the Internet Archive
 * Game cheats: ~23,000 cheats for ~3,700 games from the Tipshop database, found for the loaded game, tick to apply and untick to undo
 * Character picker (**Options → Character picker**): click a character on the screen to see which ROM character it is and the keys that type it, and double-click it to type it, use it for a game option selection
@@ -123,13 +124,14 @@ A first visit finds the cassette box and the cartridge box filled with original 
 | Home games | **BIORHYTHM** charts your body, feelings and mind for a month from your birthday. **INVADERS**: O and P move, SPACE fires. **TETRIS**: O and P move, Q turns, A drops faster, SPACE drops at once. |
 | Printer fun | **BANNER** prints your words down the roll in letters as tall as the paper is wide. **CALENDAR** shows any month, and prints it or a whole year. **MAZE** carves a new maze to solve on the screen or on paper. |
 | Demos | **MANDEL** draws the Mandelbrot set in BASIC, taking its time. **ZOOM** draws it again in machine code, fast enough to zoom into: the arrow keys move a flashing square, Z zooms in on it, X zooms out. **PATTERNS** draws times tables round a circle, roses, spirographs and Lissajous figures. **TUNE** plays tunes on a keyboard that lights up, or lets you play it. |
-| Projects | **HANGMAN**, **SIMON** and **OXO** (noughts and crosses against the Spectrum). |
+| Projects | **HANGMAN**, **SIMON** and **OXO** (noughts and crosses against the Spectrum). **EDITOR** is a full-screen BASIC editor for typing programs in: 42 columns, keywords typed as words, and the cursor anywhere on the listing. |
 | Blank C60 | Nothing yet: it is for your own `SAVE`. |
 
 * **Load one from a cassette:** Home games starts in the recorder. Click the recorder for the list of its parts, click one to wind there, then Type in puts `LOAD ""` into the Spectrum for you to press Enter. Every program starts by itself.
 * **The guessing game:** with the HOME cartridge in Microdrive 1 and DATA in Microdrive 2, as a first visit finds them, type `RUN` in 48 BASIC with no program in the Spectrum, and the Interface 1 loads the HOME cartridge's menu. Think of a thing in your home, or an animal, and the game finds out which by asking yes or no questions. When it guesses wrong, it asks what it was and for a question that tells the two apart, and keeps what it learned on the DATA cartridge.
 * **The printer programs** want the ZX Printer connected. BIORHYTHM, MAZE and PATTERNS also copy their screen to it.
-* The cassettes are write-protected, so they stay as they came. The programs' listings are in `starter/`, ZOOM's machine code with them as assembly, and how they become cassettes and cartridges is in [docs/tech_notes.md](docs/tech_notes.md).
+* **EDITOR** loads its machine code above RAMTOP and starts on an empty program; type and run programs in it as in the ROM's editor. [docs/editor.md](docs/editor.md) has its keys and commands. A box that already holds a Projects cassette keeps it as it is: to get the one with EDITOR, take that cassette out of the box and use **File → Starter programs…**.
+* The cassettes are write-protected, so they stay as they came. The programs' listings are in `starter/`, ZOOM's and EDITOR's machine code with them as assembly, and how they become cassettes and cartridges is in [docs/tech_notes.md](docs/tech_notes.md).
 
 ## Toolbar
 
