@@ -216,8 +216,13 @@ let zxpDot:bool = false;  // whether the dot under the stylus gets burned
 let zxpDotSet:bool = false;  // the computer has written during the dot under the stylus
 let zxpPaperRows:u32 = 0;  // paper left on the roll, in pixel rows
 let zxpRowsOut:u32 = 0;  // finished rows waiting at PRINTER_ROWS
-let zxpBuzzPhase:f32 = 0.0;  // position in the motor buzz's cycle, 0 to 1
-let zxpBuzzLevel:f32 = 0.0;  // buzz volume, easing towards full while the motor runs
+let zxpSizzleLow:f32 = 0.0;  // the sizzle filter's lowpass and bandpass, holding its noise
+let zxpSizzleBand:f32 = 0.0;
+let zxpBuzzGrain:f32 = 0.0;  // the waver in how hard the sparks catch
+let zxpWhinePhase:f32 = 0.0;  // positions in the motor whine's three cycles, 0 to 1
+let zxpWhine2Phase:f32 = 0.0;
+let zxpWhine3Phase:f32 = 0.0;
+let zxpBuzzLevel:f32 = 0.0;  // the sound's loudness, easing towards full while the motor runs
 let zxpBuzzSeed:u32 = 1;
 
 // Loader detection: custom (turbo, Speedlock etc.) loaders bypass the ROM routine the tape trap catches
@@ -1039,35 +1044,80 @@ function mdrWhirrSample():f32 {
     return (mdrWhirrLevel * ((hum * 0.45) + (mdrWhirrHiss * 2.5))) + (mdrWhirrClick * noise * 0.06);
 }
 
-/* One sample of the motor's buzz: a hum at one steady pitch, roughened with
-a little noise. Quiet, as it is heard over the Spectrum's own sound. It
-starts quickly but dies away slowly, so the short stops between printed
-lines don't chop it. */
-const ZXP_BUZZ_VOLUME:f32 = 0.05;
-const ZXP_BUZZ_HZ:f32 = 150.0;
-const ZXP_BUZZ_ATTACK_S:f32 = 0.02;
-const ZXP_BUZZ_RELEASE_S:f32 = 0.15;
+/* One sample of the printer's sound, as it measures in a recording of a
+printing ZX Printer: nearly all of it is the sizzle of the sparks that burn
+the dots, a band of noise around 2 kHz whose loudness wavers as they catch,
+with the rumble of the mechanism under it and the motor's whine through it,
+three steady lines at the shaft's own note and above it. Loud, as a real one
+was. It comes up over the fifth of a second the motor takes to reach speed
+and stops within a few hundredths of one. */
+const ZXP_BUZZ_VOLUME:f32 = 0.0525;
+const ZXP_SIZZLE_HZ:f32 = 2100.0;  // where the sparks' band of noise sits
+const ZXP_SIZZLE_DAMPING:f32 = 0.5;  // 1/Q: how wide the band is
+const ZXP_SIZZLE_LEVEL:f32 = 5.2;  // the band itself
+const ZXP_CRACKLE_LEVEL:f32 = 1.0;  // what lies above it, the sparks' edge
+const ZXP_RUMBLE_LEVEL:f32 = 4.52;  // what lies below it, the mechanism
+const ZXP_GRAIN_HZ:f32 = 70.0;  // how quickly the sizzle wavers
+const ZXP_GRAIN_DEPTH:f32 = 20.5;  // and how deeply
+const ZXP_WHINE_HZ:f32 = 169.2;
+const ZXP_WHINE_LEVEL:f32 = 0.059;
+const ZXP_WHINE_2_HZ:f32 = 519.3;
+const ZXP_WHINE_2_LEVEL:f32 = 0.140;
+const ZXP_WHINE_3_HZ:f32 = 618.9;
+const ZXP_WHINE_3_LEVEL:f32 = 0.099;
+const ZXP_BUZZ_ATTACK_S:f32 = 0.08;
+const ZXP_BUZZ_RELEASE_S:f32 = 0.025;
+
+// a triangle over a phase of 0 to 1, centred on zero
+function zxpWhineWave(phase:f32):f32 {
+    return (phase < 0.5) ? ((phase * 4.0) - 1.0) : (3.0 - (phase * 4.0));
+}
+
+function zxpBuzzNoise():f32 {
+    zxpBuzzSeed = (zxpBuzzSeed * 1664525) + 1013904223;
+    return (f32(zxpBuzzSeed >> 16) / 65536.0) - 0.5;
+}
 
 function zxpBuzzSample():f32 {
     const running:bool = zxpEnabled && (zxpMotorOn || zxpFeeding);
     const sampleRate:f32 = f32(samplesPerFrame) * 50.0;
     if (running) {
-        zxpBuzzLevel += (ZXP_BUZZ_VOLUME - zxpBuzzLevel) / (ZXP_BUZZ_ATTACK_S * sampleRate);
+        zxpBuzzLevel += (1.0 - zxpBuzzLevel) / (ZXP_BUZZ_ATTACK_S * sampleRate);
     } else {
         zxpBuzzLevel -= zxpBuzzLevel / (ZXP_BUZZ_RELEASE_S * sampleRate);
-        if (zxpBuzzLevel < 0.0005) {
+        if (zxpBuzzLevel < 0.001) {
             zxpBuzzLevel = 0.0;
             return 0.0;
         }
     }
-    zxpBuzzPhase += ZXP_BUZZ_HZ / sampleRate;
-    if (zxpBuzzPhase >= 1.0) zxpBuzzPhase -= 1.0;
-    zxpBuzzSeed = (zxpBuzzSeed * 1664525) + 1013904223;
-    const noise:f32 = (f32(zxpBuzzSeed >> 16) / 65536.0) - 0.5;
-    // a narrow pulse on a falling ramp, both centred on zero
-    const pulse:f32 = (zxpBuzzPhase < 0.18) ? 0.82 : -0.18;
-    const ramp:f32 = (0.5 - zxpBuzzPhase) * 0.5;
-    return zxpBuzzLevel * (pulse + ramp + (noise * 0.6));
+    /* One resonance of noise, read on all three of its sides: a state
+    variable filter leaves the band itself on zxpSizzleBand, everything
+    under it on zxpSizzleLow and everything over it on sizzleHigh.
+    6.2831853 / sampleRate turns a frequency into radians per sample. */
+    const sizzleF:f32 = (6.2831853 * ZXP_SIZZLE_HZ) / sampleRate;
+    zxpSizzleLow += sizzleF * zxpSizzleBand;
+    const sizzleHigh:f32 = zxpBuzzNoise() - zxpSizzleLow - (ZXP_SIZZLE_DAMPING * zxpSizzleBand);
+    zxpSizzleBand += sizzleF * sizzleHigh;
+    const sparks:f32 = (ZXP_SIZZLE_LEVEL * zxpSizzleBand) + (ZXP_CRACKLE_LEVEL * sizzleHigh);
+    // noise smoothed down to a waver, which the sparks' loudness follows
+    const grainF:f32 = (6.2831853 * ZXP_GRAIN_HZ) / sampleRate;
+    zxpBuzzGrain += (zxpBuzzNoise() - zxpBuzzGrain) * (grainF / (1.0 + grainF));
+    zxpWhinePhase += ZXP_WHINE_HZ / sampleRate;
+    if (zxpWhinePhase >= 1.0) zxpWhinePhase -= 1.0;
+    zxpWhine2Phase += ZXP_WHINE_2_HZ / sampleRate;
+    if (zxpWhine2Phase >= 1.0) zxpWhine2Phase -= 1.0;
+    zxpWhine3Phase += ZXP_WHINE_3_HZ / sampleRate;
+    if (zxpWhine3Phase >= 1.0) zxpWhine3Phase -= 1.0;
+    const whine:f32 = (
+        (ZXP_WHINE_LEVEL * zxpWhineWave(zxpWhinePhase))
+        + (ZXP_WHINE_2_LEVEL * zxpWhineWave(zxpWhine2Phase))
+        + (ZXP_WHINE_3_LEVEL * zxpWhineWave(zxpWhine3Phase))
+    );
+    return ZXP_BUZZ_VOLUME * zxpBuzzLevel * (
+        (sparks * (1.0 + (ZXP_GRAIN_DEPTH * zxpBuzzGrain)))
+        + (ZXP_RUMBLE_LEVEL * zxpSizzleLow)
+        + whine
+    );
 }
 
 /* One sample of the tape recorder's own sounds: the hum of its motor, with

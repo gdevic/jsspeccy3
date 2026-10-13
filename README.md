@@ -10,7 +10,7 @@ A ZX Spectrum emulator for the browser
 
 ## Why JSSpeccy3 / dev
 
-Most Spectrum emulators treat peripherals as menu items and forget your work when the window closes. JSSpeccy3 / dev puts the hardware on your desk: a cassette recorder, two Microdrives and a ZX Printer that you can drag around, and that work and sound like the originals. The recorder's keys clunk, its motor hums and the tape whines as it winds, the Microdrives whirr, and the printer buzzes as its paper rises. Your cassettes, cartridges and printouts are still there on your next visit.
+Most Spectrum emulators treat peripherals as menu items and forget your work when the window closes. JSSpeccy3 / dev puts the hardware on your desk: a cassette recorder, two Microdrives and a ZX Printer that you can drag around, and that work and sound like the originals. The recorder's keys clunk, its motor hums and the tape whines as it winds, the Microdrives whirr, and the printer sizzles as its paper rises. Your cassettes, cartridges and printouts are still there on your next visit.
 
 It runs in any browser and loads thousands of games in one click, with cheats you can switch on and off. Plug in a joystick or gamepad and play as on the real machine, or click any keyword on the on-screen keyboard and it is typed for you. On a first visit the cassette and cartridge boxes already hold starter programs, from Tetris and Invaders to a Mandelbrot set you can zoom into and a guessing game that learns, so there is something to play straight away.
 
@@ -69,7 +69,7 @@ The tape recorder, the Interface 1 with its Microdrives and the ZX Printer are d
 
 * **Connect them** with a toolbar button, without resetting the machine. They start connected on a first visit and stay as you left them.
 * **Drag them anywhere:** an open hand means drag, a pointing finger means click. The lead stretches to follow, devices slide along each other and never overlap, and a click on a lead puts one back. Where they stand is remembered in this browser.
-* **They run on their own:** the recorder winds, plays and records with the Spectrum off or paused, and it sounds like it: motor, winding, key clunks. The drives whirr, the printer buzzes, and its paper rises out of it and scrolls back with the mouse wheel.
+* **They run on their own:** the recorder winds, plays and records with the Spectrum off or paused, and it sounds like it: motor, winding, key clunks. The drives whirr, the printer sizzles, and its paper rises out of it and scrolls back with the mouse wheel.
 * **They keep what you did:** cassettes, cartridges and the printer's roll stay in the browser between visits, and go into a saved session.
 * **Emulated the way the hardware works:** the printer through its styli and paper feed, so a program's own printer routine works, and the Interface 1 through its own shadow ROM.
 
